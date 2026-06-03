@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────────
+# Finance AI Agent — Dépendances Python
+# Installer avec : pip install -r requirements.txt
+# ─────────────────────────────────────────────────────
+
+# ── Core Data Science ─────────────────────────────────
+numpy>=1.26
+pandas>=2.2
+scikit-learn>=1.4
+scipy>=1.13
+
+# ── Boosting Models ───────────────────────────────────
+xgboost>=2.0
+lightgbm>=4.3
+catboost>=1.2
+
+# ── Time Series ───────────────────────────────────────
+statsmodels>=0.14
+prophet>=1.1
+
+# ── Visualisation ─────────────────────────────────────
+matplotlib>=3.8
+seaborn>=0.13
+
+# ── ML Utilities ──────────────────────────────────────
+imbalanced-learn>=0.12   # SMOTE
+
+# ── Hyperparameter Optimization ───────────────────────
+optuna>=3.6
+
+# ── Explainability ────────────────────────────────────
+shap>=0.45
+
+# ── Deep Learning (optionnel) ─────────────────────────
+torch>=2.3           # LSTM / GRU / N-BEATS
+# Installer séparément selon CPU/GPU :
+# CPU : pip install torch --index-url https://download.pytorch.org/whl/cpu
+# GPU : pip install torch --index-url https://download.pytorch.org/whl/cu121
