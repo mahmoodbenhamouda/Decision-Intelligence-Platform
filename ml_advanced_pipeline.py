@@ -1765,6 +1765,14 @@ class FinanceAIAgent:
             return self._retard_paiement_analysis(ctx)
         elif query == "forecast_tresorerie":
             return self._forecast_tresorerie(ctx)
+        elif query == "forecast_ventes":
+            return self._forecast_ventes(ctx)
+        elif query == "forecast_achats":
+            return self._forecast_achats(ctx)
+        elif query == "detect_anomalies":
+            return self._detect_anomalies_query(ctx)
+        elif query == "explain_prediction":
+            return self._explain_prediction(ctx)
         else:
             return {
                 "query": query,
@@ -1857,16 +1865,18 @@ class FinanceAIAgent:
         )
         if len(ts) < 3:
             return {"error": "Série trop courte pour forecast"}
-        # Forecast naïf avec ETS si statsmodels dispo
+        # Conversion explicite vers numpy float pour éviter FloatingArray
+        ts_vals = np.array(ts.values, dtype=float)
+        # Forecast avec ETS si statsmodels dispo
         if HAS_STATSMODELS and len(ts) >= 12:
             try:
                 ets = ExponentialSmoothing(
-                    ts.values, trend="add",
+                    ts_vals, trend="add",
                     seasonal="add" if len(ts) >= 24 else None,
                     seasonal_periods=12 if len(ts) >= 24 else None,
                     initialization_method="estimated",
                 ).fit()
-                fc_vals = ets.forecast(3)
+                fc_vals = np.array(ets.forecast(3), dtype=float)
                 fc_dates = pd.date_range(ts.index[-1], periods=4, freq="ME")[1:]
                 return {
                     "query": "forecast_tresorerie",
@@ -1874,21 +1884,196 @@ class FinanceAIAgent:
                     "forecast": {str(d.date()): round(float(v), 2)
                                  for d, v in zip(fc_dates, fc_vals)},
                     "model_used": "ETS",
-                    "last_actual": round(float(ts.iloc[-1]), 2),
+                    "last_actual": round(float(ts_vals[-1]), 2),
+                    "unit": "DT (dinars tunisiens)",
                 }
             except Exception as e:
-                return {"error": str(e)}
+                pass  # fallback ci-dessous
         # Fallback : tendance linéaire
         n = len(ts)
-        x = np.arange(n)
-        coeffs = np.polyfit(x, ts.values, 1)
-        fc_vals = np.polyval(coeffs, [n, n+1, n+2])
+        x = np.arange(n, dtype=float)
+        coeffs = np.polyfit(x, ts_vals, 1)
+        fc_vals = np.polyval(coeffs, np.array([n, n+1, n+2], dtype=float))
         fc_dates = pd.date_range(ts.index[-1], periods=4, freq="ME")[1:]
         return {
             "query": "forecast_tresorerie",
             "horizon": 3,
             "forecast": {str(d.date()): round(float(v), 2) for d, v in zip(fc_dates, fc_vals)},
             "model_used": "linear_trend_fallback",
+            "unit": "DT (dinars tunisiens)",
+        }
+
+    # ── Forecast ventes ───────────────────────────────────────────────────────
+    def _forecast_ventes(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        fact = ctx.get("Fact_Ventes", pd.DataFrame())
+        if fact.empty or "datepiece" not in fact.columns or "ttc_dev" not in fact.columns:
+            return {"query": "forecast_ventes", "error": "Fact_Ventes non fournie ou colonnes manquantes"}
+        ts = (
+            fact[["datepiece", "ttc_dev"]].dropna()
+            .set_index("datepiece")
+            .resample("ME")["ttc_dev"]
+            .sum()
+        )
+        if len(ts) < 3:
+            return {"query": "forecast_ventes", "error": "Série trop courte"}
+        ts_vals = np.array(ts.values, dtype=float)
+        # ETS si possible
+        if HAS_STATSMODELS and len(ts) >= 12:
+            try:
+                ets = ExponentialSmoothing(
+                    ts_vals, trend="add",
+                    seasonal="add" if len(ts) >= 24 else None,
+                    seasonal_periods=12 if len(ts) >= 24 else None,
+                    initialization_method="estimated",
+                ).fit()
+                fc_vals = np.array(ets.forecast(3), dtype=float)
+                fc_dates = pd.date_range(ts.index[-1], periods=4, freq="ME")[1:]
+                return {
+                    "query": "forecast_ventes",
+                    "horizon": 3,
+                    "forecast": {str(d.date()): round(float(v), 2) for d, v in zip(fc_dates, fc_vals)},
+                    "model_used": "ETS",
+                    "last_actual": round(float(ts_vals[-1]), 2),
+                    "unit": "DT (dinars tunisiens)",
+                    "interpretation": (
+                        f"Chiffre d'affaires prévu sur les 3 prochains mois. "
+                        f"Dernier CA mensuel réel : {round(float(ts_vals[-1]), 2):,} DT."
+                    ),
+                }
+            except Exception:
+                pass
+        # Fallback linéaire
+        n = len(ts)
+        coeffs = np.polyfit(np.arange(n, dtype=float), ts_vals, 1)
+        fc_vals = np.polyval(coeffs, np.array([n, n+1, n+2], dtype=float))
+        fc_dates = pd.date_range(ts.index[-1], periods=4, freq="ME")[1:]
+        return {
+            "query": "forecast_ventes",
+            "horizon": 3,
+            "forecast": {str(d.date()): round(float(v), 2) for d, v in zip(fc_dates, fc_vals)},
+            "model_used": "linear_trend_fallback",
+            "unit": "DT (dinars tunisiens)",
+        }
+
+    # ── Forecast achats ───────────────────────────────────────────────────────
+    def _forecast_achats(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        fact = ctx.get("Fact_Achats", pd.DataFrame())
+        if fact.empty:
+            return {"query": "forecast_achats", "error": "Fact_Achats non fournie"}
+        date_col = next((c for c in ["datepiece", "date", "date_piece"] if c in fact.columns), None)
+        amt_col  = next((c for c in ["ttc_dev", "montant_dev", "montant"] if c in fact.columns), None)
+        if not date_col or not amt_col:
+            return {"query": "forecast_achats", "error": f"Colonnes requises introuvables. Dispo: {list(fact.columns)}"}
+        ts = (
+            fact[[date_col, amt_col]].dropna()
+            .set_index(date_col)
+            .resample("ME")[amt_col]
+            .sum()
+        )
+        if len(ts) < 3:
+            return {"query": "forecast_achats", "error": "Série trop courte"}
+        ts_vals = np.array(ts.values, dtype=float)
+        if HAS_STATSMODELS and len(ts) >= 12:
+            try:
+                ets = ExponentialSmoothing(
+                    ts_vals, trend="add",
+                    seasonal="add" if len(ts) >= 24 else None,
+                    seasonal_periods=12 if len(ts) >= 24 else None,
+                    initialization_method="estimated",
+                ).fit()
+                fc_vals = np.array(ets.forecast(3), dtype=float)
+                fc_dates = pd.date_range(ts.index[-1], periods=4, freq="ME")[1:]
+                return {
+                    "query": "forecast_achats",
+                    "horizon": 3,
+                    "forecast": {str(d.date()): round(float(v), 2) for d, v in zip(fc_dates, fc_vals)},
+                    "model_used": "ETS",
+                    "last_actual": round(float(ts_vals[-1]), 2),
+                    "unit": "DT (dinars tunisiens)",
+                    "interpretation": (
+                        f"Volume d'achats prévu sur 3 mois. "
+                        f"Dernier total mensuel : {round(float(ts_vals[-1]), 2):,} DT."
+                    ),
+                }
+            except Exception:
+                pass
+        n = len(ts)
+        coeffs = np.polyfit(np.arange(n, dtype=float), ts_vals, 1)
+        fc_vals = np.polyval(coeffs, np.array([n, n+1, n+2], dtype=float))
+        fc_dates = pd.date_range(ts.index[-1], periods=4, freq="ME")[1:]
+        return {
+            "query": "forecast_achats",
+            "horizon": 3,
+            "forecast": {str(d.date()): round(float(v), 2) for d, v in zip(fc_dates, fc_vals)},
+            "model_used": "linear_trend_fallback",
+            "unit": "DT (dinars tunisiens)",
+        }
+
+    # ── Détection anomalies ───────────────────────────────────────────────────
+    def _detect_anomalies_query(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        fact = ctx.get("Fact_Ventes", pd.DataFrame())
+        if fact.empty:
+            return {"query": "detect_anomalies", "error": "Fact_Ventes non fournie"}
+        num_cols = [c for c in ["ttc_dev", "ht_dev", "payment_delay_days"] if c in fact.columns]
+        if not num_cols:
+            return {"query": "detect_anomalies", "error": "Aucune colonne numérique utilisable"}
+        X = fact[num_cols].dropna().values.astype(float)
+        if len(X) < 10:
+            return {"query": "detect_anomalies", "error": "Pas assez de données"}
+        result = self.detect_anomalies(X, contamination=0.05, fit=True)
+        result["query"] = "detect_anomalies"
+        result["features_used"] = num_cols
+        # Top 5 anomalies avec valeurs
+        top_idx = result.get("anomaly_indices", [])[:5]
+        top_rows = []
+        for idx in top_idx:
+            row = {col: round(float(fact[num_cols].dropna().iloc[idx][col]), 2) for col in num_cols}
+            top_rows.append(row)
+        result["top_5_anomalies"] = top_rows
+        return result
+
+    # ── Explication prédiction ────────────────────────────────────────────────
+    def _explain_prediction(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        fact = ctx.get("Fact_Ventes", pd.DataFrame())
+        if fact.empty:
+            return {"query": "explain_prediction", "error": "Fact_Ventes non fournie"}
+        # Explication basée sur features statistiques de la dernière facture
+        num_cols = [c for c in ["ttc_dev", "ht_dev", "payment_delay_days", "is_late_payment"] if c in fact.columns]
+        if not num_cols:
+            return {"query": "explain_prediction", "error": "Colonnes insuffisantes"}
+        last = fact[num_cols].dropna().iloc[-1]
+        delay = float(last.get("payment_delay_days", 0)) if "payment_delay_days" in last.index else None
+        ttc   = float(last.get("ttc_dev", 0)) if "ttc_dev" in last.index else None
+        risk_level = "FAIBLE"
+        factors = []
+        if delay is not None:
+            if delay > 90:
+                risk_level = "CRITIQUE"
+                factors.append(f"Délai paiement très long : {delay:.0f} jours (> 90j)")
+            elif delay > 30:
+                risk_level = "MODÉRÉ"
+                factors.append(f"Délai paiement élevé : {delay:.0f} jours (> 30j)")
+            else:
+                factors.append(f"Délai paiement normal : {delay:.0f} jours")
+        if ttc is not None:
+            mean_ttc = float(fact["ttc_dev"].mean()) if "ttc_dev" in fact.columns else 0
+            if ttc > mean_ttc * 3:
+                risk_level = max(risk_level, "MODÉRÉ", key=["FAIBLE","MODÉRÉ","CRITIQUE"].index)
+                factors.append(f"Montant facture élevé : {ttc:,.2f} DT (3x la moyenne)")
+            else:
+                factors.append(f"Montant facture normal : {ttc:,.2f} DT")
+        return {
+            "query": "explain_prediction",
+            "last_invoice_features": {col: round(float(last[col]), 2) for col in num_cols},
+            "risk_level": risk_level,
+            "key_factors": factors,
+            "interpretation": (
+                f"Niveau de risque {risk_level} basé sur les indicateurs de la dernière facture. "
+                f"Facteurs principaux : {'; '.join(factors)}."
+            ),
+            "model_note": (
+                "Pour une explication SHAP complète par facture, relancez le pipeline avec --shap activé."
+            ),
         }
 
     def save_report(self, output_dir: Path = REPORTS_DIR) -> None:

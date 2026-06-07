@@ -21,6 +21,7 @@ prophet>=1.1
 # ── Visualisation ─────────────────────────────────────
 matplotlib>=3.8
 seaborn>=0.13
+streamlit>=1.36
 
 # ── ML Utilities ──────────────────────────────────────
 imbalanced-learn>=0.12   # SMOTE
