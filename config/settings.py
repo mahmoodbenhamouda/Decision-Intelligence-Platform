@@ -50,7 +50,7 @@ class Settings(BaseSettings):
 
     # ── LLM Configuration ─────────────────────────────────────────────────────
     llm_provider: Literal["openai", "anthropic", "groq", "ollama", "google"] = "groq"
-    llm_model: str = "llama-3.1-70b-versatile"          # Groq Llama3.1 (gratuit)
+    llm_model: str = "openai/gpt-oss-120b"              # Groq — modèle production courant (2026)
     llm_temperature: float = 0.1
     llm_max_tokens: int = 4096
     llm_timeout: int = 60
@@ -64,8 +64,9 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-3-haiku-20240307"
 
     # Groq (API gratuite — recommandée pour PFE)
+    # NB : Groq a retiré llama-3.1/3.3 en 2026 → modèle production courant = openai/gpt-oss-120b
     groq_api_key: Optional[str] = None
-    groq_model: str = "llama-3.1-70b-versatile"
+    groq_model: str = "openai/gpt-oss-120b"
 
     # Google Gemini
     google_api_key: Optional[str] = None
@@ -180,11 +181,12 @@ def ensure_dirs() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
-def get_llm():
+def get_llm(model: Optional[str] = None):
     """
     Instancie le LLM configuré.
     Lit les clés API depuis os.environ à chaque appel (bypass du cache Settings)
     pour que les clés définies dans .env ou via la sidebar Streamlit soient toujours prises en compte.
+    `model` permet de forcer un modèle précis (utile pour un repli si un modèle est déprécié).
     """
     from dotenv import load_dotenv
     load_dotenv(override=False)  # recharge .env sans écraser les vars déjà définies
@@ -196,6 +198,10 @@ def get_llm():
     anthropic_key= os.environ.get("ANTHROPIC_API_KEY", "") or settings.anthropic_api_key or ""
     google_key   = os.environ.get("GOOGLE_API_KEY", "") or settings.google_api_key or ""
 
+    # Modèle Groq : override explicite > variable d'env GROQ_MODEL > défaut settings
+    groq_model   = model or os.environ.get("GROQ_MODEL", "") or settings.groq_model
+    openai_model = model or settings.openai_model
+
     temperature  = settings.llm_temperature
     max_tokens   = settings.llm_max_tokens
 
@@ -204,7 +210,7 @@ def get_llm():
             from langchain_groq import ChatGroq
             return ChatGroq(
                 api_key=groq_key,
-                model=settings.groq_model,
+                model=groq_model,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
@@ -216,7 +222,7 @@ def get_llm():
             from langchain_openai import ChatOpenAI
             return ChatOpenAI(
                 api_key=openai_key,
-                model=settings.openai_model,
+                model=openai_model,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
@@ -252,7 +258,7 @@ def get_llm():
             from langchain_groq import ChatGroq
             return ChatGroq(
                 api_key=groq_key,
-                model=settings.groq_model,
+                model=groq_model,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )

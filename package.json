@@ -1,0 +1,11 @@
+{
+  "name": "satge-pfe",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "api": ".venv\\Scripts\\python.exe -m uvicorn api.main:app --reload --host 127.0.0.1 --port 8000",
+    "build": "npm --prefix frontend run build",
+    "start": "npm --prefix frontend run start",
+    "lint": "npm --prefix frontend run lint"
+  }
+}

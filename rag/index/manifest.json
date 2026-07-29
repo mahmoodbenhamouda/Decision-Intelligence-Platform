@@ -1,0 +1,5 @@
+{
+  "backend": "semantic",
+  "n_chunks": 12,
+  "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+}

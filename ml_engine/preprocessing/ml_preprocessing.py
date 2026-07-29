@@ -1134,7 +1134,7 @@ def build_ml_datasets(
 # ─────────────────────────────────────────────
  
 if __name__ == "__main__":
-    from data_preparation_pipeline import prepare_data_layer
+    from ml_engine.preprocessing.data_preparation import prepare_data_layer
  
     data_dir   = Path(__file__).resolve().parent / "data_pfe"
     output_dir = Path(__file__).resolve().parent / "output"
