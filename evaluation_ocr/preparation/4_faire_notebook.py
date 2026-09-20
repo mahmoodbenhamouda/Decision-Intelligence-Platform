@@ -44,8 +44,10 @@ if not os.path.exists("layoutlmv3_factures.zip"):
 with zipfile.ZipFile("layoutlmv3_factures.zip") as z:
     z.extractall("data")
 import sys; sys.path.insert(0, "data")
+# SEUILS_CONFIANCE n'existe que dans le champs.py corrige : si le zip depose
+# est perime, l'import echoue ici plutot qu'apres 45 minutes d'entrainement.
 from champs import (ETIQUETTES, CHAMPS, CHAMPS_EVAL, decoder, evaluer, juste,
-                    depuis_regles, fusionner_avec_regles)
+                    depuis_regles, fusionner_avec_regles, SEUILS_CONFIANCE)
 PAGES = [json.loads(l) for l in open("data/pages.jsonl")]
 VERITE = json.load(open("data/verite.json"))
 REGLES = json.load(open("data/regles.json"))          # sortie des règles actuelles
@@ -53,6 +55,7 @@ COUVERTURE = json.load(open("data/projection_rapport.json"))
 DOCS = sorted(VERITE)
 L2I = {l: i for i, l in enumerate(ETIQUETTES)}
 print(len(DOCS), "factures,", len(PAGES), "pages,", len(ETIQUETTES), "étiquettes")
+print("fusion en vigueur :", SEUILS_CONFIANCE)
 """)
 
 md("""
