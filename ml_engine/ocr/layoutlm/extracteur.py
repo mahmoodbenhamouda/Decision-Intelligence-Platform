@@ -150,6 +150,24 @@ _VERS_REGLES = {"numero": "numero", "date": "date_facture", "total_ht": "montant
                 "total_ttc": "montant_ttc", "net_a_payer": "net_a_payer"}
 
 
+def message_coherence(f) -> Optional[str]:
+    """Même message que les règles (invoice.py), recalculé sur les valeurs FINALES.
+
+    Le message des règles portait sur leurs propres montants : après fusion il
+    peut décrire des valeurs qui ne sont plus affichées. Le timbre est admis
+    dans l'égalité (HT + TVA + timbre = TTC), comme dans `coherence`."""
+    ht, tva, ttc = f.montant_ht, f.montant_tva, f.montant_ttc
+    if not (ht and tva and ttc):
+        return None
+    timbre = f.timbre_fiscal or 0.0
+    ecart = min(abs(ht + tva - ttc), abs(ht + tva + timbre - ttc))
+    if ecart <= max(0.05, ttc * 0.01):
+        return "HT + TVA = TTC vérifié" + (" (timbre compris)" if timbre and
+                                                  abs(ht + tva - ttc) > ecart else "")
+    return (f"Incohérence : HT + TVA = {ht + tva:.3f} ≠ TTC {ttc:.3f} "
+            f"(écart {ecart:.3f}) — OCR à vérifier manuellement")
+
+
 def combiner(fields, lu: Optional[Dict[str, Any]]):
     """Fusionne la lecture LayoutLMv3 dans un `InvoiceFields` issu des règles.
 
@@ -173,8 +191,7 @@ def combiner(fields, lu: Optional[Dict[str, Any]]):
         fields.avertissements.append(
             f"{cle} : {montant} lu par les règles, écarté comme invraisemblable "
             f"face aux autres montants — à saisir.")
-    if h.get("coherent"):
-        fields.coherence = "ok"
+    fields.coherence = message_coherence(fields)
     if lu.get("fournisseur") and not fields.tiers:
         fields.tiers = lu["fournisseur"]
     fields.is_invoice = fields.is_invoice or bool(h.get("total_ttc") or h.get("numero"))

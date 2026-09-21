@@ -98,7 +98,8 @@ def test_combiner_complete_les_regles():
           "fournisseur": "MW Solutions", "_candidats": {}}
     combiner(f, lu)
     assert f.numero == "F00007" and f.montant_ttc == 2381.0 and f.montant_ht == 2000.0
-    assert f.net_a_payer == 2309.57 and f.coherence == "ok"
+    assert f.net_a_payer == 2309.57
+    assert f.coherence == "HT + TVA = TTC vérifié (timbre compris)"
     assert f.champs_confiance["montant_ttc"] == "layoutlmv3"
 
 
