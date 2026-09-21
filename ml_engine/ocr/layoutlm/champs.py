@@ -181,6 +181,40 @@ SEUILS_CONFIANCE = {
 SEUIL_CONFIANCE = 0.5          # défaut pour les champs absents du tableau
 
 
+MONTANTS_EVAL = ("total_ht", "total_tva", "timbre", "total_ttc", "net_a_payer")
+
+
+def montant_plausible(cle: str, v, lu: Dict[str, object]) -> bool:
+    """Un montant proposé par les RÈGLES est-il compatible avec ceux lus par le modèle ?
+
+    Ne sert qu'à écarter l'absurde, jamais à arbitrer entre deux valeurs crédibles :
+      - aucun montant négatif ;
+      - HT, TVA et timbre ne dépassent pas le TTC (ou à défaut le net) ;
+      - la TVA ne dépasse pas le HT (taux < 100 %) ;
+      - pas plus de 10 fois le plus grand total lu par le modèle.
+    Cas réel (d002) : TVA des règles 101 296 pour un TTC de 1 855,276.
+    """
+    if v is None:
+        return True
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return False
+    if v < 0:
+        return False
+    nombre = lambda x: float(x) if isinstance(x, (int, float)) and x > 0 else None
+    ttc = nombre(lu.get("total_ttc")) or nombre(lu.get("net_a_payer"))
+    ht = nombre(lu.get("total_ht"))
+    totaux = [x for x in (ht, nombre(lu.get("total_ttc")), nombre(lu.get("net_a_payer"))) if x]
+    if totaux and v > 10 * max(totaux):
+        return False
+    if ttc and cle in ("total_ht", "total_tva", "timbre") and v > ttc * 1.001:
+        return False
+    if ht and cle == "total_tva" and v > ht * 1.001:
+        return False
+    return True
+
+
 def fusionner_avec_regles(lu: Dict[str, object], regles: Dict[str, object]) -> Dict[str, object]:
     """Hybride : le modèle quand il est sûr de lui, les règles sinon, puis
     l'arithmétique départage les montants (candidats des deux sources).
@@ -188,18 +222,24 @@ def fusionner_avec_regles(lu: Dict[str, object], regles: Dict[str, object]) -> D
     `lu` : sortie de `decoder` ; `regles` : même schéma (voir `depuis_regles`)."""
     scores = lu.get("_scores") or {}
     h: Dict[str, object] = {}
+    rejetes: List[Tuple[str, object]] = []
     for k in CHAMPS_EVAL:
         m, r = lu.get(k), regles.get(k)
         if m is None or (r is not None and scores.get(k, 1.0) < SEUILS_CONFIANCE.get(k, SEUIL_CONFIANCE)):
-            h[k] = r
+            if k in MONTANTS_EVAL and not montant_plausible(k, r, lu):
+                rejetes.append((k, r))          # absurde : on garde le modèle (éventuellement vide)
+                h[k] = m
+            else:
+                h[k] = r
         else:
             h[k] = m
     cand = {k: list(v) for k, v in (lu.get("_candidats") or {}).items()}
     for k in ("total_ht", "total_tva", "total_ttc"):
-        if regles.get(k) is not None and lu.get(k) is None:
+        if regles.get(k) is not None and lu.get(k) is None and montant_plausible(k, regles[k], lu):
             cand.setdefault(k, []).append(regles[k])
     h["_candidats"] = cand
     h["_scores"] = scores
+    h["_rejetes"] = rejetes
     return coherence(h)
 
 
