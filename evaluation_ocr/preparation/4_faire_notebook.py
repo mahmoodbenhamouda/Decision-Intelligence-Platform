@@ -31,7 +31,7 @@ Comparaison, sur la même vérité terrain, avec les règles actuelles.
 """)
 
 code("""
-!pip -q install "transformers>=4.44" seqeval accelerate
+!pip -q install "transformers>=4.44" accelerate
 import torch, json, os, random, zipfile, numpy as np
 print("GPU :", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "AUCUN — activez le GPU")
 """)
@@ -260,18 +260,48 @@ md("""
 L'exactitude par champ dit si la bonne valeur ressort ; le F1 dit si le modèle
 sait **étiqueter**, et surtout *où* il se trompe. Un F1 faible sur `TTC` désigne
 une confusion d'étiquettes, pas un défaut de lecture — les deux se corrigent
-très différemment. Calculé avec seqeval sur les étiquettes BIO de la validation
-croisée, donc sur des pages jamais vues à l'entraînement.
+très différemment. Calculé sur les étiquettes BIO de la validation croisée,
+donc sur des pages jamais vues à l'entraînement.
+
+Définition identique à seqeval / conlleval : une entité n'est juste que si son
+type **et** ses bornes sont exacts. (seqeval n'est plus installable sur Colab :
+il n'existe qu'en source et ne compile plus avec setuptools récent. Ce calcul
+redonne ses chiffres à l'identique, vérifié sur 300 tirages aléatoires.)
 """)
 code("""
-from seqeval.metrics import classification_report, f1_score
-pages_vues = [p for p in PAGES if p['page'] in PRED_PAGES]
-y_vrai = [p['etiquettes'] for p in pages_vues]
-y_pred = [PRED_PAGES[p['page']]['etiquettes'] for p in pages_vues]
+def entites(seq, page):
+    # (page, type, debut, fin) de chaque entite d'une sequence BIO
+    out, typ, deb = set(), None, None
+    for i, e in enumerate(list(seq) + ['O']):
+        pre, _, t = e.partition('-')
+        if typ is not None and (e == 'O' or pre == 'B' or t != typ):
+            out.add((page, typ, deb, i)); typ = None
+        if e != 'O' and typ is None:
+            typ, deb = t, i
+    return out
 
-print(classification_report(y_vrai, y_pred, digits=3, zero_division=0))
-print('F1 micro :', round(f1_score(y_vrai, y_pred, average='micro', zero_division=0), 3))
-print('F1 macro :', round(f1_score(y_vrai, y_pred, average='macro', zero_division=0), 3))
+def prf(v, p):
+    tp = len(v & p)
+    pr = tp / len(p) if p else 0.0
+    rc = tp / len(v) if v else 0.0
+    return pr, rc, (2 * pr * rc / (pr + rc) if pr + rc else 0.0)
+
+pages_vues = [p for p in PAGES if p['page'] in PRED_PAGES]
+ENT_V, ENT_P = set(), set()
+for p in pages_vues:
+    ENT_V |= entites(p['etiquettes'], p['page'])
+    ENT_P |= entites(PRED_PAGES[p['page']]['etiquettes'], p['page'])
+
+lig = []
+for t in sorted({e[1] for e in ENT_V | ENT_P}):
+    pr, rc, f = prf({e for e in ENT_V if e[1] == t}, {e for e in ENT_P if e[1] == t})
+    lig.append({'champ': t, 'précision': round(pr, 3), 'rappel': round(rc, 3),
+                'F1': round(f, 3), 'entités': sum(e[1] == t for e in ENT_V)})
+TAB_F1 = pd.DataFrame(lig).set_index('champ').sort_values('F1')
+pr, rc, f = prf(ENT_V, ENT_P)
+print(f'F1 micro : {f:.3f}   (précision {pr:.3f}, rappel {rc:.3f})')
+print(f"F1 macro : {TAB_F1['F1'].mean():.3f}")
+TAB_F1
 """)
 
 md("### Où partent les erreurs (matrice de confusion par mot, paires O→O retirées)")
