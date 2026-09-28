@@ -17,10 +17,18 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 try:
-    from pydantic_settings import BaseSettings
+    from pydantic_settings import BaseSettings, SettingsConfigDict
     from pydantic import Field, validator
-except ImportError:
+    _SETTINGS_CONFIG = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8",
+        case_sensitive=False, extra="ignore",
+    )
+except ImportError:  # pragma: no cover — repli sans pydantic-settings
     from pydantic import BaseSettings, Field, validator  # type: ignore
+    _SETTINGS_CONFIG = {
+        "env_file": ".env", "env_file_encoding": "utf-8",
+        "case_sensitive": False, "extra": "ignore",
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -143,13 +151,11 @@ class Settings(BaseSettings):
     # ── Logging ───────────────────────────────────────────────────────────────
     log_level: str = "INFO"
     log_format: str = "json"
-    log_file: Optional[Path] = BASE_DIR / "logs" / "finance_agent.log"
+    log_file: Optional[Path] = BASE_DIR / "logs" / "overlyne.log"
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
-        extra = "ignore"
+    # Configuration Pydantic v2 : `model_config` remplace `class Config`,
+    # déprécié depuis Pydantic 2.0 et supprimé en v3.
+    model_config = _SETTINGS_CONFIG
 
 
 @lru_cache(maxsize=1)

@@ -15,7 +15,8 @@ class FleetState(TypedDict, total=False):
     question: str
     filters: Dict[str, Any]
     kpis: Dict[str, Any]                                   # données internes (ERP)
-    intel: Dict[str, Any]                                  # signaux externes (veille)
+    modeles: Dict[str, Any]                                # sorties des modèles (passerelle du registre)
     findings: Annotated[List[Dict[str, Any]], operator.add]   # constats des agents
     trace: Annotated[List[Dict[str, Any]], operator.add]      # journal d'exécution
+    fiabilite: Dict[str, Any]                              # volet fiabilité (hors arbitrage)
     briefing: str                                         # synthèse finale (rédacteur)

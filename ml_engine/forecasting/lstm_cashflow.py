@@ -63,8 +63,38 @@ def _load_series(data_dir: Path | None = None) -> Tuple[List[str], np.ndarray]:
         vals.append(v); counts.append(n)
     arr = np.array(vals, dtype=float)
     cnt = np.array(counts, dtype=float)
-    # interpolation des trous internes
+
+    # ── TRONCATURE AVANT TOUTE INTERPOLATION ────────────────────────────────
+    # L'ERP ne couvre pas 2019 ni 2020 : 27 mois sont absents (bascule d'outil,
+    # cf. scripts/audit_trou_temporel.py). Interpoler cette plage traçait une
+    # DROITE de 447 k DT (2018) à 47,6 M DT (2021) — 27 points inventés, soit un
+    # quart de la série, dont une fausse rampe de croissance.
+    #
+    # Conséquence mesurable : Holt-Winters et le LSTM estiment tendance et
+    # saisonnalité sur tout l'historique, donc sur cette rampe fictive, alors
+    # que le naïf saisonnier ne regarde que m−12 et l'ignore. Une partie de la
+    # « victoire des baselines » venait de là, pas de la nature de la série.
+    #
+    # On ne conserve donc que le segment postérieur au dernier trou LONG. Les
+    # trous courts (1 ou 2 mois) restent interpolables : ils relèvent du bruit
+    # de facturation, pas d'une absence de données.
+    TROU_LONG = 3
     nans = np.isnan(arr)
+    if nans.any():
+        debut = 0
+        longueur = 0
+        for i, absent in enumerate(nans):
+            if absent:
+                longueur += 1
+            else:
+                if longueur >= TROU_LONG:
+                    debut = i          # on repart juste après le trou long
+                longueur = 0
+        if debut:
+            periods, arr, cnt = periods[debut:], arr[debut:], cnt[debut:]
+            nans = np.isnan(arr)
+
+    # Trous courts restants : interpolation légitime.
     if nans.any():
         arr[nans] = np.interp(np.flatnonzero(nans), np.flatnonzero(~nans), arr[~nans])
 
@@ -228,6 +258,10 @@ def forecast_cashflow(horizon: int = 6, data_dir: Path | None = None,
         "forecast": forecast,
         "encaissement_prevu_total": round(total_fc, 0),
         "mape_pct": round(mape, 1),
+        "mape_note": ("résidu d'ajustement 1-pas (in-sample, optimiste) — "
+                      "l'évaluation OUT-OF-SAMPLE de référence (walk-forward vs "
+                      "baselines naïves) est dans reports/cashflow_forecast_metrics.json : "
+                      "python -m ml_engine.forecasting.evaluate_cashflow"),
         "torch": _TORCH,
     }
 

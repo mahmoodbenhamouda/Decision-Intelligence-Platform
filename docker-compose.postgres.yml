@@ -1,0 +1,24 @@
+# PostgreSQL pour la base d'authentification (option Docker).
+# Lancement :  docker compose -f docker-compose.postgres.yml up -d
+# Puis dans .env :
+#   AUTH_DATABASE_URL=postgresql+psycopg2://finance:finance_pfe_2026@localhost:5432/finance_auth
+services:
+  auth-db:
+    image: postgres:16
+    container_name: finance_auth_db
+    environment:
+      POSTGRES_DB: finance_auth
+      POSTGRES_USER: finance
+      POSTGRES_PASSWORD: finance_pfe_2026   # à changer hors démo
+    ports:
+      - "5432:5432"
+    volumes:
+      - auth_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finance -d finance_auth"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  auth_pgdata:

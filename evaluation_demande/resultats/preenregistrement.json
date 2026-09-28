@@ -1,0 +1,20 @@
+{
+ "horodatage_utc": "2026-09-26T19:28:58+00:00",
+ "candidat_retenu": "mediane_12",
+ "regle_de_selection": "Un candidat remplace la médiane 12 mois si et seulement si, sur la période de développement (24 origines antérieures au test) : (a) sa WAPE à 1 mois est inférieure à celle de la médiane dans CHACUNE des deux sous-périodes (pré-validation et validation) ; (b) l'IC95 bootstrap par référence de son gain sur les 24 origines réunies est entièrement positif. Parmi les candidats qui passent, celui de plus faible WAPE sur les 24 origines. Sinon : la médiane reste.",
+ "regle_de_deploiement_plateforme": "+2.0 pts de WAPE à 1 mois sur le test et IC95 > 0",
+ "sha256_script": "5af6b357d665eb6c9bafaab13144a73f9d543371d31a65cddca32d324a74cbf0",
+ "sha256_resultats_dev": "769ab969c4a9df6377bd2069d8c01b9235718d041ec4f527e3289c91c86e3d59",
+ "reglages_lightgbm": {
+  "perte": "l1",
+  "normaliser": true,
+  "learning_rate": 0.025493358257169668,
+  "n_estimators": 450,
+  "num_leaves": 20,
+  "min_child_samples": 13,
+  "subsample": 0.7033815530200243,
+  "colsample_bytree": 0.9536817594211415,
+  "reg_lambda": 6.643439211977513
+ },
+ "avertissement": "Le test de 18 mois a déjà été lu une fois (comparaison publiée) et le diagnostic l'a décomposé : ce qui suit est une CONFIRMATION, pas une preuve indépendante. La preuve viendra des mois postérieurs à mars 2026."
+}

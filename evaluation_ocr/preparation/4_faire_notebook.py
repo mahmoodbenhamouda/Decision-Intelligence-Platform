@@ -125,23 +125,45 @@ EPOQUES, LR, LOT, POIDS_O, GRAINE = 30, 3e-5, 2, 0.3, 42
 def collate(b):
     return {k: torch.stack([x[k] for x in b]) for k in b[0] if k != "word_ids"}
 
-def entrainer(pages_train, verbeux=False, pages_val=None):
+def _charger(pages, melange):
+    fen = [f for p in (pages or []) for f in ENC[p]]
+    return DataLoader(fen, batch_size=LOT, shuffle=melange, collate_fn=collate) if fen else None
+
+@torch.no_grad()
+def _perte_moyenne(modele, dl, perte):
+    if dl is None:
+        return None
+    modele.eval(); s = 0.0
+    for b in dl:
+        b = {k: v.to(DEV) for k, v in b.items()}
+        lab = b.pop("labels")
+        with torch.autocast("cuda", dtype=torch.float16):
+            lg = modele(**b).logits
+            s += perte(lg.view(-1, lg.shape[-1]), lab.view(-1)).item()
+    return s / len(dl)
+
+def entrainer(pages_train, verbeux=False, pages_val=None, epoques=None,
+              pages_arret=None, patience=3):
+    # pages_val   : pli de TEST. Observé seulement, aucune décision n'en dépend.
+    # pages_arret : validation INTERNE, prélevée sur l'entraînement. Si elle est
+    #               fournie, on s'arrête après `patience` époques sans progrès
+    #               et on restaure les poids de la meilleure époque.
+    ep_max = epoques or EPOQUES
     random.seed(GRAINE); np.random.seed(GRAINE); torch.manual_seed(GRAINE)
     modele = LayoutLMv3ForTokenClassification.from_pretrained(
         MODELE, num_labels=len(ETIQUETTES),
         id2label=dict(enumerate(ETIQUETTES)), label2id=L2I).to(DEV)
-    fen = [f for p in pages_train for f in ENC[p]]
-    dl = DataLoader(fen, batch_size=LOT, shuffle=True, collate_fn=collate)
-    fen_val = [f for q in (pages_val or []) for f in ENC[q]]
-    dl_val = DataLoader(fen_val, batch_size=LOT, shuffle=False, collate_fn=collate) if fen_val else None
+    dl = _charger(pages_train, True)
+    dl_val = _charger(pages_val, False)
+    dl_arret = _charger(pages_arret, False)
     opt = torch.optim.AdamW(modele.parameters(), lr=LR, weight_decay=0.01)
-    pas = EPOQUES * len(dl)
+    pas = ep_max * len(dl)
     sch = get_linear_schedule_with_warmup(opt, int(0.1 * pas), pas)
     poids = torch.ones(len(ETIQUETTES), device=DEV); poids[0] = POIDS_O
     perte = torch.nn.CrossEntropyLoss(weight=poids, ignore_index=-100)
     scaler = torch.cuda.amp.GradScaler()
-    hist = []
-    for ep in range(EPOQUES):
+    hist, meilleure, meilleure_ep, sans_progres, meilleurs_poids = [], float("inf"), None, 0, None
+    for ep in range(ep_max):
         modele.train()
         tot = 0
         for b in dl:
@@ -154,23 +176,30 @@ def entrainer(pages_train, verbeux=False, pages_val=None):
             scaler.unscale_(opt); torch.nn.utils.clip_grad_norm_(modele.parameters(), 1.0)
             scaler.step(opt); scaler.update(); sch.step(); tot += l.item()
         pt = tot / len(dl)
-        pv = None
-        if dl_val is not None:                      # perte sur le pli de test
-            modele.eval()
-            s = 0.0
-            with torch.no_grad():
-                for b in dl_val:
-                    b = {k: v.to(DEV) for k, v in b.items()}
-                    lab = b.pop("labels")
-                    with torch.autocast("cuda", dtype=torch.float16):
-                        lg = modele(**b).logits
-                        s += perte(lg.view(-1, lg.shape[-1]), lab.view(-1)).item()
-            pv = s / len(dl_val)
-        hist.append({"epoque": ep + 1, "train": pt, "val": pv})
-        if verbeux and (ep % 5 == 4 or ep == EPOQUES - 1):
-            print(f"  époque {ep+1}/{EPOQUES}  perte {pt:.4f}"
-                  + (f"   validation {pv:.4f}" if pv is not None else ""))
+        pv = _perte_moyenne(modele, dl_val, perte)      # pli de test : observation
+        pa = _perte_moyenne(modele, dl_arret, perte)    # validation interne : décision
+        hist.append({"epoque": ep + 1, "train": pt, "val": pv, "arret": pa})
+        if verbeux and (ep % 5 == 4 or ep == ep_max - 1):
+            print(f"  époque {ep+1}/{ep_max}  perte {pt:.4f}"
+                  + (f"   test {pv:.4f}" if pv is not None else "")
+                  + (f"   val. interne {pa:.4f}" if pa is not None else ""))
+        if pa is not None:
+            if pa < meilleure - 1e-4:
+                meilleure, meilleure_ep, sans_progres = pa, ep + 1, 0
+                meilleurs_poids = {k: v.detach().to("cpu", copy=True)
+                                   for k, v in modele.state_dict().items()}
+            else:
+                sans_progres += 1
+                if sans_progres >= patience:
+                    if verbeux:
+                        print(f"  arrêt précoce après l'époque {ep+1}"
+                              f" — meilleure : {meilleure_ep} ({meilleure:.4f})")
+                    break
+    if meilleurs_poids is not None:
+        modele.load_state_dict(meilleurs_poids)
     modele._historique = hist
+    modele._arret = {"epoques_faites": len(hist), "meilleure_epoque": meilleure_ep or len(hist),
+                     "meilleure_perte": None if meilleure_ep is None else round(meilleure, 4)}
     return modele
 
 @torch.no_grad()
@@ -186,7 +215,9 @@ def predire_page(modele, page):
                 deja.add(w); somme[w] += pr[t]; vu[w] += 1
     pr = somme / np.maximum(vu, 1)[:, None]
     lab = [ETIQUETTES[i] for i in pr.argmax(1)]
-    return {"mots": page["mots"], "etiquettes": lab, "probas": pr.max(1).tolist()}
+    # les boîtes servent au recollage du chiffre des milliers dans decoder()
+    return {"mots": page["mots"], "etiquettes": lab, "probas": pr.max(1).tolist(),
+            "boites": page["boites"]}
 
 def predire_doc(modele, doc):
     return decoder([predire_page(modele, p) for p in PAGES if p["doc"] == doc])
@@ -201,22 +232,87 @@ Compter ~8 min par pli sur T4.
 code("""
 from sklearn.model_selection import GroupKFold
 GROUPE = "doc"          # ou "fournisseur"
-groupes = [d if GROUPE == "doc" else (VERITE[d]["fournisseur"] or d).split()[0].lower() for d in DOCS]
-PRED, PRED_PAGES, HISTO = {}, {}, []
-for k, (itr, ite) in enumerate(GroupKFold(n_splits=5).split(DOCS, groups=groupes), 1):
-    dtr = {DOCS[i] for i in itr}; dte = [DOCS[i] for i in ite]
-    print(f"Pli {k}/5 : {len(dtr)} factures d'entraînement, {len(dte)} de test")
-    modele = entrainer([p["page"] for p in PAGES if p["doc"] in dtr], verbeux=True,
-                       pages_val=[p["page"] for p in PAGES if p["doc"] in set(dte)])
-    HISTO.append(modele._historique)
-    for d in dte:
-        pages_d = [p for p in PAGES if p["doc"] == d]
-        sorties = [predire_page(modele, p) for p in pages_d]
-        for p, s in zip(pages_d, sorties):
-            PRED_PAGES[p["page"]] = s      # etiquettes BIO par mot, pour le F1
-        PRED[d] = decoder(sorties)
-    del modele; torch.cuda.empty_cache()
+cle_groupe = lambda d: d if GROUPE == "doc" else (VERITE[d]["fournisseur"] or d).split()[0].lower()
+
+def croiser(epoques=None, part_arret=0.0, patience=3, graine_arret=7,
+            verbeux=True, etiquette=""):
+    # Validation croisée à 5 plis. `part_arret` > 0 prélève, DANS l'entraînement de
+    # chaque pli, une validation interne pour l'arrêt précoce ; elle n'est jamais
+    # prise dans le pli de test — choisir le moment d'arrêt sur les données qui
+    # servent à annoncer le résultat serait une fuite.
+    groupes = [cle_groupe(d) for d in DOCS]
+    pred, pred_pages, histo, journal = {}, {}, [], []
+    pg = lambda ds: [p["page"] for p in PAGES if p["doc"] in set(ds)]
+    for k, (itr, ite) in enumerate(GroupKFold(n_splits=5).split(DOCS, groups=groupes), 1):
+        dtr = [DOCS[i] for i in itr]; dte = [DOCS[i] for i in ite]; darr = []
+        if part_arret:                       # découpe interne, par groupe elle aussi
+            cles = sorted({cle_groupe(d) for d in dtr})
+            random.Random(graine_arret + k).shuffle(cles)
+            pris, cible, n = set(), max(1, round(part_arret * len(dtr))), 0
+            for c in cles:
+                if n >= cible:
+                    break
+                pris.add(c); n += sum(cle_groupe(d) == c for d in dtr)
+            darr = [d for d in dtr if cle_groupe(d) in pris]
+            dtr = [d for d in dtr if cle_groupe(d) not in pris]
+        print(f"{etiquette}Pli {k}/5 : {len(dtr)} factures d'entraînement"
+              + (f", {len(darr)} de validation interne" if darr else "")
+              + f", {len(dte)} de test")
+        modele = entrainer(pg(dtr), verbeux=verbeux, pages_val=pg(dte),
+                           epoques=epoques, pages_arret=pg(darr) or None, patience=patience)
+        histo.append(modele._historique); journal.append(modele._arret)
+        for d in dte:
+            pages_d = [p for p in PAGES if p["doc"] == d]
+            sorties = [predire_page(modele, p) for p in pages_d]
+            for p, s in zip(pages_d, sorties):
+                pred_pages[p["page"]] = s      # etiquettes BIO par mot, pour le F1
+            pred[d] = decoder(sorties)
+        del modele; torch.cuda.empty_cache()
+    return pred, pred_pages, histo, journal
+
+PRED, PRED_PAGES, HISTO, JOURNAL = croiser()      # variante A : 30 époques
 json.dump(PRED, open(f"predictions_cv_{GROUPE}.json", "w"), ensure_ascii=False, indent=1, default=str)
+""")
+
+md("""
+### Mesurer un correctif de décodage sans réentraîner
+
+L'entraînement sur GPU **n'est pas reproductible au bit près** : deux exécutions
+de la même configuration ne donnent pas les mêmes poids, et l'écart observé sur
+l'exactitude atteint 1 point. Comparer deux exécutions ne dit donc rien d'un
+correctif qui vaut moins que ça.
+
+La bonne méthode, pour tout ce qui touche au **décodage** (et non au modèle) :
+redécoder les **mêmes prédictions** deux fois. C'est exact, instantané et gratuit.
+On enregistre aussi les étiquettes par mot, pour pouvoir refaire cette mesure
+plus tard sans repasser sur le GPU.
+""")
+code("""
+json.dump(PRED_PAGES, open(f"predictions_mots_{GROUPE}.json", "w"),
+          ensure_ascii=False, default=str)
+
+def exactitude(pred):
+    e = evaluer(pred, VERITE)
+    j = sum(e[k]["justes"] for k in CHAMPS_EVAL if k in e)
+    n = sum(e[k]["n"] for k in CHAMPS_EVAL if k in e)
+    return 100 * j / n
+
+# meme predictions, mais boites retirees => recoller_milliers ne peut pas agir
+SANS = {d: decoder([{**PRED_PAGES[q["page"]], "boites": None}
+                    for q in PAGES if q["doc"] == d and q["page"] in PRED_PAGES])
+        for d in DOCS}
+a, b = exactitude(PRED), exactitude(SANS)
+print(f"avec recollage des milliers : {a:.2f} %")
+print(f"sans recollage des milliers : {b:.2f} %")
+print(f"ecart : {a - b:+.2f} point(s) - sur les memes predictions, donc exact")
+print()
+for d in DOCS:
+    for k in CHAMPS_EVAL:
+        if PRED[d].get(k) != SANS[d].get(k):
+            v = VERITE[d].get(k)
+            ok = lambda x: "OK " if juste(k, x, v, VERITE[d]["devise"]) else "faux"
+            print(f"  {d:>5} {k:<12} sans={SANS[d].get(k)} ({ok(SANS[d].get(k))}) "
+                  f"avec={PRED[d].get(k)} ({ok(PRED[d].get(k))})  verite={v}")
 """)
 
 md("""
@@ -408,14 +504,91 @@ DES.head(40)
 """)
 
 md("""
-## 11. Modèle final (toutes les factures) → Google Drive
-À copier ensuite dans le projet : `models/layoutlmv3_factures/`
-(la plateforme l'utilise automatiquement s'il est présent).
+## 11. Combien d'époques ? (A : 30, B : 15, C : arrêt précoce)
+
+La perte de validation du §6 touche son minimum vers l'époque 15 puis remonte :
+au-delà, le modèle apprend par cœur. Trois façons d'en tenir compte, comparées
+sur la **même validation croisée**, donc directement comparables :
+
+* **A — 30 époques** : la référence actuelle, déjà calculée au §5. Le taux
+  d'apprentissage décroît jusqu'à zéro à l'époque 30.
+* **B — 15 époques** : on coupe, et le taux d'apprentissage décroît jusqu'à zéro
+  à l'époque 15. Deux fois moins de calcul.
+* **C — arrêt précoce** : 30 époques au planning, mais on surveille une validation
+  **interne** (≈ 15 % des factures d'entraînement de chaque pli) et on s'arrête
+  après 3 époques sans progrès, en restaurant les poids de la meilleure époque.
+
+B et C ne sont pas la même chose, même si toutes deux s'arrêtent vers 15 : B
+termine le recuit de son taux d'apprentissage, C s'arrête alors qu'il vaut encore
+la moitié. Et C paie son honnêteté — il entraîne sur une dizaine de factures de
+moins, celles mises de côté pour décider de l'arrêt.
+
+**Pourquoi ne pas s'arrêter sur la courbe du §6 ?** Parce qu'elle est mesurée sur
+le pli de test. Choisir le moment d'arrêt en la regardant reviendrait à régler le
+modèle sur les données qui servent ensuite à annoncer le résultat : le chiffre
+publié serait optimiste. C'est exactement ce que la validation interne évite, et
+c'est aussi pourquoi C peut très bien finir **en dessous** de B.
+
+Compter environ 20 min pour B et 30 min pour C sur T4 (A est déjà calculé).
+""")
+code("""
+VARIANTES = {"A \u2014 30 \u00e9poques": (PRED, PRED_PAGES, JOURNAL)}
+
+pr, pp, _, jr = croiser(epoques=15, verbeux=False, etiquette="B ")
+VARIANTES["B \u2014 15 \u00e9poques"] = (pr, pp, jr)
+
+pr, pp, _, jr = croiser(part_arret=0.15, patience=3, verbeux=False, etiquette="C ")
+VARIANTES["C \u2014 arr\u00eat pr\u00e9coce"] = (pr, pp, jr)
+""")
+
+md("### Le verdict, sur les mêmes 89 factures")
+code("""
+def resume(pr, pp, jrn):
+    e = evaluer(pr, VERITE)
+    justes = sum(e[k]['justes'] for k in CHAMPS_EVAL if k in e)
+    total = sum(e[k]['n'] for k in CHAMPS_EVAL if k in e)
+    V, P = set(), set()
+    for q in PAGES:
+        if q['page'] in pp:
+            V |= entites(q['etiquettes'], q['page'])
+            P |= entites(pp[q['page']]['etiquettes'], q['page'])
+    _, _, f1 = prf(V, P)
+    net = lambda ds: sum(juste('net_a_payer', pr[d].get('net_a_payer'),
+                               VERITE[d]['net_a_payer'], VERITE[d]['devise']) for d in ds)
+    coh = [d for d in DOCS if pr[d].get('coherent')]
+    return {'exactitude par champ %': round(100 * justes / total, 1),
+            'F1 micro': round(f1, 3),
+            'net \u00e0 payer juste': f'{net(DOCS)}/{len(DOCS)}',
+            'facture enti\u00e8re juste': f'{sum(entiere(pr, d) for d in DOCS)}/{len(DOCS)}',
+            'coh\u00e9rentes (automatisables)': f'{len(coh)}/{len(DOCS)}',
+            'dont net juste': f'{net(coh)}/{len(coh)}' if coh else '\u2014',
+            '\u00e9poques faites par pli': '/'.join(str(x['epoques_faites']) for x in jrn)}
+
+COMPARAISON = pd.DataFrame({n: resume(*v) for n, v in VARIANTES.items()})
+COMPARAISON
+""")
+
+md("""Et, pour la variante C, où l'arrêt s'est déclenché pli par pli — si les cinq
+plis s'arrêtent à des époques très différentes, c'est que le minimum est plat et
+que le nombre d'époques importe peu.""")
+code("""
+pd.DataFrame(VARIANTES["C \u2014 arr\u00eat pr\u00e9coce"][2],
+             index=[f"pli {i}" for i in range(1, 6)])
+""")
+
+md("""
+## 12. Modèle final (toutes les factures) → Google Drive
+Fixez d'abord `EPOQUES_RETENUES` d'après le tableau du §11 : ce modèle-là est
+celui qui partira en production, il doit être entraîné comme la variante retenue.
+À copier ensuite dans le projet : `models/layoutlmv3_factures/` — la plateforme
+ne le sert que si `reports/layoutlmv3_metrics.json` l'autorise (registre des
+modèles) ; pensez à y reporter les chiffres de ce carnet.
 """)
 code("""
 from google.colab import drive
 drive.mount("/content/drive")
-final = entrainer([p["page"] for p in PAGES], verbeux=True)
+EPOQUES_RETENUES = 30      # ← à fixer d'après le tableau du §11
+final = entrainer([p["page"] for p in PAGES], verbeux=True, epoques=EPOQUES_RETENUES)
 DEST = "/content/drive/MyDrive/overlyne_layoutlmv3/layoutlmv3_factures"
 final.save_pretrained(DEST); processor.save_pretrained(DEST)
 for f in [f"predictions_cv_{GROUPE}.json", f"desaccords_{GROUPE}.csv"]:

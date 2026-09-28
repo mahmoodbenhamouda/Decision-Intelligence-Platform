@@ -41,9 +41,11 @@ torch>=2.3           # LSTM / GRU / N-BEATS
 # GPU : pip install torch --index-url https://download.pytorch.org/whl/cu121
 
 # Ã¢â€â‚¬Ã¢â€â‚¬ Copilote Upload Ã¢â‚¬â€ Traitement fichiers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-# OCR images (PNG/JPG) via Tesseract
+# OCR images (PNG/JPG) via Tesseract — service transversal ml_engine/ocr
 pytesseract>=0.3.10    # wrapper Python pour Tesseract OCR
 Pillow>=10.0           # manipulation d'images
+pypdfium2>=4.0         # rendu des PDF scannés pour l'OCR (cf. docs/OCR.md)
+opencv-python-headless>=4.9  # binarisation Otsu (optionnel, améliore l'OCR)
 # Note : Tesseract doit ÃƒÂªtre installÃƒÂ© sÃƒÂ©parÃƒÂ©ment (Windows) :
 #   https://github.com/UB-Mannheim/tesseract/wiki
 #   Puis ajouter au PATH : C:\Program Files\Tesseract-OCR
@@ -68,3 +70,13 @@ faiss-cpu>=1.8               # index vectoriel (repli TF-IDF via scikit-learn si
 langgraph>=0.2               # graphe d'agents (repli sequentiel si absent)
 # Upload FastAPI (multipart/form-data)
 python-multipart>=0.0.9
+
+# Authentification & RBAC (base relationnelle séparée de l'entrepôt DuckDB)
+sqlalchemy>=2.0            # ORM — schéma portable PostgreSQL/SQLite
+psycopg2-binary>=2.9       # driver PostgreSQL (production)
+bcrypt>=4.0                # hachage bcrypt salé des mots de passe (lib directe, sans passlib)
+PyJWT>=2.8                 # jetons JWT signés à expiration
+email-validator>=2.0       # validation des emails (pydantic EmailStr)
+
+# Conseil reproductibilité : figer l'environnement exact de soutenance avec
+#   pip freeze > requirements.lock.txt

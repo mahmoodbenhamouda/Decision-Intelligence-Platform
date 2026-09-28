@@ -103,7 +103,42 @@ def compute_supply_demand(filters: Optional[Dict[str, Any]] = None,
     q = np.array([float(r[1] or 0) for r in rows])
     out["demande_mensuelle"] = [{"period": m, "qte": float(v)} for m, v in zip(months, q)]
 
-    if len(q) >= 6:
+    # ── Prévision de demande ────────────────────────────────────────────────
+    # Le module `demande_hybride` est préféré quand il est disponible : il élit sa
+    # méthode sur le SEUL jeu d'entraînement, borne l'horizon à ce que les données
+    # soutiennent, et accompagne chaque prévision d'un intervalle construit sur
+    # les écarts réellement constatés. Le backtest local ci-dessous reste en repli
+    # — il choisit sa méthode en regardant toute la série, ce qui flatte la MAPE
+    # annoncée.
+    fait = False
+    try:
+        from ml_engine.forecasting import demande_hybride as dh
+
+        mois_h, serie = dh.charger_serie()
+        if len(serie) >= dh.MIN_TRAIN:
+            ev = dh.evaluer(mois_h, serie)
+            if ev.get("applicable"):
+                methode = ev["socle_fixe_retenu"]
+                debut_test = max(dh.MIN_TRAIN, len(serie) - dh.N_TEST)
+                quantiles = dh._quantiles_erreur(serie, mois_h, methode, debut_test)
+                prev = dh.prevoir(mois_h, serie, h_max=3,
+                                  socle_fixe=methode, quantiles=quantiles)
+                out["demande_prevision"] = [
+                    {"period": p["period"], "qte": p["qte"],
+                     "bas": (p.get("intervalle_80") or {}).get("bas"),
+                     "haut": (p.get("intervalle_80") or {}).get("haut"),
+                     "fiabilite": p.get("fiabilite")}
+                    for p in prev
+                ]
+                out["demande_mape"] = ev["mape_socle_seul_pct"]
+                out["demande_methode"] = methode
+                out["demande_ic95"] = ev.get("ic95_hybride")
+                out["demande_source"] = "hybride"
+                fait = True
+    except Exception:
+        fait = False
+
+    if not fait and len(q) >= 6:
         bt = _backtest(q)
         best = min(bt, key=bt.get) if bt else "saisonnier"
         fc = _forecast(q, best, h=3)
@@ -121,7 +156,8 @@ def compute_supply_demand(filters: Optional[Dict[str, Any]] = None,
         out["demande_methode"] = best
         out["demande_mape"] = bt.get(best)
         out["demande_prevision"] = [{"period": p, "qte": v} for p, v in zip(fut, fc)]
-    else:
+        out["demande_source"] = "backtest_local"
+    elif not fait:
         out["demande_prevision"] = []
         out["demande_mape"] = None
 
@@ -148,6 +184,42 @@ def compute_supply_demand(filters: Optional[Dict[str, Any]] = None,
     return out
 
 
+def save_metrics_report(d: Optional[Dict[str, Any]] = None) -> Path:
+    """Écrit reports/demand_forecast_metrics.json (méthodologie + backtest MAPE).
+
+    Reproductible : `python -m ml_engine.analytics.demand_engine` (déterministe,
+    aucun aléa — le backtest est un walk-forward exact sur l'historique).
+    """
+    import json
+    d = d or compute_supply_demand()
+    reports = Path(__file__).resolve().parents[2] / "reports"
+    reports.mkdir(parents=True, exist_ok=True)
+    metrics = {
+        "cible": "volume mensuel d'articles vendus (proxy de la demande, sans stock ERP)",
+        "validation": "backtest walk-forward sur les 12 derniers mois (MAPE par méthode)",
+        "methodes_testees": _METHODS,
+        "backtest_mape_par_methode": d.get("demande_backtest_mape"),
+        "methode_retenue": d.get("demande_methode"),
+        "mape_retenue_pct": d.get("demande_mape"),
+        "n_mois_historique": len(d.get("demande_mensuelle") or []),
+        "prevision_3_mois": d.get("demande_prevision"),
+        "dependance_fournisseur": {
+            "hhi": d.get("fournisseurs_hhi"),
+            "top1_pct": d.get("fournisseur_top1_pct"),
+            "top3_pct": d.get("fournisseurs_top3_pct"),
+            "niveau": d.get("dependance_fournisseur"),
+        },
+        "limites": (
+            "La demande est mesurée en volume d'articles facturés (nbr_article), "
+            "faute de données de stock/mouvements produit dans l'ERP exporté. "
+            "Ce proxy capte la demande servie, pas la demande latente (ruptures invisibles)."
+        ),
+    }
+    p = reports / "demand_forecast_metrics.json"
+    p.write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
+    return p
+
+
 # ── CLI ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys
@@ -165,3 +237,4 @@ if __name__ == "__main__":
           f"dépendance {d['dependance_fournisseur']}")
     print(f"Top 1 : {d['fournisseurs_top'][0]['fournisseur']} = {d['fournisseur_top1_pct']}% des achats")
     print(f"Top 3 = {d['fournisseurs_top3_pct']}% des achats")
+    print(f"Métriques écrites : {save_metrics_report(d)}")

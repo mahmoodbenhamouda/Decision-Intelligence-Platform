@@ -1,0 +1,491 @@
+{
+ "ecart_validation_test": {
+  "validation": {
+   "wape_mediane_12": 31.99,
+   "wape_lightgbm": 31.46,
+   "plafond_oracle_voisinage_pct": 33.95,
+   "plafond_oracle_niveau_annuel_pct": 32.53,
+   "plafond_oracle_constante_par_reference_pct": 29.15,
+   "biais_mediane_pct": -8.93,
+   "volatilite_ponderee": 0.351,
+   "part_volume_en_pics_pct": 11.0,
+   "part_volume_refs_hopitaux_publics_pct": 22.5,
+   "wape_mediane_refs_publiques": 48.39,
+   "wape_mediane_refs_non_publiques": 27.24,
+   "croissance_volume_vs_niveau_12m_pct": 2.2,
+   "observations": 4422
+  },
+  "test": {
+   "wape_mediane_12": 38.31,
+   "wape_lightgbm": 39.87,
+   "plafond_oracle_voisinage_pct": 38.51,
+   "plafond_oracle_niveau_annuel_pct": 37.56,
+   "plafond_oracle_constante_par_reference_pct": 34.99,
+   "biais_mediane_pct": -13.15,
+   "volatilite_ponderee": 0.441,
+   "part_volume_en_pics_pct": 18.0,
+   "part_volume_refs_hopitaux_publics_pct": 20.0,
+   "wape_mediane_refs_publiques": 63.81,
+   "wape_mediane_refs_non_publiques": 31.92,
+   "croissance_volume_vs_niveau_12m_pct": 4.4,
+   "observations": 6792
+  },
+  "lecture": {
+   "degradation_mediane_pts": 6.32,
+   "degradation_lightgbm_pts": 8.41,
+   "degradation_plafond_oracle_pts": 4.56,
+   "optimisme_de_selection_estime_pts": 2.09
+  }
+ },
+ "decomposition_test": {
+  "wape": {
+   "mediane_12": 38.31,
+   "lightgbm": 39.87
+  },
+  "mae": {
+   "mediane_12": 8.659,
+   "lightgbm": 9.013
+  },
+  "biais_pct": {
+   "mediane_12": -13.15,
+   "lightgbm": -10.21
+  },
+  "par_mois": {
+   "2024-10-01": {
+    "y": 9649.0,
+    "wape_mediane": 37.6,
+    "wape_lightgbm": 34.1,
+    "part_erreur_mediane_pct": 6.2,
+    "part_erreur_lightgbm_pct": 5.4,
+    "biais_mediane_pct": -24.0,
+    "biais_lightgbm_pct": -17.2
+   },
+   "2024-11-01": {
+    "y": 9073.0,
+    "wape_mediane": 33.1,
+    "wape_lightgbm": 32.4,
+    "part_erreur_mediane_pct": 5.1,
+    "part_erreur_lightgbm_pct": 4.8,
+    "biais_mediane_pct": -19.1,
+    "biais_lightgbm_pct": -8.4
+   },
+   "2024-12-01": {
+    "y": 8734.0,
+    "wape_mediane": 31.4,
+    "wape_lightgbm": 31.9,
+    "part_erreur_mediane_pct": 4.7,
+    "part_erreur_lightgbm_pct": 4.5,
+    "biais_mediane_pct": -16.0,
+    "biais_lightgbm_pct": -3.0
+   },
+   "2025-01-01": {
+    "y": 7622.0,
+    "wape_mediane": 28.7,
+    "wape_lightgbm": 28.4,
+    "part_erreur_mediane_pct": 3.7,
+    "part_erreur_lightgbm_pct": 3.5,
+    "biais_mediane_pct": -2.8,
+    "biais_lightgbm_pct": -18.0
+   },
+   "2025-02-01": {
+    "y": 7499.0,
+    "wape_mediane": 29.7,
+    "wape_lightgbm": 32.2,
+    "part_erreur_mediane_pct": 3.8,
+    "part_erreur_lightgbm_pct": 3.9,
+    "biais_mediane_pct": -0.6,
+    "biais_lightgbm_pct": -13.5
+   },
+   "2025-03-01": {
+    "y": 7028.0,
+    "wape_mediane": 41.7,
+    "wape_lightgbm": 39.6,
+    "part_erreur_mediane_pct": 5.0,
+    "part_erreur_lightgbm_pct": 4.5,
+    "biais_mediane_pct": 6.0,
+    "biais_lightgbm_pct": -0.7
+   },
+   "2025-04-01": {
+    "y": 9132.0,
+    "wape_mediane": 33.1,
+    "wape_lightgbm": 36.9,
+    "part_erreur_mediane_pct": 5.1,
+    "part_erreur_lightgbm_pct": 5.5,
+    "biais_mediane_pct": -18.3,
+    "biais_lightgbm_pct": -26.8
+   },
+   "2025-05-01": {
+    "y": 8263.0,
+    "wape_mediane": 30.2,
+    "wape_lightgbm": 34.1,
+    "part_erreur_mediane_pct": 4.2,
+    "part_erreur_lightgbm_pct": 4.6,
+    "biais_mediane_pct": -8.3,
+    "biais_lightgbm_pct": -14.6
+   },
+   "2025-06-01": {
+    "y": 7100.0,
+    "wape_mediane": 36.2,
+    "wape_lightgbm": 31.5,
+    "part_erreur_mediane_pct": 4.4,
+    "part_erreur_lightgbm_pct": 3.7,
+    "biais_mediane_pct": 8.5,
+    "biais_lightgbm_pct": -4.3
+   },
+   "2025-07-01": {
+    "y": 6440.0,
+    "wape_mediane": 40.6,
+    "wape_lightgbm": 35.6,
+    "part_erreur_mediane_pct": 4.5,
+    "part_erreur_lightgbm_pct": 3.7,
+    "biais_mediane_pct": 18.1,
+    "biais_lightgbm_pct": 12.2
+   },
+   "2025-08-01": {
+    "y": 6330.0,
+    "wape_mediane": 36.6,
+    "wape_lightgbm": 40.6,
+    "part_erreur_mediane_pct": 3.9,
+    "part_erreur_lightgbm_pct": 4.2,
+    "biais_mediane_pct": 17.2,
+    "biais_lightgbm_pct": 25.4
+   },
+   "2025-09-01": {
+    "y": 7376.0,
+    "wape_mediane": 36.4,
+    "wape_lightgbm": 39.3,
+    "part_erreur_mediane_pct": 4.6,
+    "part_erreur_lightgbm_pct": 4.7,
+    "biais_mediane_pct": -0.5,
+    "biais_lightgbm_pct": 9.0
+   },
+   "2025-10-01": {
+    "y": 6888.0,
+    "wape_mediane": 34.5,
+    "wape_lightgbm": 35.6,
+    "part_erreur_mediane_pct": 4.0,
+    "part_erreur_lightgbm_pct": 4.0,
+    "biais_mediane_pct": 6.9,
+    "biais_lightgbm_pct": 17.2
+   },
+   "2025-11-01": {
+    "y": 11237.0,
+    "wape_mediane": 42.9,
+    "wape_lightgbm": 41.7,
+    "part_erreur_mediane_pct": 8.2,
+    "part_erreur_lightgbm_pct": 7.7,
+    "biais_mediane_pct": -36.3,
+    "biais_lightgbm_pct": -28.1
+   },
+   "2025-12-01": {
+    "y": 18183.0,
+    "wape_mediane": 61.8,
+    "wape_lightgbm": 60.6,
+    "part_erreur_mediane_pct": 19.1,
+    "part_erreur_lightgbm_pct": 18.0,
+    "biais_mediane_pct": -60.1,
+    "biais_lightgbm_pct": -58.5
+   },
+   "2026-01-01": {
+    "y": 7629.0,
+    "wape_mediane": 32.5,
+    "wape_lightgbm": 62.8,
+    "part_erreur_mediane_pct": 4.2,
+    "part_erreur_lightgbm_pct": 7.8,
+    "biais_mediane_pct": -3.0,
+    "biais_lightgbm_pct": 50.5
+   },
+   "2026-02-01": {
+    "y": 7877.0,
+    "wape_mediane": 31.6,
+    "wape_lightgbm": 35.7,
+    "part_erreur_mediane_pct": 4.2,
+    "part_erreur_lightgbm_pct": 4.6,
+    "biais_mediane_pct": -6.5,
+    "biais_lightgbm_pct": -10.1
+   },
+   "2026-03-01": {
+    "y": 7481.0,
+    "wape_mediane": 39.9,
+    "wape_lightgbm": 38.9,
+    "part_erreur_mediane_pct": 5.1,
+    "part_erreur_lightgbm_pct": 4.7,
+    "biais_mediane_pct": -1.5,
+    "biais_lightgbm_pct": -1.3
+   }
+  },
+  "dix_mois_les_plus_couteux_lightgbm": [
+   "2025-12-01",
+   "2026-01-01",
+   "2025-11-01",
+   "2025-04-01",
+   "2024-10-01",
+   "2024-11-01",
+   "2026-03-01",
+   "2025-09-01",
+   "2025-05-01",
+   "2026-02-01"
+  ],
+  "dix_mois_les_plus_couteux_mediane": [
+   "2025-12-01",
+   "2025-11-01",
+   "2024-10-01",
+   "2025-04-01",
+   "2024-11-01",
+   "2026-03-01",
+   "2025-03-01",
+   "2024-12-01",
+   "2025-09-01",
+   "2025-07-01"
+  ],
+  "part_erreur_10_mois_lightgbm_pct": 67.8,
+  "mois_surestimes_lightgbm": [
+   "2025-07-01",
+   "2025-08-01",
+   "2025-09-01",
+   "2025-10-01",
+   "2026-01-01"
+  ],
+  "mois_sousestimes_lightgbm": [
+   "2024-10-01",
+   "2024-11-01",
+   "2025-01-01",
+   "2025-02-01",
+   "2025-04-01",
+   "2025-05-01",
+   "2025-11-01",
+   "2025-12-01",
+   "2026-02-01"
+  ],
+  "references_les_plus_couteuses": [
+   {
+    "reference": "43101",
+    "designation": "CHOCOLAT-POLYVITEX 20 BOITES",
+    "volume": 6177.0,
+    "part_erreur_lightgbm_pct": 5.2,
+    "part_erreur_mediane_pct": 5.0,
+    "hopital_public": true
+   },
+   {
+    "reference": "415386",
+    "designation": "VIDAS HIGH SENSITIVE TROPONIN I- 60T",
+    "volume": 7306.0,
+    "part_erreur_lightgbm_pct": 4.3,
+    "part_erreur_mediane_pct": 4.6,
+    "hopital_public": false
+   },
+   {
+    "reference": "43041",
+    "designation": "COLUMBIA+5% S MOUT",
+    "volume": 4337.0,
+    "part_erreur_lightgbm_pct": 3.9,
+    "part_erreur_mediane_pct": 3.6,
+    "hopital_public": true
+   },
+   {
+    "reference": "210126",
+    "designation": "DG GEL ABO/RH CARTE GROUPE",
+    "volume": 1849.0,
+    "part_erreur_lightgbm_pct": 2.5,
+    "part_erreur_mediane_pct": 2.4,
+    "hopital_public": true
+   },
+   {
+    "reference": "30400",
+    "designation": "VIDAS TSH 60 TESTS",
+    "volume": 9517.0,
+    "part_erreur_lightgbm_pct": 2.4,
+    "part_erreur_mediane_pct": 2.2,
+    "hopital_public": false
+   },
+   {
+    "reference": "43050",
+    "designation": "COLUMBIA + 5% SANG DE CHEVAL 20 BOITES",
+    "volume": 1498.0,
+    "part_erreur_lightgbm_pct": 2.3,
+    "part_erreur_mediane_pct": 2.4,
+    "hopital_public": true
+   },
+   {
+    "reference": "21341",
+    "designation": "GN TEST KIT VTK2 20 CARTES",
+    "volume": 2482.0,
+    "part_erreur_lightgbm_pct": 2.2,
+    "part_erreur_mediane_pct": 2.1,
+    "hopital_public": true
+   },
+   {
+    "reference": "RFIT-ASY-0143",
+    "designation": "PNEUMONIA PANEL PLUS",
+    "volume": 2204.0,
+    "part_erreur_lightgbm_pct": 2.0,
+    "part_erreur_mediane_pct": 1.8,
+    "hopital_public": false
+   },
+   {
+    "reference": "30202",
+    "designation": "VIDAS TOXO IGM 60 TESTS",
+    "volume": 2754.0,
+    "part_erreur_lightgbm_pct": 1.6,
+    "part_erreur_mediane_pct": 1.4,
+    "hopital_public": false
+   },
+   {
+    "reference": "413825",
+    "designation": "MUELLER HINTON GELOSE E 120MM",
+    "volume": 810.0,
+    "part_erreur_lightgbm_pct": 1.5,
+    "part_erreur_mediane_pct": 1.7,
+    "hopital_public": true
+   }
+  ],
+  "part_erreur_10_references_lightgbm_pct": 27.9,
+  "part_erreur_50_references_lightgbm_pct": 61.6,
+  "par_type_d_observation": {
+   "creux": {
+    "observations": 631,
+    "part_volume_pct": 2.8,
+    "part_erreur_mediane_pct": 10.6,
+    "part_erreur_lightgbm_pct": 11.9,
+    "surprevision_mediane_unites": 6108.0,
+    "surprevision_lightgbm_unites": 7198.0
+   },
+   "normal": {
+    "observations": 3655,
+    "part_volume_pct": 79.2,
+    "part_erreur_mediane_pct": 45.0,
+    "part_erreur_lightgbm_pct": 46.9,
+    "surprevision_mediane_unites": -9091.0,
+    "surprevision_lightgbm_unites": -6643.0
+   },
+   "pic": {
+    "observations": 598,
+    "part_volume_pct": 18.0,
+    "part_erreur_mediane_pct": 36.8,
+    "part_erreur_lightgbm_pct": 33.8,
+    "surprevision_mediane_unites": -21649.0,
+    "surprevision_lightgbm_unites": -20717.0
+   },
+   "zero": {
+    "observations": 1908,
+    "part_volume_pct": 0.0,
+    "part_erreur_mediane_pct": 7.6,
+    "part_erreur_lightgbm_pct": 7.3,
+    "surprevision_mediane_unites": 4441.0,
+    "surprevision_lightgbm_unites": 4488.0
+   }
+  },
+  "par_classe_de_demande": {
+   "erratique": {
+    "observations": 741,
+    "part_volume_pct": 9.8,
+    "part_erreur_mediane_pct": 19.1,
+    "part_erreur_lightgbm_pct": 20.2,
+    "surprevision_mediane_unites": -4798.0,
+    "surprevision_lightgbm_unites": -3076.0
+   },
+   "intermittente": {
+    "observations": 2216,
+    "part_volume_pct": 4.5,
+    "part_erreur_mediane_pct": 9.1,
+    "part_erreur_lightgbm_pct": 8.5,
+    "surprevision_mediane_unites": -3094.0,
+    "surprevision_lightgbm_unites": -2462.0
+   },
+   "irreguliere": {
+    "observations": 1139,
+    "part_volume_pct": 4.2,
+    "part_erreur_mediane_pct": 9.7,
+    "part_erreur_lightgbm_pct": 8.8,
+    "surprevision_mediane_unites": -3740.0,
+    "surprevision_lightgbm_unites": -2876.0
+   },
+   "reguliere": {
+    "observations": 2696,
+    "part_volume_pct": 81.6,
+    "part_erreur_mediane_pct": 62.2,
+    "part_erreur_lightgbm_pct": 62.5,
+    "surprevision_mediane_unites": -8558.0,
+    "surprevision_lightgbm_unites": -7259.0
+   }
+  },
+  "par_clientele": {
+   "autres": {
+    "observations": 5013,
+    "part_volume_pct": 80.0,
+    "part_erreur_mediane_pct": 66.6,
+    "part_erreur_lightgbm_pct": 66.4,
+    "surprevision_mediane_unites": -14004.0,
+    "surprevision_lightgbm_unites": -11060.0
+   },
+   "hopitaux_publics": {
+    "observations": 1779,
+    "part_volume_pct": 20.0,
+    "part_erreur_mediane_pct": 33.4,
+    "part_erreur_lightgbm_pct": 33.6,
+    "surprevision_mediane_unites": -6188.0,
+    "surprevision_lightgbm_unites": -4613.0
+   }
+  },
+  "duel_par_observation": {
+   "lightgbm_meilleur": {
+    "observations": 1217,
+    "part_obs_pct": 17.9,
+    "unites_d_erreur_evitees_par_lightgbm": 7190.0,
+    "type_dominant": {
+     "normal": 676,
+     "pic": 194,
+     "creux": 184
+    }
+   },
+   "mediane_meilleure": {
+    "observations": 1214,
+    "part_obs_pct": 17.9,
+    "unites_d_erreur_evitees_par_lightgbm": -9841.0,
+    "type_dominant": {
+     "normal": 816,
+     "zero": 185,
+     "creux": 175
+    }
+   },
+   "similaires": {
+    "observations": 4361,
+    "part_obs_pct": 64.2,
+    "unites_d_erreur_evitees_par_lightgbm": 246.0,
+    "type_dominant": {
+     "normal": 2163,
+     "zero": 1560,
+     "pic": 366
+    }
+   }
+  },
+  "duel_par_type": {
+   "pic": {
+    "lightgbm_meilleur": 194,
+    "mediane_meilleure": 38,
+    "erreur_nette_evitee_par_lightgbm": 932.0
+   },
+   "creux": {
+    "lightgbm_meilleur": 184,
+    "mediane_meilleure": 175,
+    "erreur_nette_evitee_par_lightgbm": -1059.0
+   },
+   "zero": {
+    "lightgbm_meilleur": 163,
+    "mediane_meilleure": 185,
+    "erreur_nette_evitee_par_lightgbm": -47.0
+   },
+   "normal": {
+    "lightgbm_meilleur": 676,
+    "mediane_meilleure": 816,
+    "erreur_nette_evitee_par_lightgbm": -2231.0
+   }
+  },
+  "sensibilite_hors_janvier_2026": {
+   "mediane_12": 38.61,
+   "lightgbm": 38.68,
+   "avertissement": "lecture de sensibilité, jamais une métrique de décision"
+  }
+ },
+ "references_majoritairement_hopitaux_publics": 180
+}

@@ -1,2 +1,5 @@
-"""Analytics package: moteur de KPIs financiers basé sur DuckDB."""
-from .kpi_engine import compute_dashboard, build_store, get_filter_options  # noqa: F401
+"""Analytics package : moteur de KPIs financiers, lecteur de l'entrepôt DuckDB.
+
+L'entrepôt lui-même est construit par l'ETL (`etl/`, `python -m etl.construire`).
+"""
+from .kpi_engine import compute_dashboard, get_filter_options  # noqa: F401

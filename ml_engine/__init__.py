@@ -1,15 +1,18 @@
-"""ML Engine package — imports PARESSEUX (lazy).
+"""ML Engine — modules d'analyse, de prévision et d'apprentissage.
 
-Importer `ml_engine.analytics.kpi_engine` ne doit plus charger tout le pipeline
-ML (et ses phases Optuna/SHAP). Les noms `MLEngine` / `run_advanced_pipeline`
-restent accessibles à la demande via `__getattr__`.
+Ce paquet est volontairement VIDE de logique : chaque sous-module s'importe
+directement (`ml_engine.analytics.kpi_engine`, `ml_engine.passerelle`…), ce qui
+évite de charger tout le moteur pour un seul calcul.
+
+Organisation :
+    analytics/    indicateurs, churn, segmentation, crédit, marge, conversion
+    forecasting/  encaissements (carnet d'échéances) et demande
+    models/       risque produit, demande mensuelle
+    stock/        flux réels, positions, fin de vie, réapprovisionnement
+    deep/         recommandation de produits (Wide & Deep, PyTorch optionnel)
+    ocr/          extraction de factures et rapprochement ERP
+    typologie.py  établissement de santé public ou non (règle unique)
+    registre.py   ce qui est servi, refusé ou retiré — et pourquoi
+    passerelle.py point d'entrée unique des agents vers les modèles
+    boucle.py     retour des résultats du terrain vers les modèles
 """
-
-__all__ = ["MLEngine", "run_advanced_pipeline"]
-
-
-def __getattr__(name):
-    if name in __all__:
-        from ml_engine.pipeline import MLEngine, run_advanced_pipeline
-        return {"MLEngine": MLEngine, "run_advanced_pipeline": run_advanced_pipeline}[name]
-    raise AttributeError(f"module 'ml_engine' has no attribute '{name}'")

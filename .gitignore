@@ -11,13 +11,16 @@ datasets/
 # =====================
 output/
 outputs/
-reports/
+# Rapports régénérés par les scripts ; seul le rapport consolidé, rédigé, est versionné
+reports/*
+!reports/METRICS_REPORT.md
 plots/
 
 # =====================
 # MODELS
 # =====================
-models/
+# Racine seulement : ml_engine/models/ est du code source
+/models/
 *.pkl
 *.joblib
 *.h5
@@ -39,3 +42,18 @@ __pycache__/
 # ENV
 # =====================
 .env
+.env.*
+!.env.example
+frontend/public/avatar/*.glb
+
+# Factures réelles de l évaluation OCR : données confidentielles, jamais versionnées
+evaluation_ocr/factures/
+# Vérité terrain, jeu étiqueté et zip Colab dérivés de ces factures : idem
+evaluation_ocr/layoutlmv3/
+
+# =====================
+# SAUVEGARDES LOCALES
+# =====================
+# Archives faites avant chaque refonte, et corbeille de scripts/nettoyer_projet.ps1
+_sauvegarde_*.zip
+_a_supprimer/
