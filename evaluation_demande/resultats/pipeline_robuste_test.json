@@ -1,0 +1,197 @@
+{
+ "preenregistrement": {
+  "horodatage_utc": "2026-09-26T19:28:58+00:00",
+  "candidat_retenu": "mediane_12",
+  "regle_de_selection": "Un candidat remplace la médiane 12 mois si et seulement si, sur la période de développement (24 origines antérieures au test) : (a) sa WAPE à 1 mois est inférieure à celle de la médiane dans CHACUNE des deux sous-périodes (pré-validation et validation) ; (b) l'IC95 bootstrap par référence de son gain sur les 24 origines réunies est entièrement positif. Parmi les candidats qui passent, celui de plus faible WAPE sur les 24 origines. Sinon : la médiane reste.",
+  "regle_de_deploiement_plateforme": "+2.0 pts de WAPE à 1 mois sur le test et IC95 > 0",
+  "sha256_script": "5af6b357d665eb6c9bafaab13144a73f9d543371d31a65cddca32d324a74cbf0",
+  "sha256_resultats_dev": "769ab969c4a9df6377bd2069d8c01b9235718d041ec4f527e3289c91c86e3d59",
+  "reglages_lightgbm": {
+   "perte": "l1",
+   "normaliser": true,
+   "learning_rate": 0.025493358257169668,
+   "n_estimators": 450,
+   "num_leaves": 20,
+   "min_child_samples": 13,
+   "subsample": 0.7033815530200243,
+   "colsample_bytree": 0.9536817594211415,
+   "reg_lambda": 6.643439211977513
+  },
+  "avertissement": "Le test de 18 mois a déjà été lu une fois (comparaison publiée) et le diagnostic l'a décomposé : ce qui suit est une CONFIRMATION, pas une preuve indépendante. La preuve viendra des mois postérieurs à mars 2026."
+ },
+ "tableau_test": {
+  "mediane_12": {
+   "wape": 38.31,
+   "biais": -13.15,
+   "mae": 8.659,
+   "n": 6792,
+   "wape_cumul_3_mois": 29.31
+  },
+  "quantile_12_q55": {
+   "wape": 38.55,
+   "biais": -9.38,
+   "mae": 8.714,
+   "n": 6792,
+   "wape_cumul_3_mois": 29.24,
+   "duel_contre_mediane_h1": {
+    "ecart_pts": -0.24,
+    "ic95": [
+     -0.5,
+     -0.02
+    ],
+    "significatif": true,
+    "n_references": 423
+   }
+  },
+  "quantile_12_q60": {
+   "wape": 39.42,
+   "biais": -4.93,
+   "mae": 8.911,
+   "n": 6792,
+   "wape_cumul_3_mois": 29.35,
+   "duel_contre_mediane_h1": {
+    "ecart_pts": -1.11,
+    "ic95": [
+     -1.56,
+     -0.7
+    ],
+    "significatif": true,
+    "n_references": 423
+   }
+  },
+  "lightgbm_actuel": {
+   "wape": 39.87,
+   "biais": -10.21,
+   "mae": 9.013,
+   "n": 6792,
+   "wape_cumul_3_mois": 29.2,
+   "duel_contre_mediane_h1": {
+    "ecart_pts": -1.57,
+    "ic95": [
+     -2.29,
+     -0.73
+    ],
+    "significatif": true,
+    "n_references": 423
+   }
+  },
+  "lightgbm_stationnaire": {
+   "wape": 38.04,
+   "biais": -8.66,
+   "mae": 8.599,
+   "n": 6792,
+   "wape_cumul_3_mois": 27.1,
+   "duel_contre_mediane_h1": {
+    "ecart_pts": 0.27,
+    "ic95": [
+     -0.35,
+     0.97
+    ],
+    "significatif": false,
+    "n_references": 423
+   }
+  },
+  "lightgbm_robuste": {
+   "wape": 38.26,
+   "biais": -7.48,
+   "mae": 8.649,
+   "n": 6792,
+   "wape_cumul_3_mois": 27.15,
+   "duel_contre_mediane_h1": {
+    "ecart_pts": 0.05,
+    "ic95": [
+     -0.66,
+     0.8
+    ],
+    "significatif": false,
+    "n_references": 423
+   }
+  },
+  "combinaison_50_50": {
+   "wape": 37.67,
+   "biais": -10.31,
+   "mae": 8.516,
+   "n": 6792,
+   "wape_cumul_3_mois": 27.74,
+   "duel_contre_mediane_h1": {
+    "ecart_pts": 0.63,
+    "ic95": [
+     0.25,
+     1.05
+    ],
+    "significatif": true,
+    "n_references": 423
+   }
+  },
+  "hybride_par_classe": {
+   "wape": 38.47,
+   "biais": -10.87,
+   "mae": 8.697,
+   "n": 6792,
+   "wape_cumul_3_mois": 28.5,
+   "duel_contre_mediane_h1": {
+    "ecart_pts": -0.17,
+    "ic95": [
+     -0.59,
+     0.25
+    ],
+    "significatif": false,
+    "n_references": 423
+   }
+  }
+ },
+ "retenu": "mediane_12",
+ "point_prospectif_avril_2026": {
+  "avertissement": "un seul mois, 29 jours sur 30 : indicatif",
+  "mesures": {
+   "mediane_12": {
+    "wape": 39.6,
+    "biais": -30.93,
+    "mae": 10.872,
+    "n": 386
+   },
+   "quantile_12_q55": {
+    "wape": 36.94,
+    "biais": -27.09,
+    "mae": 10.143,
+    "n": 386
+   },
+   "quantile_12_q60": {
+    "wape": 35.13,
+    "biais": -23.27,
+    "mae": 9.644,
+    "n": 386
+   },
+   "lightgbm_actuel": {
+    "wape": 40.24,
+    "biais": -34.12,
+    "mae": 11.048,
+    "n": 386
+   },
+   "lightgbm_stationnaire": {
+    "wape": 37.69,
+    "biais": -30.84,
+    "mae": 10.35,
+    "n": 386
+   },
+   "lightgbm_robuste": {
+    "wape": 37.99,
+    "biais": -31.3,
+    "mae": 10.43,
+    "n": 386
+   },
+   "combinaison_50_50": {
+    "wape": 38.67,
+    "biais": -31.11,
+    "mae": 10.618,
+    "n": 386
+   },
+   "hybride_par_classe": {
+    "wape": 38.64,
+    "biais": -30.21,
+    "mae": 10.61,
+    "n": 386
+   }
+  }
+ }
+}

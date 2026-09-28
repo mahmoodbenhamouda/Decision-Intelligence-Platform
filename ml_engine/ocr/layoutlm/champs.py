@@ -145,6 +145,47 @@ def valeur(champ: str, texte: str):
     return texte.strip() or None
 
 
+# Un montant « 1 081,080 » est souvent coupé en deux mots par l'espace des
+# milliers. Quand le modèle n'étiquette que le second, la valeur perd son
+# chiffre de tête : 1 081,080 devient 81,080. Mesuré en validation croisée :
+# 5 montants sur 742 champs (d003, d045, d059).
+_MILLIERS_GAUCHE = re.compile(r"^\d{1,3}$")
+_MILLIERS_DROITE = re.compile(r"^\d{3}[.,]\d")
+# Le piège à éviter : dans un tableau, « 4 » (quantité) précède « 312,500 »
+# (prix unitaire) — même motif, autre sens. Seule la géométrie les distingue.
+# L'écart est rapporté à la largeur d'UN CARACTÈRE du montant : le chiffre de
+# gauche est parfois un « 1 » de 3 pixels, trop étroit pour servir d'étalon.
+# Mesuré sur les 55 séparateurs de milliers annotés du jeu : écart de 0,09 à
+# 1,67 caractère. Sur un saut de colonne quantité / prix unitaire : 15
+# caractères. Le seuil de 2 accepte tous les cas observés et reste très loin
+# d'un changement de colonne.
+ECART_MAX_MILLIERS = 2.0
+
+
+def recoller_milliers(mots: Sequence[str], etiquettes: Sequence[str],
+                      boites: Optional[Sequence[Sequence[float]]] = None) -> List[str]:
+    """Rattache à un montant le chiffre de tête que le modèle a laissé de côté.
+
+    Sans boîtes, aucun recollage : la géométrie est le seul garde-fou contre la
+    confusion avec une quantité de ligne. Renvoie des étiquettes modifiées."""
+    etq = list(etiquettes)
+    if not boites or len(boites) != len(mots):
+        return etq
+    for i in range(1, len(etq)):
+        pre, _, ch = etq[i].partition("-")
+        if pre != "B" or ch not in MONTANTS or etq[i - 1] != "O":
+            continue
+        if not (_MILLIERS_GAUCHE.match(mots[i - 1]) and _MILLIERS_DROITE.match(mots[i])):
+            continue
+        (x0, y0, x1, y1), (u0, v0, u1, v1) = boites[i - 1], boites[i]
+        caractere = max((u1 - u0) / max(len(mots[i]), 1), 1e-6)
+        meme_ligne = min(y1, v1) > max(y0, v0)          # chevauchement vertical
+        ecart = u0 - x1
+        if meme_ligne and -caractere < ecart <= ECART_MAX_MILLIERS * caractere:
+            etq[i - 1], etq[i] = f"B-{ch}", f"I-{ch}"
+    return etq
+
+
 def decoder(pages: List[dict]) -> Dict[str, object]:
     """pages : [{mots, etiquettes, probas}] d'UN document → champs extraits.
 
@@ -152,7 +193,8 @@ def decoder(pages: List[dict]) -> Dict[str, object]:
     Puis contrôle arithmétique (cohérence HT + TVA + timbre = TTC)."""
     cand: Dict[str, List[Tuple[float, object]]] = {c: [] for c in CHAMPS}
     for p in pages:
-        for ch, lst in spans(p["mots"], p["etiquettes"], p.get("probas")).items():
+        etq = recoller_milliers(p["mots"], p["etiquettes"], p.get("boites"))
+        for ch, lst in spans(p["mots"], etq, p.get("probas")).items():
             for texte, score, _ in lst:
                 v = valeur(ch, texte)
                 if v is not None:

@@ -1,0 +1,260 @@
+{
+ "regle_de_selection": "Un candidat remplace la médiane 12 mois si et seulement si, sur la période de développement (24 origines antérieures au test) : (a) sa WAPE à 1 mois est inférieure à celle de la médiane dans CHACUNE des deux sous-périodes (pré-validation et validation) ; (b) l'IC95 bootstrap par référence de son gain sur les 24 origines réunies est entièrement positif. Parmi les candidats qui passent, celui de plus faible WAPE sur les 24 origines. Sinon : la médiane reste.",
+ "tableau": {
+  "mediane_12": {
+   "pre_validation": {
+    "wape": 37.54,
+    "biais": -17.41,
+    "mae": 8.758,
+    "n": 4063
+   },
+   "validation": {
+    "wape": 31.99,
+    "biais": -8.93,
+    "mae": 6.8,
+    "n": 4422
+   },
+   "developpement_24": {
+    "wape": 34.78,
+    "biais": -13.18,
+    "mae": 7.737,
+    "n": 8485
+   }
+  },
+  "quantile_12_q55": {
+   "pre_validation": {
+    "wape": 37.53,
+    "biais": -12.62,
+    "mae": 8.756,
+    "n": 4063
+   },
+   "validation": {
+    "wape": 32.07,
+    "biais": -5.2,
+    "mae": 6.815,
+    "n": 4422
+   },
+   "developpement_24": {
+    "wape": 34.81,
+    "biais": -8.93,
+    "mae": 7.744,
+    "n": 8485
+   }
+  },
+  "quantile_12_q60": {
+   "pre_validation": {
+    "wape": 37.9,
+    "biais": -7.49,
+    "mae": 8.844,
+    "n": 4063
+   },
+   "validation": {
+    "wape": 32.68,
+    "biais": -1.09,
+    "mae": 6.946,
+    "n": 4422
+   },
+   "developpement_24": {
+    "wape": 35.3,
+    "biais": -4.3,
+    "mae": 7.855,
+    "n": 8485
+   }
+  },
+  "lightgbm_actuel": {
+   "pre_validation": {
+    "wape": 38.87,
+    "biais": -10.17,
+    "mae": 9.069,
+    "n": 4063
+   },
+   "validation": {
+    "wape": 31.46,
+    "biais": -7.83,
+    "mae": 6.686,
+    "n": 4422
+   },
+   "developpement_24": {
+    "wape": 35.18,
+    "biais": -9.01,
+    "mae": 7.827,
+    "n": 8485
+   }
+  },
+  "lightgbm_stationnaire": {
+   "pre_validation": {
+    "wape": 39.2,
+    "biais": -9.57,
+    "mae": 9.146,
+    "n": 4063
+   },
+   "validation": {
+    "wape": 32.22,
+    "biais": -8.11,
+    "mae": 6.849,
+    "n": 4422
+   },
+   "developpement_24": {
+    "wape": 35.73,
+    "biais": -8.85,
+    "mae": 7.949,
+    "n": 8485
+   }
+  },
+  "lightgbm_robuste": {
+   "pre_validation": {
+    "wape": 40.13,
+    "biais": -8.1,
+    "mae": 9.364,
+    "n": 4063
+   },
+   "validation": {
+    "wape": 32.44,
+    "biais": -5.73,
+    "mae": 6.895,
+    "n": 4422
+   },
+   "developpement_24": {
+    "wape": 36.31,
+    "biais": -6.92,
+    "mae": 8.078,
+    "n": 8485
+   }
+  },
+  "combinaison_50_50": {
+   "pre_validation": {
+    "wape": 37.75,
+    "biais": -12.75,
+    "mae": 8.807,
+    "n": 4063
+   },
+   "validation": {
+    "wape": 31.49,
+    "biais": -7.33,
+    "mae": 6.693,
+    "n": 4422
+   },
+   "developpement_24": {
+    "wape": 34.63,
+    "biais": -10.05,
+    "mae": 7.705,
+    "n": 8485
+   }
+  },
+  "hybride_par_classe": {
+   "pre_validation": {
+    "wape": 38.66,
+    "biais": -14.76,
+    "mae": 9.02,
+    "n": 4063
+   },
+   "validation": {
+    "wape": 31.9,
+    "biais": -7.4,
+    "mae": 6.78,
+    "n": 4422
+   },
+   "developpement_24": {
+    "wape": 35.29,
+    "biais": -11.1,
+    "mae": 7.853,
+    "n": 8485
+   }
+  }
+ },
+ "verdicts": {
+  "quantile_12_q55": {
+   "bat_la_mediane_dans_les_deux_sous_periodes": false,
+   "duel_24_origines": {
+    "ecart_pts": -0.03,
+    "ic95": [
+     -0.26,
+     0.16
+    ],
+    "significatif": false,
+    "n_references": 413
+   },
+   "passe": false
+  },
+  "quantile_12_q60": {
+   "bat_la_mediane_dans_les_deux_sous_periodes": false,
+   "duel_24_origines": {
+    "ecart_pts": -0.53,
+    "ic95": [
+     -1.13,
+     -0.07
+    ],
+    "significatif": true,
+    "n_references": 413
+   },
+   "passe": false
+  },
+  "lightgbm_actuel": {
+   "bat_la_mediane_dans_les_deux_sous_periodes": false,
+   "duel_24_origines": {
+    "ecart_pts": -0.4,
+    "ic95": [
+     -1.13,
+     0.26
+    ],
+    "significatif": false,
+    "n_references": 413
+   },
+   "passe": false
+  },
+  "lightgbm_stationnaire": {
+   "bat_la_mediane_dans_les_deux_sous_periodes": false,
+   "duel_24_origines": {
+    "ecart_pts": -0.95,
+    "ic95": [
+     -1.74,
+     -0.25
+    ],
+    "significatif": true,
+    "n_references": 413
+   },
+   "passe": false
+  },
+  "lightgbm_robuste": {
+   "bat_la_mediane_dans_les_deux_sous_periodes": false,
+   "duel_24_origines": {
+    "ecart_pts": -1.53,
+    "ic95": [
+     -2.23,
+     -0.81
+    ],
+    "significatif": true,
+    "n_references": 413
+   },
+   "passe": false
+  },
+  "combinaison_50_50": {
+   "bat_la_mediane_dans_les_deux_sous_periodes": false,
+   "duel_24_origines": {
+    "ecart_pts": 0.14,
+    "ic95": [
+     -0.19,
+     0.48
+    ],
+    "significatif": false,
+    "n_references": 413
+   },
+   "passe": false
+  },
+  "hybride_par_classe": {
+   "bat_la_mediane_dans_les_deux_sous_periodes": false,
+   "duel_24_origines": {
+    "ecart_pts": -0.52,
+    "ic95": [
+     -1.2,
+     0.01
+    ],
+    "significatif": false,
+    "n_references": 413
+   },
+   "passe": false
+  }
+ },
+ "candidat_retenu": "mediane_12",
+ "controle_reproduction_lightgbm_actuel_validation": 31.46
+}

@@ -11,11 +11,11 @@ directement sur disque, en colonnes, sans tout charger en RAM.
 
 Architecture
 ------------
-1. `build_store()` : matérialise UNE FOIS un entrepôt DuckDB compact
-   (`output/analytics_store.duckdb`) en ne projetant que les colonnes utiles et en
-   pré-agrégeant les gros fichiers de lignes. Reconstruit seulement si les CSV
-   sources ont changé.
-2. `compute_dashboard(filters)` : interroge l'entrepôt matérialisé (quelques
+1. L'entrepôt (`output/analytics_store.duckdb`) est construit par l'ETL, un
+   modèle en étoile (voir `etl/` et docs/DATA_WAREHOUSE.md). Ce module ne
+   l'écrit jamais : `_connect()` demande seulement à l'ETL de le reconstruire
+   s'il est périmé, puis l'ouvre en lecture.
+2. `compute_dashboard(filters)` : interroge l'entrepôt (quelques
    millisecondes) en appliquant les filtres en SQL, et renvoie un dictionnaire
    complet de KPIs + séries prêtes pour les graphes du dashboard.
 
@@ -27,277 +27,30 @@ excluait la majorité.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import duckdb
 
-try:
-    from config.settings import settings
-    _DEFAULT_DATA_DIR = Path(settings.data_dir)
-    _DEFAULT_OUTPUT_DIR = Path(settings.output_dir)
-except Exception:  # pragma: no cover - fallback hors application
-    _DEFAULT_DATA_DIR = Path(__file__).resolve().parents[2] / "data_pfe"
-    _DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "output"
+from etl.sources import DOSSIER_SOURCES as _DEFAULT_DATA_DIR
+from etl.sources import ENTREPOT
+from ml_engine.typologie import condition_sql_hopital_public
 
-STORE_PATH = Path(os.environ.get("ANALYTICS_STORE_PATH", _DEFAULT_OUTPUT_DIR / "analytics_store.duckdb"))
+_log = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Sources : fichier CSV -> rôle. On choisit UNE source faisant autorité par fait
-# pour éviter le double comptage, tout en exploitant les gros fichiers de lignes.
-# ─────────────────────────────────────────────────────────────────────────────
-SOURCES = {
-    "sales":     "Facture_vente_ent_v.csv",      # 128k factures, HT/TTC/échéance/client
-    "purchases": "Facture_achat_ent_v.csv",      # factures fournisseurs
-    "lines":     "ZZ_Facture_vente_mouv.csv",    # 340k lignes : produits, quantités
-    "devis":     "Devis_vente_ent_vv.csv",       # devis (pipeline commercial)
-    "suppliers": "Fournisseurs_v.csv",           # référentiel fournisseurs
-    "bl":        "Gsl_vente_bl_entete.csv",       # bons de livraison
-    "gsl_fa":    "Gsl_vente_fa_entete.csv",       # noms/villes clients + dépôts (dimensions)
-}
-
-
-def _csv(data_dir: Path, name: str) -> str:
-    return str((data_dir / name).as_posix())
-
-
-def _read(name_path: str, sample: int = 8000) -> str:
-    return f"read_csv_auto('{name_path}', sample_size={sample}, ignore_errors=true, all_varchar=true)"
-
-
-def _date(col: str) -> str:
-    """Parsing de date robuste : les CSV utilisent le format US M/D/Y (non zéro-paddé).
-    On essaie plusieurs formats puis un CAST direct en dernier recours."""
-    return (f"COALESCE("
-            f"TRY_STRPTIME({col}, '%m/%d/%Y'), "
-            f"TRY_STRPTIME({col}, '%Y-%m-%d'), "
-            f"TRY_STRPTIME({col}, '%d/%m/%Y'))::DATE")
-
-
-# ── Normalisation des modes de règlement (déduplication des libellés) ─────────
-# Les libellés sources sont incohérents (casse, espaces, "90JOURS", "NULL").
-# On nettoie l'affichage, on calcule une clé normalisée pour regrouper les
-# variantes (ex. "Virement 60 JOURS" == "Virement 60 jours"), et le libellé
-# affiché est la variante réelle la plus fréquente de chaque groupe.
-def _mode_clean(col: str = "MODEREGLLIBELLE") -> str:
-    # trim + espaces multiples -> un seul + espace entre chiffre et "JOURS"
-    return (f"regexp_replace(regexp_replace(trim({col}), '\\s+', ' ', 'g'), "
-            f"'([0-9])(JOURS)', '\\1 \\2', 'g')")
-
-
-def _mode_norm(col: str = "MODEREGLLIBELLE") -> str:
-    return (f"CASE WHEN {col} IS NULL OR upper(trim({col})) IN ('', 'NULL') "
-            f"THEN 'NON RENSEIGNE' ELSE upper({_mode_clean(col)}) END")
-
-
-def _mode_label(col: str = "MODEREGLLIBELLE") -> str:
-    return (f"CASE WHEN {col} IS NULL OR upper(trim({col})) IN ('', 'NULL') "
-            f"THEN 'Non renseigné' ELSE {_mode_clean(col)} END")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CONSTRUCTION DE L'ENTREPÔT MATÉRIALISÉ
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Version du schéma de l'entrepôt. À INCRÉMENTER à chaque changement de la logique
-# de construction (build_store) pour forcer une reconstruction automatique du store,
-# même si les fichiers CSV sources n'ont pas changé.
-SCHEMA_VERSION = "v7"
-
-
-def _sources_signature(data_dir: Path) -> str:
-    parts = [f"schema:{SCHEMA_VERSION}"]
-    for name in SOURCES.values():
-        p = data_dir / name
-        if p.exists():
-            st = p.stat()
-            parts.append(f"{name}:{st.st_size}:{int(st.st_mtime)}")
-    return "|".join(sorted(parts))
-
-
-def build_store(data_dir: Path | None = None, force: bool = False) -> Path:
-    """Matérialise l'entrepôt DuckDB compact. Idempotent (reconstruit si CSV modifiés)."""
-    data_dir = Path(data_dir) if data_dir else _DEFAULT_DATA_DIR
-    STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    signature = _sources_signature(data_dir)
-
-    if STORE_PATH.exists() and not force:
-        try:
-            con = duckdb.connect(str(STORE_PATH), read_only=True)
-            row = con.execute("SELECT signature FROM _build_info LIMIT 1").fetchone()
-            con.close()
-            if row and row[0] == signature:
-                return STORE_PATH  # déjà à jour
-        except Exception:
-            pass  # entrepôt absent/corrompu -> reconstruire
-
-    con = duckdb.connect(str(STORE_PATH))
-    con.execute("SET threads=4;")
-
-    sales_csv = _read(_csv(data_dir, SOURCES["sales"]))
-    # Table de correspondance : clé normalisée -> libellé canonique (variante la plus fréquente)
-    con.execute(f"""
-        CREATE OR REPLACE TABLE mode_map AS
-        WITH base AS (
-            SELECT {_mode_norm()} AS norm, {_mode_label()} AS orig, count(*) AS n
-            FROM {sales_csv} GROUP BY 1, 2
-        )
-        SELECT norm, max_by(orig, n) AS label FROM base GROUP BY norm
-    """)
-    con.execute(f"""
-        CREATE OR REPLACE TABLE sales AS
-        WITH raw AS (
-            SELECT
-                trim(TIERS)                       AS client,
-                {_date('DATEPIECE')}              AS date,
-                CASE WHEN year({_date('DATEECHEANCE')}) BETWEEN 2000 AND 2035
-                     THEN {_date('DATEECHEANCE')} END AS echeance,
-                TRY_CAST(HT_DEV      AS DOUBLE)    AS ht,
-                TRY_CAST(TTC_DEV     AS DOUBLE)    AS ttc,
-                {_mode_norm()}                    AS mode_norm,
-                TRY_CAST(NBREARTICLE AS DOUBLE)   AS nbr_article
-            FROM {sales_csv}
-            WHERE {_date('DATEPIECE')} IS NOT NULL AND TRY_CAST(TTC_DEV AS DOUBLE) IS NOT NULL
-        )
-        SELECT raw.client, raw.date, raw.echeance, raw.ht, raw.ttc,
-               COALESCE(mm.label, 'Non renseigné') AS mode_regl, raw.nbr_article
-        FROM raw LEFT JOIN mode_map mm ON raw.mode_norm = mm.norm
-    """)
-    con.execute("""
-        ALTER TABLE sales ADD COLUMN year INTEGER;
-        UPDATE sales SET year = year(date);
-    """)
-    con.execute("""
-        ALTER TABLE sales ADD COLUMN payment_delay_days INTEGER;
-        UPDATE sales SET payment_delay_days =
-            CASE WHEN echeance IS NOT NULL THEN datediff('day', date, echeance) END;
-    """)
-
-    # ── DIMENSIONS (schéma en étoile) ────────────────────────────────────────
-    gsl_csv = _read(_csv(data_dir, SOURCES["gsl_fa"]))
-    # Dim_Client : code -> nom + ville (source fiable GSL, ~97% du CA couvert)
-    con.execute(f"""
-        CREATE OR REPLACE TABLE dim_client AS
-        WITH b AS (
-            SELECT trim(ENT_CLIENT_CODE) AS client_code,
-                   trim(ENT_CLIENT_INTITULE) AS client_name,
-                   trim(ENT_CLIENT_VILLE) AS ville, count(*) AS n
-            FROM {gsl_csv}
-            WHERE ENT_CLIENT_CODE IS NOT NULL AND trim(ENT_CLIENT_CODE) <> ''
-            GROUP BY 1, 2, 3
-        )
-        SELECT client_code, max_by(client_name, n) AS client_name, max_by(ville, n) AS ville
-        FROM b GROUP BY client_code
-    """)
-    # Dim_Depot
-    con.execute(f"""
-        CREATE OR REPLACE TABLE dim_depot AS
-        WITH b AS (
-            SELECT trim(ENT_DEPOT_CODE) AS depot_code, trim(ENT_DEPOT_INTITULE) AS depot_label, count(*) n
-            FROM {gsl_csv} WHERE ENT_DEPOT_CODE IS NOT NULL AND trim(ENT_DEPOT_CODE) <> '' GROUP BY 1, 2
-        )
-        SELECT depot_code, max_by(depot_label, n) AS depot_label FROM b GROUP BY depot_code
-    """)
-    # Enrichit sales avec le nom client (repli sur le code si absent)
-    con.execute("ALTER TABLE sales ADD COLUMN client_name VARCHAR;")
-    con.execute("UPDATE sales SET client_name = dc.client_name FROM dim_client dc WHERE dc.client_code = sales.client;")
-    con.execute("UPDATE sales SET client_name = client WHERE client_name IS NULL OR client_name = '';")
-    # Dim_Date
-    con.execute("""
-        CREATE OR REPLACE TABLE dim_date AS
-        SELECT DISTINCT date, year(date) AS year, month(date) AS month,
-               quarter(date) AS quarter, dayofweek(date) AS dow
-        FROM sales WHERE date IS NOT NULL
-    """)
-
-    purch_csv = _read(_csv(data_dir, SOURCES["purchases"]))
-    con.execute(f"""
-        CREATE OR REPLACE TABLE purchases AS
-        SELECT
-            trim(FOURNISSEURNOM)              AS fournisseur,
-            trim(CLE_FOURNISSEUR)             AS fournisseur_code,
-            {_date('DATEPIECE')}              AS date,
-            CASE WHEN year({_date('DATEECHEANCE')}) BETWEEN 2000 AND 2035
-                 THEN {_date('DATEECHEANCE')} END AS echeance,
-            TRY_CAST(HT_DEV  AS DOUBLE)       AS ht,
-            TRY_CAST(TTC_DEV AS DOUBLE)       AS ttc,
-            trim(MODEREGLLIBELLE)             AS mode_regl
-        FROM {purch_csv}
-        WHERE {_date('DATEPIECE')} IS NOT NULL
-    """)
-    con.execute("ALTER TABLE purchases ADD COLUMN year INTEGER; UPDATE purchases SET year = year(date);")
-    con.execute("""
-        ALTER TABLE purchases ADD COLUMN payment_delay_days INTEGER;
-        UPDATE purchases SET payment_delay_days =
-            CASE WHEN echeance IS NOT NULL THEN datediff('day', date, echeance) END;
-    """)
-
-    # Lignes produits : pré-agrégé par produit (et par mois pour la tendance)
-    lines_csv = _read(_csv(data_dir, SOURCES["lines"]))
-    con.execute(f"""
-        CREATE OR REPLACE TABLE product_sales AS
-        SELECT
-            trim(DESIGNATION)                       AS produit,
-            year({_date('DATEFACTURE')})            AS year,
-            sum(TRY_CAST(MONTANT_DEV AS DOUBLE))    AS ca,
-            sum(TRY_CAST(QTEFACTURE  AS DOUBLE))    AS qte,
-            count(*)                                AS lignes
-        FROM {lines_csv}
-        WHERE DESIGNATION IS NOT NULL AND trim(DESIGNATION) <> ''
-        GROUP BY 1, 2
-    """)
-    # Dim_Produit / familles de produits (REACTIF, EQUIPEMENT, SERVICE… ~99% du CA réel)
-    con.execute(f"""
-        CREATE OR REPLACE TABLE product_family AS
-        SELECT
-            trim(ARTICLE_LIBELLE_FAM_STAT1)         AS famille,
-            year({_date('DATEFACTURE')})            AS year,
-            sum(TRY_CAST(MONTANT_DEV AS DOUBLE))    AS ca,
-            sum(TRY_CAST(QTEFACTURE  AS DOUBLE))    AS qte
-        FROM {lines_csv}
-        WHERE ARTICLE_LIBELLE_FAM_STAT1 IS NOT NULL AND trim(ARTICLE_LIBELLE_FAM_STAT1) <> ''
-          -- exclut la pollution « démo » résiduelle (fournitures d'art, < 1% du CA)
-          AND NOT regexp_matches(upper(trim(ARTICLE_LIBELLE_FAM_STAT1)),
-                '(^_)|PEINTURE|LITHOGRAPH|CHEVALET|PINCEAU|BROSSE|AQUARELLE|HUILE')
-        GROUP BY 1, 2
-    """)
-
-    # Devis (pipeline commercial)
-    devis_csv = _read(_csv(data_dir, SOURCES["devis"]))
-    con.execute(f"""
-        CREATE OR REPLACE TABLE devis AS
-        SELECT
-            trim(TIERS)                       AS client,
-            {_date('DATEPIECE')}              AS date,
-            TRY_CAST(HT_DEV  AS DOUBLE)       AS ht,
-            TRY_CAST(TTC_DEV AS DOUBLE)       AS ttc,
-            trim(STATUS)                      AS status
-        FROM {devis_csv}
-        WHERE {_date('DATEPIECE')} IS NOT NULL
-    """)
-
-    # Bons de livraison
-    try:
-        bl_csv = _read(_csv(data_dir, SOURCES["bl"]))
-        con.execute(f"""
-            CREATE OR REPLACE TABLE bl AS
-            SELECT
-                trim(ENT_CLIENT_CODE)            AS client,
-                {_date('ENT_DATE')}              AS date,
-                TRY_CAST(ENT_NBR_ARTICLE AS DOUBLE) AS nbr_article
-            FROM {bl_csv}
-        """)
-    except Exception:
-        con.execute("CREATE OR REPLACE TABLE bl AS SELECT NULL::VARCHAR client, NULL::DATE date, NULL::DOUBLE nbr_article WHERE 1=0")
-
-    con.execute("CREATE OR REPLACE TABLE _build_info AS SELECT ? AS signature, now() AS built_at", [signature])
-    con.close()
-    return STORE_PATH
+#: Chemin de l'entrepôt lu par tout le projet (redirigé par les tests).
+STORE_PATH = ENTREPOT
 
 
 def _connect(data_dir: Path | None = None) -> duckdb.DuckDBPyConnection:
-    build_store(data_dir)
+    """Connexion en LECTURE à l'entrepôt, reconstruit d'abord s'il est périmé.
+
+    L'entrepôt est construit par l'ETL (`etl/`, `python -m etl.construire`) ;
+    ce module ne fait que le lire."""
+    from etl.construire import assurer_a_jour
+    assurer_a_jour(STORE_PATH, data_dir or _DEFAULT_DATA_DIR)
     return duckdb.connect(str(STORE_PATH), read_only=True)
 
 
@@ -393,6 +146,32 @@ def _scalar(con, sql: str, default=0):
     return r[0] if r and r[0] is not None else default
 
 
+def _raisons_credit(v: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Pourquoi ce client apparaît dans les priorités de recouvrement.
+
+    La règle servie repose sur trois observations : le délai moyen réellement
+    constaté, l'encours exposé, et le nombre de factures qui fonde l'habitude.
+    Les seuils sont ceux du module de crédit (60 et 90 jours), publiés dans
+    `reports/credit_risk_metrics.json`.
+    """
+    try:
+        from ml_engine.explication import raisons_seuils
+    except Exception:
+        return []
+    valeurs = {"avg_delay": float(v.get("avg_delay") or 0),
+               "exposure": float(v.get("exposure") or 0),
+               "n": float(v.get("n") or 0)}
+    return raisons_seuils(valeurs, [
+        {"variable": "avg_delay", "seuil": 90, "sens": "sup", "poids": 3.0,
+         "phrase": f"règle en moyenne à {valeurs['avg_delay']:.0f} jours, au-delà de 90"},
+        {"variable": "avg_delay", "seuil": 60, "sens": "sup", "poids": 2.0,
+         "phrase": f"règle en moyenne à {valeurs['avg_delay']:.0f} jours, au-delà de 60"},
+        {"variable": "exposure", "seuil": 50_000, "sens": "sup", "poids": 2.0},
+        {"variable": "n", "seuil": 20, "sens": "sup", "poids": 1.0,
+         "phrase": f"habitude établie sur {valeurs['n']:.0f} factures"},
+    ], n=3)
+
+
 def _load_client_risk() -> Dict[str, Any]:
     """Scores de risque crédit par client (produits par credit_risk_model.train()).
     Vide si le modèle n'a pas encore été entraîné — l'intégration est optionnelle."""
@@ -405,233 +184,327 @@ def _load_client_risk() -> Dict[str, Any]:
     return {}
 
 
-# Mots-clés métier (pertinence commerciale d'une opportunité) et mots vides pour
-# l'extraction de noms de clients depuis un titre d'appel d'offres.
-_OPP_KEYWORDS = ["REACTIF", "RÉACTIF", "DIAGNOSTIC", "LABORATOIRE", "IMMUNOLOG", "VIDAS",
-                 "SEROLOG", "SÉROLOG", "HEMATOLOG", "HÉMATOLOG", "BIOCHIMIE", "PCR",
-                 "ANALYSE", "HOSPITALIER", "HÔPITAL", "HOPITAL", "CHU", "BIOLOGIE"]
-_NAME_STOPWORDS = {"LABORATOIRE", "LABO", "HOPITAL", "HÔPITAL", "CENTRE", "CLINIQUE",
-                   "POLYCLINIQUE", "SOCIETE", "SOCIÉTÉ", "SARL", "MEDICAL", "MÉDICAL",
-                   "SANTE", "SANTÉ", "UNIVERSITAIRE", "REGIONAL", "RÉGIONAL", "GENERAL",
-                   "GÉNÉRAL", "PUBLIC", "NATIONAL", "TUNIS", "TUNISIE"}
+def _charger_churn_si_servi(limite: int = 10) -> Dict[str, Any]:
+    """Clients à risque de décrochage, classés par ENJEU FINANCIER.
 
-# Termes MÉTIER FORTS : une opportunité n'est retenue que si l'un d'eux est présent
-# (le mot « diagnostic » seul est trop ambigu : diagnostic technique, immobilier…).
-_DOMAIN_STRONG = ["REACTIF", "RÉACTIF", "REACTIFS", "RÉACTIFS", "LABORATOIRE", "LABORATOIRES",
-                  "BIOLOGIE", "BIOLOGIQUE", "IMMUNOLOG", "SEROLOG", "SÉROLOG", "HEMATOLOG",
-                  "HÉMATOLOG", "BIOCHIMIE", "MICROBIOLOG", "BACTERIOLOG", "VIROLOG",
-                  "PCR", "VIDAS", "ELISA", "AUTOMATE", "ANALYSEUR", "REACTIF DE LABORATOIRE",
-                  "ANALYSES MEDICALES", "ANALYSES MÉDICALES", "DIAGNOSTIC IN VITRO",
-                  "DISPOSITIF MEDICAL", "DISPOSITIF MÉDICAL", "DIAGNOSTIC MEDICAL",
-                  "DIAGNOSTIC MÉDICAL", "EQUIPEMENT MEDICAL", "ÉQUIPEMENT MÉDICAL",
-                  "CONSOMMABLE MEDICAL", "CHU", "HOSPITALIER"]
-# Contextes HORS-DOMAINE : si présents, l'opportunité est écartée d'office.
-_OFF_DOMAIN = ["MUSEE", "MUSÉE", "BARDO", "PATRIMOINE", "MONUMENT", "TOURIS", "HUILE",
-               "OLIVE", "AGRICOL", "AGRICULTURE", "PECHE", "PÊCHE", "IMMOBILIER",
-               "BATIMENT", "BÂTIMENT", "ROUTE", "AUTOROUTE", "FOOTBALL", "SPORT",
-               "ENERGIE", "ÉNERGIE", "SOLAIRE", "TRANSPORT", "TEXTILE", "PHOSPHATE",
-               "EDUCATION", "ÉDUCATION", "UNIVERSITE", "UNIVERSITÉ", "CULTURE"]
+    Le classement se fait sur `enjeu = probabilité × CA 12 mois`, et non sur la
+    seule probabilité. La raison est opérationnelle : une probabilité de 0,9 sur
+    un client à 2 000 DT ne mérite pas l'attention qu'exige 0,6 sur un client à
+    2 M DT. Un score de risque sans montant ne permet pas de hiérarchiser l'action.
 
-
-def _opp_is_relevant(title_up: str) -> bool:
-    """Garde uniquement les opportunités réellement liées au diagnostic médical /
-    biologie / réactifs : un terme métier fort doit être présent, et aucun terme
-    manifestement hors-domaine."""
-    if any(bad in title_up for bad in _OFF_DOMAIN):
-        return False
-    return any(good in title_up for good in _DOMAIN_STRONG)
-
-
-def enrich_opportunities(news: List[Dict[str, Any]], data_dir: Path | None = None) -> List[Dict[str, Any]]:
-    """Transforme une liste d'opportunités (titres) en aide à la décision :
-    croise chaque opportunité avec les clients existants (nom + CA), la qualifie
-    (client existant / prospect) et produit une recommandation d'action."""
-    import re
-    if not news:
-        return []
-    # Filtre de pertinence métier : on écarte tout ce qui n'est pas diagnostic/labo/santé
-    news = [n for n in news if _opp_is_relevant(str(n.get("title") or "").upper())]
-    if not news:
-        return []
+    Renvoie un dictionnaire vide si le registre ne déclare pas le modèle servi —
+    ainsi un modèle refusé n'atteint jamais le tableau de bord.
+    """
     try:
-        con = _connect(data_dir)
-        rows = con.execute("""
-            SELECT any_value(client_name) nom, sum(ttc) ca
-            FROM sales WHERE client_name IS NOT NULL GROUP BY client ORDER BY ca DESC NULLS LAST
-        """).fetchall()
-        con.close()
+        from ml_engine.registre import est_deploye
+        if not est_deploye("churn"):
+            return {"servi": False,
+                    "motif": "modèle de décrochage non servi par le registre"}
     except Exception:
-        rows = []
+        return {"servi": False, "motif": "registre indisponible"}
 
-    # token distinctif -> (nom client, CA) — on garde le client au plus fort CA par token
-    token_map: Dict[str, Any] = {}
-    name_ca: Dict[str, float] = {}
-    for nom, ca in rows:
-        if not nom:
-            continue
-        name_ca[nom] = float(ca or 0)
-        for tok in re.split(r"[^A-ZÀ-Ÿ0-9]+", str(nom).upper()):
-            if len(tok) >= 5 and tok not in _NAME_STOPWORDS:
-                if tok not in token_map or (ca or 0) > token_map[tok][1]:
-                    token_map[tok] = (nom, float(ca or 0))
-
-    # NLP sémantique (embeddings ou TF-IDF) — rattrape les formulations différentes
-    matcher = None
     try:
-        from ml_engine.nlp.tender_matcher import TenderMatcher
-        cand_names = list(name_ca.keys())
-        matcher = TenderMatcher(cand_names) if cand_names else None
+        from ml_engine.analytics.churn_model import load_client_churn
+        scores = load_client_churn()
     except Exception:
-        matcher = None
+        return {"servi": False, "motif": "scores de décrochage illisibles"}
 
-    out: List[Dict[str, Any]] = []
-    for n in news:
-        title = str(n.get("title") or "")
-        title_up = title.upper()
-        item = dict(n)
-        item["relevance"] = sum(1 for k in _OPP_KEYWORDS if k in title_up)
-        matched = None
-        match_method = None
-        # 1) chevauchement de tokens (rapide, précis sur noms exacts)
-        for tok, (nom, ca) in token_map.items():
-            if tok in title_up:
-                matched = (nom, ca); match_method = "token"
-                break
-        # 2) repli sémantique NLP (formulations différentes) si aucun token
-        if matched is None and matcher is not None:
-            try:
-                j, score = matcher.match(title)
-                if j >= 0 and score >= 0.55:
-                    nom = matcher.candidates[j]
-                    matched = (nom, name_ca.get(nom, 0.0)); match_method = f"nlp:{score:.2f}"
-                    item["match_score"] = round(float(score), 2)
-            except Exception:
-                pass
-        if matched:
-            nom, ca = matched
-            item["client"] = nom
-            item["client_ca"] = ca
-            item["type"] = "Client existant"
-            item["match_method"] = match_method
-            if ca >= 2_000_000:
-                item["reco"] = f"Compte stratégique ({ca/1e6:.1f} M DT de CA) — sécuriser avec une offre dédiée."
-            else:
-                item["reco"] = "Client existant — relancer et positionner une offre."
-        else:
-            item["type"] = "Nouveau prospect"
-            item["reco"] = "Prospect — qualifier et préparer un devis."
-        out.append(item)
+    if not scores:
+        return {"servi": False, "motif": "aucun score disponible"}
 
-    # priorité : clients existants d'abord, puis par pertinence métier
-    out.sort(key=lambda x: (x.get("type") != "Client existant", -x.get("relevance", 0)))
-    return out
-
-
-# Mots-clés identifiant un acheteur du secteur public / hospitalier (adossé au
-# budget santé public) — sert à mesurer l'exposition du CA au budget santé.
-_PUBLIC_CLIENT_KEYWORDS = ["HOPITAL", "HÔPITAL", "CHU", "MILITAIRE", "UNIVERSITAIRE",
-                           "REGIONAL", "RÉGIONAL", "INSTITUT", "MINISTERE", "MINISTÈRE",
-                           "CNAM", "PUBLIC", "ETAT", "ÉTAT", "FACULTE", "FACULTÉ",
-                           "DISPENSAIRE", "SANTE PUBLIQUE", "SANTÉ PUBLIQUE"]
-
-
-def fx_margin_sensitivity(fx: Dict[str, Any] | None, filters: Dict[str, Any] | None = None,
-                          data_dir: Path | None = None) -> Optional[Dict[str, Any]]:
-    """Quantifie l'exposition au change SUR LES DONNÉES RÉELLES d'Overlyne.
-    Les réactifs étant importés, les achats fournisseurs (`purchases`) forment la
-    base de coût libellée en devise. On chiffre donc, en dinars, l'impact d'une
-    variation du change sur le coût d'achat annuel — le vrai lien veille ↔ P&L.
-    Respecte le filtre ANNÉE (les achats ne suivent que l'année, pas le client)."""
-    if not fx:
-        return None
-    filters = filters or {}
-    year_clause = ""
-    yrs = filters.get("selected_years") or []
-    if yrs:
-        year_clause = " AND year IN (" + ",".join(str(int(y)) for y in yrs) + ")"
+    # Le modèle indexe ses scores par CODE client ; le briefing et le tableau de
+    # bord doivent afficher des NOMS. Sans cette jointure, le directeur lit
+    # « CE000229 » et doit ouvrir l'ERP pour savoir de quel hôpital il s'agit.
+    noms: Dict[str, str] = {}
     try:
-        con = _connect(data_dir)
-        rows = con.execute(f"""
-            SELECT year, sum(ttc) FROM purchases
-            WHERE year IS NOT NULL AND year BETWEEN 2015 AND 2035{year_clause}
-            GROUP BY year ORDER BY year
-        """).fetchall()
-        con.close()
+        con = _connect()
+        try:
+            noms = {str(c): str(n) for c, n in con.execute(
+                "SELECT client, any_value(client_name) FROM sales "
+                "WHERE client_name IS NOT NULL GROUP BY client").fetchall()}
+        finally:
+            con.close()
     except Exception:
-        return None
-    years = [(int(y), float(v or 0)) for y, v in rows if v]
-    if not years:
-        return None
-    # Base annuelle = moyenne des années observées (run-rate stable), + dernière année connue
-    annual_base = sum(v for _, v in years) / len(years)
-    last_year, last_base = years[-1]
-    per_1pct = annual_base * 0.01
-    res: Dict[str, Any] = {
-        "annual_fx_base_dt": round(annual_base, 0),
-        "last_year": last_year,
-        "last_year_base_dt": round(last_base, 0),
-        "impact_per_1pct_dt": round(per_1pct, 0),
-        "assumption": "Hypothèse prudente : achats fournisseurs traités comme base de coût en devise (import de réactifs).",
+        pass    # sans l'entrepôt, on affichera le code — jamais rien
+
+    classes = sorted(
+        ({"code": code, "nom": noms.get(code, code), **v}
+         for code, v in scores.items()),
+        key=lambda c: -float(c.get("enjeu_dt") or 0))[:limite]
+
+    # Le modèle enregistre des contributions BRUTES (en unités de logit) : elles
+    # ne se lisent pas telles quelles, et un écran qui afficherait « 683 % »
+    # décrédibiliserait l'explication entière. On les convertit ici en PARTS de
+    # l'influence retenue, qui totalisent 100 %.
+    for c in classes:
+        raisons = c.get("raisons") or []
+        total = sum(abs(float(r.get("poids") or 0)) for r in raisons)
+        if total > 0:
+            c["raisons"] = [{**r, "poids": round(abs(float(r.get("poids") or 0)) / total, 3)}
+                            for r in raisons]
+
+    n_alerte = sum(1 for v in scores.values()
+                   if float(v.get("probabilite_decrochage") or 0) >= 0.5)
+    enjeu_total = sum(float(v.get("enjeu_dt") or 0) for v in scores.values())
+
+    return {
+        "servi": True,
+        "n_clients_scores": len(scores),
+        "n_au_dessus_de_0_5": n_alerte,
+        "enjeu_total_dt": round(enjeu_total, 0),
+        "top": classes,
+        "lecture": (
+            "Probabilité qu'un client ACTIF cesse de commander dans les 90 jours. "
+            "Le classement suit l'enjeu financier (probabilité × CA 12 mois), pas "
+            "la probabilité seule : c'est ce qui permet de hiérarchiser les relances."),
     }
-    var = fx.get("eur_tnd_var_pct")
-    if isinstance(var, (int, float)) and var:
-        res["var_pct"] = round(float(var), 2)
-        res["var_impact_dt"] = round(annual_base * float(var) / 100.0, 0)
-    return res
 
 
-def macro_market_context(macro: Dict[str, Any] | None, data_dir: Path | None = None) -> Optional[Dict[str, Any]]:
-    """Relie l'indicateur de budget santé à la DÉPENDANCE RÉELLE d'Overlyne au
-    secteur public : part du CA réalisée avec des acheteurs publics/hospitaliers."""
-    if not macro:
-        return None
+def _charger_flux_reels(con) -> Dict[str, Any]:
+    """Position de stock reconstruite des flux réels, si la table existe.
+
+    La table `stock_flux_reel` est matérialisée par
+    `python -m ml_engine.stock.flux_reels` : la lecture du CSV d'achats est trop
+    lourde pour être refaite à chaque appel du tableau de bord.
+
+    Renvoie `disponible: False` plutôt que de lever : le module est optionnel, et
+    son absence ne doit pas empêcher le reste du tableau de bord de s'afficher.
+    """
     try:
-        con = _connect(data_dir)
-        kw = " OR ".join([f"upper(client_name) LIKE '%{k}%'" for k in _PUBLIC_CLIENT_KEYWORDS])
-        row = con.execute(f"""
+        tables = [r[0] for r in con.execute("SHOW TABLES").fetchall()]
+        if "stock_flux_reel" not in tables:
+            return {"disponible": False,
+                    "motif": "table absente — lancer ml_engine.stock.flux_reels"}
+
+        g = con.execute("""
             SELECT
-              sum(ttc) FILTER (WHERE {kw}) AS pub,
-              sum(ttc) AS tot
-            FROM sales WHERE client_name IS NOT NULL
+                count(*) FILTER (WHERE position > 0 AND NOT est_service),
+                sum(position * cout_unitaire) FILTER (
+                    WHERE position > 0 AND NOT est_service AND cout_unitaire IS NOT NULL),
+                count(*) FILTER (WHERE position > 0 AND NOT est_service
+                                 AND conso_mensuelle > 0
+                                 AND position / conso_mensuelle > 24)
+            FROM stock_flux_reel
         """).fetchone()
-        con.close()
+
+        top = con.execute("""
+            SELECT produit,
+                   position,
+                   position * cout_unitaire        AS valeur_dt,
+                   conso_mensuelle,
+                   position / conso_mensuelle      AS mois_couverture
+            FROM stock_flux_reel
+            WHERE position > 0 AND NOT est_service
+              AND cout_unitaire IS NOT NULL AND conso_mensuelle > 0
+            ORDER BY position * cout_unitaire DESC NULLS LAST
+            LIMIT 12
+        """).fetchall()
+    except Exception as e:
+        return {"disponible": False, "motif": f"lecture impossible ({type(e).__name__})"}
+
+    # Ruptures détectées sur les flux réels : produits encore vendus dont
+    # l'approvisionnement s'est interrompu. Aucun niveau de stock n'est requis.
+    try:
+        from ml_engine.stock.flux_reels import (detecter_obsolescence,
+                                                detecter_ruptures)
+        ruptures = detecter_ruptures(con)
+        # Obsolescence détectée par ROTATION, sans date d'expiration : un
+        # consommable dont le stock dépasse deux ans de consommation périmera,
+        # quelle que soit sa date exacte.
+        obsoletes = detecter_obsolescence(con)
     except Exception:
-        return None
-    pub = float(row[0] or 0)
-    tot = float(row[1] or 0)
-    if tot <= 0:
-        return None
-    share = pub / tot * 100.0
-    sante = (macro.get("sante_pct_pib") or {}).get("value")
-    res: Dict[str, Any] = {
-        "public_ca_share_pct": round(share, 1),
-        "public_ca_dt": round(pub, 0),
-        "sante_pct_pib": sante,
+        ruptures, obsoletes = [], []
+
+    n_pos, valeur, n_dormant = g
+    return {
+        "disponible": True,
+        "ruptures": ruptures[:25],
+        "n_ruptures": len(ruptures),
+        "n_ruptures_critiques": sum(
+            1 for r in ruptures if r["gravite"] in ("rupture_probable", "critique")),
+        "budget_commandes_dt": round(sum(
+            r["quantite_suggeree"] * r["cout_unitaire_dt"] for r in ruptures), 0),
+        "obsolescence": obsoletes[:20],
+        "n_obsoletes": len(obsoletes),
+        "perte_probable_dt": round(
+            sum(o["perte_probable_dt"] for o in obsoletes), 0),
+        "perte_quasi_certaine_dt": round(sum(
+            o["perte_probable_dt"] for o in obsoletes
+            if o["gravite"] == "perte_quasi_certaine"), 0),
+        # Compté séparément : `n_obsoletes` inclut la rotation lente, dont la
+        # perte n'est que probable. Associer le nombre total au montant quasi
+        # certain ferait dire au chiffre autre chose que ce qu'il mesure.
+        "n_obsoletes_certains": sum(
+            1 for o in obsoletes if o["gravite"] == "perte_quasi_certaine"),
+        "n_references_accumulees": int(n_pos or 0),
+        "valeur_immobilisee_dt": round(float(valeur or 0), 0),
+        # Au-delà de deux ans de consommation, une référence n'est plus du stock
+        # de roulement : c'est du capital gelé.
+        "n_references_plus_de_2_ans": int(n_dormant or 0),
+        "top": [{
+            "produit": p,
+            "position": round(float(pos or 0), 0),
+            "valeur_dt": round(float(v or 0), 0),
+            "conso_mensuelle": round(float(cm or 0), 1),
+            "mois_couverture": round(float(mc or 0), 1),
+        } for p, pos, v, cm, mc in top],
+        "nature": (
+            "Quantités entrées moins quantités sorties, calculées sur les "
+            "factures réelles. Variation cumulée et non inventaire : le stock "
+            "antérieur à l'historique reste inconnu, donc ce montant est un "
+            "minorant."),
     }
-    res["note"] = (
-        f"{share:.0f}% du CA dépend d'acheteurs publics/hospitaliers, adossés au budget santé "
-        f"({sante}% du PIB). Une hausse du budget santé soutient ce segment ; une compression l'expose."
-        if sante is not None else
-        f"{share:.0f}% du CA dépend d'acheteurs publics/hospitaliers (sensibles au budget santé public)."
-    )
-    return res
+
+
+def _charger_conversion_devis_si_servie() -> Dict[str, Any]:
+    """Devis à relancer en priorité, si le registre l'autorise.
+
+    Le registre est interrogé par le module lui-même : ce chargeur ne décide de
+    rien. Toute erreur se résout en `servi: False` — une absence vaut mieux qu'un
+    chiffre dont on ne sait pas s'il est autorisé.
+    """
+    try:
+        from ml_engine.analytics.conversion_devis import predire
+        return predire()
+    except Exception as e:
+        return {"servi": False, "motif": f"indisponible ({type(e).__name__})"}
+
+
+def _charger_marge_client_si_servie() -> Dict[str, Any]:
+    """Clients dont la marge va s'éroder, si le registre l'autorise."""
+    try:
+        from ml_engine.analytics.marge_client import predire
+        return predire()
+    except Exception as e:
+        return {"servi": False, "motif": f"indisponible ({type(e).__name__})"}
+
+
+def _charger_reappro_si_servi() -> Dict[str, Any]:
+    """Besoin de réapprovisionnement à 3 mois, si le registre l'autorise.
+
+    Le module est interrogé par le registre et jamais directement : un modèle
+    refusé ne doit pas pouvoir alimenter le tableau de bord par une importation
+    oubliée. Toute erreur se résout en `servi: False` — une absence est toujours
+    préférable à un chiffre dont on ne sait pas s'il est autorisé.
+    """
+    try:
+        from ml_engine.stock.reappro_model import predire
+        return predire()
+    except Exception as e:
+        return {"servi": False, "motif": f"indisponible ({type(e).__name__})"}
+
+
+def _charger_segmentation_si_servie() -> Dict[str, Any]:
+    """Typologie de clientèle, avec son croisement au décrochage.
+
+    Le croisement est la partie qui justifie le module : la segmentation dit qui
+    sont les clients, le modèle de décrochage lesquels partent. Ensemble ils
+    répondent à « quel TYPE de clientèle perdons-nous ? », question qu'aucun des
+    deux ne traite seul et qui oriente une politique plutôt qu'une liste d'appels.
+    """
+    try:
+        from ml_engine.registre import est_deploye
+        if not est_deploye("segmentation"):
+            return {"servi": False, "motif": "segmentation non servie par le registre"}
+    except Exception:
+        return {"servi": False, "motif": "registre indisponible"}
+
+    try:
+        import json as _json
+        p = Path(__file__).resolve().parents[2] / "reports" / "segmentation_metrics.json"
+        if not p.exists():
+            return {"servi": False, "motif": "rapport absent"}
+        r = _json.load(open(p, encoding="utf-8"))
+    except Exception:
+        return {"servi": False, "motif": "rapport illisible"}
+
+    segments = r.get("segments") or []
+    if not segments:
+        return {"servi": False, "motif": "aucun segment"}
+
+    # Le croisement est indexé par identifiant de segment ; on le rattache au
+    # nom pour que l'interface n'ait pas à refaire la jointure.
+    risques = {c["segment"]: c for c in
+               ((r.get("croisement_decrochage") or {}).get("par_segment") or [])}
+
+    return {
+        "servi": True,
+        "n_segments": len(segments),
+        "n_clients": r.get("n_clients"),
+        "qualite": r.get("qualite", {}).get("silhouette"),
+        "stabilite": r.get("qualite", {}).get("stabilite_rand_ajuste"),
+        "segments": [{
+            **s,
+            "part_menacee_pct": (risques.get(s["segment"], {})
+                                 .get("part_menacee_pct")),
+            "ca_menace_dt": risques.get(s["segment"], {}).get("ca_menace_dt"),
+        } for s in segments],
+    }
+
+
+# Les trois fonctions suivantes ont été retirées avec la veille externe :
+# - enrich_opportunities() : enrichissait les appels d'offres avec les clients ERP
+# - fx_margin_sensitivity() : chiffrait l'exposition au change EUR/TND
+# - macro_market_context() : recopiait l'exposition au budget santé public
+# Motif : elles dépendaient de sources hors ERP (TUNEPS, taux de change, macro),
+# dont la qualité ne pouvait être auditée (cf. reports/METRICS_REPORT.md, §2).
+
+
+def _part_publique_carnet(data_dir: Path | None, origine: int, cible: int) -> float | None:
+    """Part (en %) des établissements de santé publics dans les créances DÉJÀ
+    inscrites au carnet pour le mois `cible` : factures émises au plus tard le
+    mois `origine`, échéance au mois `cible`.
+
+    Même périmètre et mêmes exclusions que `carnet_echeances.charger_factures`
+    (portefeuille entier, avoirs exclus), et même index de mois (`année×12 +
+    mois−1`) : numérateur et dénominateur portent sur les mêmes factures, le
+    résultat est donc toujours compris entre 0 et 100. `None` si rien n'est
+    inscrit.
+    """
+    public = condition_sql_hopital_public("client_name")
+    try:
+        con = _connect(data_dir)
+        try:
+            tot, pub = con.execute(f"""
+                SELECT sum(ttc), sum(ttc) FILTER (WHERE {public})
+                FROM sales
+                WHERE date IS NOT NULL AND echeance IS NOT NULL AND NOT est_avoir
+                  AND year(echeance) BETWEEN 2016 AND 2035
+                  AND echeance >= date
+                  AND year(date) * 12 + month(date) - 1 <= ?
+                  AND year(echeance) * 12 + month(echeance) - 1 = ?
+            """, [origine, cible]).fetchone()
+        finally:
+            con.close()
+    except Exception as e:
+        # La phrase est un complément : son absence ne doit pas emporter la carte.
+        _log.warning("radar : part publique du carnet indisponible (%s: %s)",
+                     type(e).__name__, e)
+        return None
+    if not tot:
+        return None
+    return float(pub or 0) / float(tot) * 100
 
 
 def finance_radar(mi: Dict[str, Any] | None, filters: Dict[str, Any] | None = None,
                   data_dir: Path | None = None) -> List[Dict[str, Any]]:
-    """RADAR FINANCIER EXTERNE — traduit les signaux externes en ACTIONS finance
-    priorisées et CHIFFRÉES sur les données réelles d'Overlyne, RECALCULÉES SUR LE
-    PÉRIMÈTRE FILTRÉ (année, client, mode de règlement, montant, risque, fidélité).
+    """RADAR FINANCIER — cartes d'action chiffrées sur les données de l'ERP.
 
-    Trois leviers, chacun reliant un signal externe à un montant interne :
-      1. Recouvrement secteur public : créances publiques à terme long (ERP)
-         × budget santé public (externe) → priorité de recouvrement.
-      2. Exposition change / COGS : base d'achat en devise (ERP) × variation du
-         dinar (externe) → décision d'achat / couverture.
-      3. Pipeline d'appels d'offres : opportunités qualifiées (externe) croisées
-         avec la base clients (ERP) → potentiel commercial.
+    Deux cartes, triées par sévérité puis par montant :
 
-    Retourne une liste de cartes triées par sévérité puis par montant à risque.
+      1. Recouvrement des établissements de santé publics (`recouvrement_public`) :
+         leur part de l'EXPOSITION RÉCENTE — factures à délai accordé > 60 j,
+         échéances des 6 derniers mois —, calculée comme `exposition_recente_dt`
+         et sur le MÊME périmètre filtré. Un établissement est public selon la
+         règle unique de `ml_engine/typologie.py`.
+      2. Créances exigibles le mois prochain (`echeancier_1m`), si le registre
+         sert l'échéancier : lues dans le carnet des factures émises, sur tout
+         le portefeuille, avec la part des établissements publics dans ce qui
+         est déjà inscrit au carnet.
+
+    `mi` : contexte externe facultatif (`{"macro": {"sante_pct_pib": {...}}}`).
+    La veille externe ayant été retirée, les appelants passent `{}` et le
+    signal externe se réduit au constat sur les délais des payeurs publics.
     """
     mi = mi or {}
     filters = filters or {}
@@ -641,141 +514,141 @@ def finance_radar(mi: Dict[str, Any] | None, filters: Dict[str, Any] | None = No
     except Exception:
         return []
 
-    # Périmètre dynamique : mêmes filtres que le tableau de bord
-    base_where = _sales_where(filters)
+    public = condition_sql_hopital_public("client_name")
     try:
-        W = base_where + _apply_fidelity(con, base_where, filters.get("fidelity_filter", "Tous"))
-    except Exception:
-        W = base_where
-    filtre_actif = W.strip() not in ("1=1", "")
-    suffixe_perim = " (périmètre filtré)" if filtre_actif else ""
+        # Périmètre dynamique : mêmes filtres que le tableau de bord
+        base_where = _sales_where(filters)
+        try:
+            W = base_where + _apply_fidelity(con, base_where, filters.get("fidelity_filter", "Tous"))
+        except Exception:
+            W = base_where
+        filtre_actif = W.strip() not in ("1=1", "")
+        suffixe_perim = " (périmètre filtré)" if filtre_actif else ""
 
-    # ── Levier 1 : recouvrement secteur public ───────────────────────────────
-    try:
-        kw = " OR ".join([f"upper(client_name) LIKE '%{k}%'" for k in _PUBLIC_CLIENT_KEYWORDS])
-        row = con.execute(f"""
-            SELECT
-              sum(ttc) FILTER (WHERE payment_delay_days > 60)  AS risque,
-              sum(ttc) FILTER (WHERE payment_delay_days > 90)  AS critique,
-              count(DISTINCT client) FILTER (WHERE payment_delay_days > 60) AS nb_cli
-            FROM sales WHERE ({W}) AND client_name IS NOT NULL AND ({kw})
-        """).fetchone()
-        pub_risque = float(row[0] or 0)
-        pub_crit = float(row[1] or 0)
-        pub_nb = int(row[2] or 0)
-        top = con.execute(f"""
-            SELECT any_value(client_name) nom, sum(ttc) FILTER (WHERE payment_delay_days > 60) m
-            FROM sales WHERE ({W}) AND client_name IS NOT NULL AND ({kw})
-            GROUP BY client HAVING m > 0 ORDER BY m DESC NULLS LAST LIMIT 3
-        """).fetchall()
-        top_debiteurs = [{"client": (r[0] or "—")[:34], "montant": float(r[1] or 0)} for r in top]
-    except Exception:
-        pub_risque = pub_crit = 0.0
-        pub_nb = 0
-        top_debiteurs = []
+        # ── Carte 1 : recouvrement des établissements de santé publics ───────
+        # Même fenêtre que `exposition_recente_dt` : cumuler l'historique (neuf
+        # ans, sans aucune date de règlement dans l'ERP) donnerait un montant
+        # qui n'est dû par personne aujourd'hui.
+        try:
+            expo, expo_pub, crit_pub, nb_pub, ref_mois = con.execute(f"""
+                WITH ref AS (SELECT max(echeance) md FROM sales WHERE {W})
+                SELECT sum(ttc) FILTER (WHERE payment_delay_days > 60),
+                       sum(ttc) FILTER (WHERE payment_delay_days > 60 AND {public}),
+                       sum(ttc) FILTER (WHERE payment_delay_days > 90 AND {public}),
+                       count(DISTINCT client) FILTER (WHERE payment_delay_days > 60 AND {public}),
+                       strftime((SELECT md FROM ref), '%Y-%m')
+                FROM sales
+                WHERE {W} AND echeance >= (SELECT md FROM ref) - INTERVAL 6 MONTH
+            """).fetchone()
+            pub_risque, pub_crit = float(expo_pub or 0), float(crit_pub or 0)
+            pub_nb, expo_totale = int(nb_pub or 0), float(expo or 0)
+            top = con.execute(f"""
+                WITH ref AS (SELECT max(echeance) md FROM sales WHERE {W})
+                SELECT any_value(client_name) nom,
+                       sum(ttc) FILTER (WHERE payment_delay_days > 60) m
+                FROM sales
+                WHERE {W} AND echeance >= (SELECT md FROM ref) - INTERVAL 6 MONTH
+                  AND client_name IS NOT NULL AND {public}
+                GROUP BY client HAVING m > 0 ORDER BY m DESC, nom LIMIT 3
+            """).fetchall()
+            top_debiteurs = [{"client": (r[0] or "—")[:34], "montant": float(r[1] or 0)}
+                             for r in top]
+        except Exception as e:
+            # Visible dans le journal : une erreur avalée en silence a déjà
+            # masqué cette carte pendant des semaines.
+            _log.warning("radar : carte « recouvrement public » indisponible (%s: %s)",
+                         type(e).__name__, e)
+            pub_risque = pub_crit = expo_totale = 0.0
+            pub_nb, ref_mois, top_debiteurs = 0, None, []
 
-    # Contexte externe = budget santé public (source officielle Banque Mondiale),
-    # proxy de la capacité de paiement du secteur public — bien plus fiable qu'un
-    # flux de news généraliste.
-    sante = ((mi.get("macro") or {}).get("sante_pct_pib") or {}).get("value")
-    if pub_risque > 0:
-        sev = "haute" if pub_crit > 0 else "moyenne"
-        noms = ", ".join(d["client"] for d in top_debiteurs) or "vos principaux comptes publics"
-        ext = (f"Budget santé public à {sante}% du PIB — capacité de paiement du secteur adossée aux "
-               f"finances publiques (délais structurellement longs)."
-               if sante is not None else
-               "Payeurs publics : délais de règlement structurellement longs.")
-        cards.append({
-            "id": "recouvrement_public", "categorie": "Recouvrement", "severite": sev,
-            "titre": "Risque de recouvrement — secteur public" + suffixe_perim,
-            "montant_dt": round(pub_risque, 0), "montant_label": "exposition à terme long (>60j)",
-            "constat": (f"{pub_risque/1e6:.2f} M DT de créances sur {pub_nb} client(s) public(s) à terme long "
-                        f"(>60j), dont {pub_crit/1e6:.2f} M DT critiques (>90j)."),
-            "signal_externe": ext,
-            "action": (f"Prioriser le recouvrement de {noms}. Exiger un acompte ou une garantie de paiement "
-                       f"sur les nouveaux marchés publics à terme long."),
-            "top": top_debiteurs,
-        })
-
-    # ── Levier 2 : exposition change / COGS ──────────────────────────────────
-    fxs = fx_margin_sensitivity(mi.get("fx"), filters, data_dir) or mi.get("fx_sensitivity")
-    if fxs:
-        var = fxs.get("var_pct")
-        var_impact = fxs.get("var_impact_dt")
-        base = fxs.get("annual_fx_base_dt") or 0
-        if isinstance(var_impact, (int, float)) and var_impact:
-            sev = "haute" if var_impact > 0 and abs(var) >= 1.5 else "moyenne"
-            sens = "défavorable" if var_impact > 0 else "favorable"
+        # Contexte externe facultatif = budget santé public (Banque Mondiale),
+        # proxy de la capacité de paiement du secteur public.
+        sante = ((mi.get("macro") or {}).get("sante_pct_pib") or {}).get("value")
+        if pub_risque > 0:
+            sev = "haute" if pub_crit > 0 else "moyenne"
+            part = pub_risque / expo_totale * 100 if expo_totale else 0.0
+            periode = f"échéances des six mois jusqu'à {ref_mois}" if ref_mois else "six derniers mois"
+            noms = ", ".join(d["client"] for d in top_debiteurs) or "vos principaux comptes publics"
+            ext = (f"Budget santé public à {sante}% du PIB — capacité de paiement du secteur adossée aux "
+                   f"finances publiques (délais structurellement longs)."
+                   if sante is not None else
+                   "Payeurs publics : délais de règlement structurellement longs.")
             cards.append({
-                "id": "change_cogs", "categorie": "Change / COGS", "severite": sev,
-                "titre": "Exposition au change sur les achats importés",
-                "montant_dt": round(var_impact, 0), "montant_label": "impact annuel sur le coût d'achat",
-                "constat": (f"Variation du dinar de {var:+.1f}% → effet {sens} de {abs(var_impact)/1e3:.0f} K DT "
-                            f"sur une base d'achat importée de {base/1e6:.1f} M DT/an."),
-                "signal_externe": f"Change EUR/TND : {var:+.1f}% depuis le dernier relevé",
-                "action": ("Avancer les commandes fournisseurs et négocier des prix en devise fixes ; "
-                           "envisager une couverture de change sur les prochains imports."
-                           if var_impact > 0 else
-                           "Fenêtre favorable : sécuriser les prochains achats importés au taux actuel."),
-                "top": [],
+                "id": "recouvrement_public", "categorie": "Recouvrement", "severite": sev,
+                "titre": "Risque de recouvrement — établissements de santé publics" + suffixe_perim,
+                "montant_dt": round(pub_risque, 0),
+                "montant_label": "exposition récente à terme long (>60j)",
+                "constat": (f"{pub_risque/1e6:.2f} M DT d'exposition récente à terme long (>60j) "
+                            f"sur {pub_nb} établissement(s) de santé public(s), soit {part:.0f} % "
+                            f"de l'exposition récente ({periode}), dont "
+                            f"{pub_crit/1e6:.2f} M DT à plus de 90 jours."),
+                "signal_externe": ext,
+                "action": (f"Prioriser le recouvrement de {noms}. Exiger un acompte ou une garantie de paiement "
+                           f"sur les nouveaux marchés publics à terme long."),
+                "top": top_debiteurs,
             })
-        else:
-            per1 = fxs.get("impact_per_1pct_dt") or 0
-            cards.append({
-                "id": "change_cogs", "categorie": "Change / COGS", "severite": "faible",
-                "titre": "Sensibilité au change sur les achats importés",
-                "montant_dt": round(per1, 0), "montant_label": "impact par ±1% du dinar",
-                "constat": (f"Base d'achat importée de {base/1e6:.1f} M DT/an : ±1% du dinar ≈ "
-                            f"±{per1/1e3:.0f} K DT de coût."),
-                "signal_externe": "Change EUR/TND stable (référence en cours de constitution)",
-                "action": "Surveiller la tendance ; définir un seuil d'alerte de couverture (ex. −2%/mois).",
-                "top": [],
-            })
+    finally:
+        # Fermée avant la carte 2 : le carnet ouvre sa propre connexion.
+        try:
+            con.close()
+        except Exception:
+            pass
 
-    # ── Levier 3 : pipeline d'appels d'offres qualifiés ──────────────────────
-    news = mi.get("news") or []
-    if news:
-        existants = [n for n in news if n.get("type") == "Client existant"]
-        # Enjeu = CA annuel des comptes existants concernés (relations à défendre/étendre)
-        enjeu = sum(float(n.get("client_ca") or 0) for n in existants)
-        cards.append({
-            "id": "pipeline", "categorie": "Développement", "severite": "moyenne" if existants else "faible",
-            "titre": "Pipeline d'appels d'offres — marché diagnostic",
-            "montant_dt": round(enjeu, 0), "montant_label": "CA annuel des comptes concernés",
-            "constat": (f"{len(news)} opportunité(s) qualifiée(s), dont {len(existants)} sur des clients existants."),
-            "signal_externe": "Marchés publics / actualités du secteur diagnostic (TUNEPS & presse spécialisée)",
-            "action": ("Prioriser les opportunités sur clients existants (cycle de vente plus court) ; "
-                       "cadrer un devis pour les nouveaux prospects."),
-            "top": [{"client": (n.get("client") or n.get("title") or "")[:34],
-                     "montant": float(n.get("client_ca") or 0)} for n in existants[:3]],
-        })
+    # Les leviers « exposition au change » et « pipeline d'appels d'offres » ont
+    # été retirés avec la veille externe : tous deux dépendaient de sources hors
+    # ERP — un taux EUR/TND et un scan de marchés publics — dont la qualité ne
+    # pouvait pas être auditée comme l'est celle des données de facturation.
+    # Le radar ne présente plus que des leviers mesurés sur l'entrepôt.
 
+    # ── Carte 2 : échéancier du mois à venir ─────────────────────────────────
+    #
+    # Ce levier affichait une projection LSTM à 6 mois. Deux raisons de l'avoir
+    # remplacée :
+    #
+    #   * le LSTM n'a jamais confirmé de gain sur une référence triviale, et rien
+    #     dans le code ne l'empêchait d'être servi malgré ce refus ;
+    #   * l'horizon de 6 mois est structurellement intenable. 99 % des factures
+    #     ont un délai de paiement de 0 à 2 mois : au-delà, les encaissements
+    #     proviennent de factures NON ENCORE ÉMISES, qu'aucune méthode ne peut
+    #     lire. Annoncer six mois donnait une précision imaginaire.
+    #
+    # On sert désormais l'échéancier à un mois, mesuré à 1,3 % d'erreur en
+    # walk-forward contre 11,9 % pour la meilleure référence triviale.
     try:
-        con.close()
-    except Exception:
-        pass
+        from ml_engine.forecasting.carnet_echeances import charger_factures, prevoir
+        from ml_engine.registre import est_deploye
 
-    # ── Levier 4 : trésorerie prévisionnelle (DEEP LEARNING — LSTM) ───────────
-    try:
-        from ml_engine.forecasting.lstm_cashflow import load_or_forecast
-        fc = load_or_forecast(horizon=6, data_dir=data_dir)
-        if fc and fc.get("forecast"):
-            total = float(fc.get("encaissement_prevu_total") or 0)
-            couverture = (pub_risque / total * 100) if total else 0
-            cards.append({
-                "id": "tresorerie_lstm", "categorie": "Trésorerie", "severite": "moyenne",
-                "titre": "Trésorerie prévisionnelle — 6 mois",
-                "montant_dt": round(total, 0), "montant_label": "encaissements prévus (6 mois)",
-                "constat": (f"Encaissements attendus sur 6 mois : {total/1e6:.1f} M DT "
-                            f"(estimation indicative basée sur l'historique des paiements). "
-                            f"L'exposition publique à risque représente {couverture:.0f}% de cet encaissement."),
-                "signal_externe": "Projection basée sur l'historique des encaissements et des échéances clients",
-                "action": ("Aligner l'intensité des relances sur les mois de moindre encaissement prévu ; "
-                           "sécuriser la trésorerie avant les creux."),
-                "serie": fc.get("forecast"), "history": fc.get("history"), "top": [],
-            })
-    except Exception:
-        pass
+        if est_deploye("echeancier"):
+            factures = charger_factures()
+            echeances = sorted({e for _, e, _ in factures})
+            emissions = sorted({em for em, _, _ in factures})
+            origine = max(emissions) - 1        # dernier mois à cible complète
+            sortie = prevoir(factures, origine, 1, echeances[0])
+            if sortie:
+                prevu, _regime, maturite = sortie
+                part_pub = _part_publique_carnet(data_dir, origine, origine + 1)
+                phrase_pub = ("" if part_pub is None else
+                              f" Les établissements de santé publics en portent "
+                              f"{part_pub:.0f} % de la part déjà inscrite.")
+                cards.append({
+                    "id": "echeancier_1m", "categorie": "Trésorerie", "severite": "moyenne",
+                    "titre": "Créances exigibles le mois prochain",
+                    "montant_dt": round(prevu, 0),
+                    "montant_label": "montant arrivant à échéance",
+                    "constat": (
+                        f"{prevu/1e6:.2f} M DT de créances deviennent exigibles le mois "
+                        f"prochain. {maturite:.0%} de ce montant est déjà inscrit au "
+                        "carnet : il est lu dans les factures émises, non estimé."
+                        + phrase_pub),
+                    "signal_externe": "Échéances contractuelles des factures déjà émises",
+                    "action": ("Caler les relances sur ce montant : ce sont des créances "
+                               "exigibles, pas des encaissements garantis — l'ERP "
+                               "n'enregistre aucune date de règlement."),
+                    "top": [],
+                })
+    except Exception as e:
+        _log.warning("radar : carte « échéancier » indisponible (%s: %s)",
+                     type(e).__name__, e)
 
     order = {"haute": 0, "moyenne": 1, "faible": 2}
     cards.sort(key=lambda c: (order.get(c.get("severite"), 3), -(c.get("montant_dt") or 0)))
@@ -804,15 +677,28 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     k: Dict[str, Any] = {"monthly_sales": [], "top_clients": [], "anomalies_details": []}
 
     # ── 1. Chiffre d'affaires ────────────────────────────────────────────────
+    # `ttc` porte désormais le signe comptable : la somme est donc un CA NET,
+    # avoirs déduits. En revanche un avoir n'est pas une vente — le compter
+    # comme une facture gonflait le volume et faussait le panier moyen, qui
+    # divisait un CA net par un nombre de pièces brut.
     row = con.execute(f"""
-        SELECT sum(ttc) ttc, sum(ht) ht, count(*) nb, count(DISTINCT client) clients,
-               avg(payment_delay_days) dso
+        SELECT sum(ttc) ttc, sum(ht) ht,
+               count(*) FILTER (WHERE NOT est_avoir)  nb,
+               count(*) FILTER (WHERE est_avoir)      nb_avoirs,
+               sum(-ttc) FILTER (WHERE est_avoir)     mt_avoirs,
+               count(DISTINCT client) clients,
+               avg(payment_delay_days) FILTER (WHERE NOT est_avoir) dso
         FROM sales WHERE {W}
     """).fetchone()
-    ca_ttc, ca_ht, nb_fact, nb_clients, dso = (row or (0, 0, 0, 0, 0))
+    ca_ttc, ca_ht, nb_fact, nb_avoirs, mt_avoirs, nb_clients, dso = (
+        row or (0, 0, 0, 0, 0, 0, 0))
     k["ca_total_ttc"] = float(ca_ttc or 0)
     k["ca_total_ht"] = float(ca_ht or 0)
     k["nb_factures_vente"] = int(nb_fact or 0)
+    k["nb_avoirs"] = int(nb_avoirs or 0)
+    k["montant_avoirs_ttc"] = float(mt_avoirs or 0)
+    k["taux_avoirs_pct"] = (k["montant_avoirs_ttc"] / k["ca_total_ttc"] * 100
+                            if k["ca_total_ttc"] else 0.0)
     k["nb_clients"] = int(nb_clients or 0)
     k["panier_moyen"] = (k["ca_total_ttc"] / k["nb_factures_vente"]) if k["nb_factures_vente"] else 0
     k["dso_jours"] = float(dso or 0)
@@ -886,14 +772,18 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     # la date de paiement effective. `payment_delay_days` = délai de crédit ACCORDÉ.
     # On qualifie de "à risque" les termes longs (> 60 j) et de "critiques" (> 90 j),
     # car un délai accordé long accroît le DSO et l'exposition au risque de crédit.
+    # `NOT est_avoir` partout : un avoir n'est pas une créance à recouvrer, et
+    # son montant négatif viendrait en déduction d'une exposition qu'il ne
+    # concerne pas.
     drow = con.execute(f"""
         SELECT
-          count(*) FILTER (WHERE payment_delay_days > 90)              c90,
-          count(*) FILTER (WHERE payment_delay_days > 60)              c60,
-          count(*) FILTER (WHERE payment_delay_days > 30)              c30,
-          count(*) FILTER (WHERE payment_delay_days IS NOT NULL)       tot,
-          sum(ttc) FILTER (WHERE payment_delay_days > 60)              montant_risque,
-          sum(ttc) FILTER (WHERE payment_delay_days > 90)              montant_critique
+          count(*) FILTER (WHERE payment_delay_days > 90 AND NOT est_avoir)  c90,
+          count(*) FILTER (WHERE payment_delay_days > 60 AND NOT est_avoir)  c60,
+          count(*) FILTER (WHERE payment_delay_days > 30 AND NOT est_avoir)  c30,
+          count(*) FILTER (WHERE payment_delay_days IS NOT NULL
+                             AND NOT est_avoir)                              tot,
+          sum(ttc) FILTER (WHERE payment_delay_days > 60 AND NOT est_avoir)  montant_risque,
+          sum(ttc) FILTER (WHERE payment_delay_days > 90 AND NOT est_avoir)  montant_critique
         FROM sales WHERE {W}
     """).fetchone()
     c90, c60, c30, tot_delay, mt_risque, mt_crit = drow
@@ -943,6 +833,9 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     """).fetchall()]
 
     # Structure des délais accordés (tranches) -> graphe empilé / barres
+    # Ventes seulement : une tranche d'âge décrit des créances à encaisser, or
+    # un avoir est une dette envers le client. L'y inclure retrancherait un
+    # montant d'une tranche à laquelle il n'appartient pas.
     aging = con.execute(f"""
         SELECT
           sum(ttc) FILTER (WHERE payment_delay_days <= 0)                         AS comptant,
@@ -950,31 +843,42 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
           sum(ttc) FILTER (WHERE payment_delay_days > 30 AND payment_delay_days <= 60) AS j60,
           sum(ttc) FILTER (WHERE payment_delay_days > 60 AND payment_delay_days <= 90) AS j90,
           sum(ttc) FILTER (WHERE payment_delay_days > 90)                          AS j90p
-        FROM sales WHERE {W}
+        FROM sales WHERE {W} AND NOT est_avoir
     """).fetchone()
     labels = ["Comptant", "0-30 j", "31-60 j", "61-90 j", "90 j +"]
     k["aging_creances"] = [{"bucket": labels[i], "montant": float(aging[i] or 0)} for i in range(5)]
 
     # ── 6. Top clients + concentration (HHI, Pareto) ─────────────────────────
+    # `revenue` est un CA NET (avoirs déduits) ; `invoices` ne compte donc que
+    # les ventes, sans quoi un client très remboursé afficherait beaucoup de
+    # factures pour un chiffre faible.
     top = con.execute(f"""
-        SELECT client, any_value(client_name) nom, sum(ttc) revenue, count(*) invoices,
-               sum(ttc) FILTER (WHERE payment_delay_days > 30) risque
+        SELECT client, any_value(client_name) nom, sum(ttc) revenue,
+               count(*) FILTER (WHERE NOT est_avoir)                  invoices,
+               count(*) FILTER (WHERE est_avoir)                      avoirs,
+               sum(ttc) FILTER (WHERE payment_delay_days > 30
+                                  AND NOT est_avoir)                  risque
         FROM sales WHERE {W} GROUP BY client ORDER BY revenue DESC NULLS LAST LIMIT 10
     """).fetchall()
     g = k["ca_total_ttc"] or 1
     k["top_clients"] = [{
         "client": t[0], "nom": t[1] or t[0], "revenue": float(t[2] or 0), "invoices": int(t[3] or 0),
+        "avoirs": int(t[4] or 0),
         "share": float((t[2] or 0) / g * 100), "rank": i + 1,
-        "risque": float(t[4] or 0),
+        "risque": float(t[5] or 0),
     } for i, t in enumerate(top)]
     k["top_clients_revenue_share"] = float(sum(c["revenue"] for c in k["top_clients"][:5]) / g * 100)
 
     # ── Clients fidèles : la fidélité = RÉCURRENCE dans le temps, pas seulement
     # le CA. On classe par nb de mois d'achat distincts, puis nb de factures, puis CA.
+    # La récurrence se mesure sur les VENTES : un avoir n'est pas un achat, et
+    # un mois où le client n'a reçu qu'un avoir n'est pas un mois actif.
     fideles = con.execute(f"""
-        SELECT client, any_value(client_name) nom, sum(ttc) revenue, count(*) invoices,
-               count(DISTINCT strftime(date, '%Y-%m')) mois_actifs,
-               strftime(min(date), '%Y-%m') premier, strftime(max(date), '%Y-%m') dernier
+        SELECT client, any_value(client_name) nom, sum(ttc) revenue,
+               count(*) FILTER (WHERE NOT est_avoir) invoices,
+               count(DISTINCT strftime(date, '%Y-%m')) FILTER (WHERE NOT est_avoir) mois_actifs,
+               strftime(min(date) FILTER (WHERE NOT est_avoir), '%Y-%m') premier,
+               strftime(max(date) FILTER (WHERE NOT est_avoir), '%Y-%m') dernier
         FROM sales WHERE {W} AND client_name IS NOT NULL AND date IS NOT NULL
           AND client_name NOT ILIKE '%passager%' AND client_name NOT ILIKE '%comptant%'
           AND client_name NOT ILIKE '%divers%' AND client_name NOT ILIKE '%espèce%'
@@ -1006,7 +910,8 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         )
         SELECT nom, strftime(last_date, '%Y-%m') dernier, mois_actifs,
                coalesce(ca_recent, 0) cr, coalesce(ca_prev, 0) cp,
-               datediff('day', last_date, (SELECT md FROM ref)) jours_inactif
+               datediff('day', last_date, (SELECT md FROM ref)) jours_inactif,
+               client
         FROM pc
         WHERE mois_actifs >= 6 AND coalesce(ca_prev, 0) > 0
           AND coalesce(ca_recent, 0) < ca_prev * 0.4
@@ -1017,15 +922,60 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         "nom": d[0], "dernier": d[1], "mois_actifs": int(d[2] or 0),
         "ca_recent": float(d[3] or 0), "ca_prev": float(d[4] or 0),
         "jours_inactif": int(d[5] or 0),
+        "code": d[6],
         "chute_pct": float((1 - (d[3] or 0) / d[4]) * 100) if d[4] else 0.0,
     } for d in decroche]
 
+    # ── Décrochage ANTICIPÉ par le modèle ────────────────────────────────────
+    # Les deux blocs répondent à deux questions différentes, et c'est pour cela
+    # qu'ils coexistent :
+    #
+    #   * `clients_decrochent` CONSTATE — le chiffre d'affaires a déjà chuté de
+    #     plus de 60 %. L'information arrive quand le client est déjà parti ;
+    #   * `churn_anticipe` ANTICIPE — probabilité qu'un client encore actif cesse
+    #     de commander dans les 90 jours. C'est là qu'une relance a un effet.
+    #
+    # Le modèle n'est lu QUE si le registre le déclare servi. Un modèle refusé
+    # reste ainsi inaccessible au tableau de bord, même si son fichier existe.
+    k["churn_anticipe"] = _charger_churn_si_servi()
+
+    # ── Typologie de clientèle ───────────────────────────────────────────────
+    # Le tableau de bord répond déjà à « quels clients ? ». La segmentation
+    # répond à « quels TYPES de clients ? » — une liste de 938 comptes ne se
+    # pilote pas, une poignée de segments oui.
+    k["segmentation"] = _charger_segmentation_si_servie()
+
+    # ── Cycle commercial et rentabilité ─────────────────────────────────────
+    #
+    # Deux modules servis par des modèles appris sur données réelles. Ils sont
+    # chargés ici, dans le calcul que le frontend consomme, et non appelés
+    # directement par une page : l'échéancier et la demande hybride sont restés
+    # débranchés des semaines pour avoir manqué exactement cette ligne.
+    k["conversion_devis"] = _charger_conversion_devis_si_servie()
+    k["marge_client"] = _charger_marge_client_si_servie()
+
+    # ── Immobilisations RÉELLES ──────────────────────────────────────────────
+    # Reconstruites des factures d'achat et de vente, sans aucune simulation.
+    # Elles remplacent le surstock simulé partout où un montant est annoncé à
+    # l'utilisateur : un directeur ne déstocke pas sur une estimation.
+    k["stock_flux_reel"] = _charger_flux_reels(con)
+
+    # ── Réapprovisionnement appris ───────────────────────────────────────────
+    # Complément et non substitut de la détection de rupture : celle-ci constate
+    # ce qui manque déjà, le modèle anticipe ce qui sera commandé. Les deux se
+    # servent en parallèle, et le second disparaît si le registre le refuse.
+    k["reappro"] = _charger_reappro_si_servi()
+
     # ── Concentration du CA : nb de clients réalisant 80% du CA (règle de Pareto)
+    # `r > 0` : un client au solde net négatif n'apporte pas de CA à concentrer.
+    # Sans ce filtre, il abaisserait le total cumulé et ferait croire que moins
+    # de clients suffisent à atteindre 80 % du chiffre.
     conc = con.execute(f"""
         WITH s AS (SELECT client, sum(ttc) r FROM sales WHERE {W} GROUP BY client),
         ranked AS (
           SELECT r, sum(r) OVER () tot, sum(r) OVER (ORDER BY r DESC) cum,
-                 row_number() OVER (ORDER BY r DESC) rn, count(*) OVER () n FROM s
+                 row_number() OVER (ORDER BY r DESC) rn, count(*) OVER () n
+          FROM s WHERE r > 0
         )
         SELECT min(rn) FILTER (WHERE cum >= 0.8 * tot), max(n) FROM ranked
     """).fetchone()
@@ -1033,17 +983,29 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     k["nb_clients_ca"] = int(conc[1] or 0)
 
     # HHI clients (indice de Herfindahl-Hirschman, sur 10000)
+    # `r > 0` est indispensable depuis que le CA porte le signe des avoirs : un
+    # client dont les avoirs dépassent les ventes a un CA net négatif, et le
+    # carré d'une part négative redevient positif — il gonflerait donc l'indice
+    # de concentration au lieu de le réduire. Un tel client ne pèse pas dans la
+    # concentration : il est exclu du calcul, et compté à part.
     hhi = con.execute(f"""
         WITH s AS (SELECT client, sum(ttc) r FROM sales WHERE {W} GROUP BY client),
-             tot AS (SELECT sum(r) t FROM s)
-        SELECT sum(power(r/(SELECT t FROM tot)*100, 2)) FROM s WHERE (SELECT t FROM tot) > 0
+             pos AS (SELECT r FROM s WHERE r > 0),
+             tot AS (SELECT sum(r) t FROM pos)
+        SELECT sum(power(r/(SELECT t FROM tot)*100, 2)) FROM pos
+        WHERE (SELECT t FROM tot) > 0
     """).fetchone()[0]
     k["hhi_clients"] = float(hhi or 0)
+    k["clients_solde_negatif"] = int(con.execute(f"""
+        WITH s AS (SELECT client, sum(ttc) r FROM sales WHERE {W} GROUP BY client)
+        SELECT count(*) FROM s WHERE r < 0
+    """).fetchone()[0] or 0)
 
     # Courbe de Pareto (concentration) : part cumulée du CA par décile de clients
     pareto = con.execute(f"""
         WITH s AS (
           SELECT client, sum(ttc) r FROM sales WHERE {W} GROUP BY client
+          HAVING sum(ttc) > 0      -- voir HHI : un solde net négatif n'est pas du CA
         ), ranked AS (
           SELECT r, row_number() OVER (ORDER BY r DESC) rn, count(*) OVER () n,
                  sum(r) OVER () tot, sum(r) OVER (ORDER BY r DESC) cum
@@ -1094,14 +1056,21 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     purch_where = "1=1"
     if filters.get("selected_years"):
         purch_where = "year IN (" + ",".join(str(int(y)) for y in filters["selected_years"]) + ")"
+    # Mêmes règles que pour les ventes : le montant est NET (avoirs fournisseur
+    # déduits), le comptage et le DPO portent sur les seules factures d'achat.
     prow = con.execute(f"""
-        SELECT sum(ttc) ttc, count(*) nb, count(DISTINCT fournisseur) nf, avg(payment_delay_days) dpo
+        SELECT sum(ttc) ttc,
+               count(*) FILTER (WHERE NOT est_avoir)                nb,
+               count(*) FILTER (WHERE est_avoir)                    nb_av,
+               count(DISTINCT fournisseur)                          nf,
+               avg(payment_delay_days) FILTER (WHERE NOT est_avoir) dpo
         FROM purchases WHERE {purch_where}
     """).fetchone()
     k["achats_total_ttc"] = float(prow[0] or 0)
     k["nb_factures_achat"] = int(prow[1] or 0)
-    k["nb_fournisseurs"] = int(prow[2] or 0)
-    k["dpo_jours"] = float(prow[3] or 0)
+    k["nb_avoirs_achat"] = int(prow[2] or 0)
+    k["nb_fournisseurs"] = int(prow[3] or 0)
+    k["dpo_jours"] = float(prow[4] or 0)
 
     k["top_fournisseurs"] = [{
         "fournisseur": (r[0] or r[1] or "—")[:32], "montant": float(r[2] or 0),
@@ -1110,10 +1079,13 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         SELECT fournisseur, fournisseur_code, sum(ttc) m
         FROM purchases WHERE {purch_where} GROUP BY 1,2 ORDER BY m DESC NULLS LAST LIMIT 8
     """).fetchall())]
+    # `r > 0` : voir le HHI clients — le carré d'une part négative redevient
+    # positif et gonflerait l'indice au lieu de le réduire.
     hhi_f = con.execute(f"""
         WITH s AS (SELECT fournisseur, sum(ttc) r FROM purchases WHERE {purch_where} GROUP BY 1),
-             tot AS (SELECT sum(r) t FROM s)
-        SELECT sum(power(r/(SELECT t FROM tot)*100,2)) FROM s WHERE (SELECT t FROM tot) > 0
+             pos AS (SELECT r FROM s WHERE r > 0),
+             tot AS (SELECT sum(r) t FROM pos)
+        SELECT sum(power(r/(SELECT t FROM tot)*100,2)) FROM pos WHERE (SELECT t FROM tot) > 0
     """).fetchone()[0]
     k["hhi_fournisseurs"] = float(hhi_f or 0)
 
@@ -1129,32 +1101,78 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         for m in k["monthly_sales"]
     ]
 
-    # ── 11. Marge ────────────────────────────────────────────────────────────
-    if marge_non_attribuable:
+    # ── 11. Marge RÉELLE (coût de revient ERP, attribuable au client) ────────
+    # Source : lignes de vente (MTCRSIGNE = coût de revient signé), agrégées dans
+    # `client_margin`. Cette marge est ATTRIBUABLE : elle suit le filtre client,
+    # contrairement à l'ancienne approximation « CA HT − achats TTC ».
+    marge_row = None
+    try:
+        mw = ["1=1"]
+        if filters.get("selected_years"):
+            mw.append("year IN (" + ",".join(str(int(y)) for y in filters["selected_years"]) + ")")
+        if filters.get("selected_clients"):
+            vals = ",".join("'" + str(c).replace("'", "''") + "'"
+                            for c in filters["selected_clients"])
+            mw.append(f"client IN ({vals})")
+        if filters.get("date_start"):
+            mw.append(f"period >= '{str(filters['date_start'])[:7]}'")
+        if filters.get("date_end"):
+            mw.append(f"period <= '{str(filters['date_end'])[:7]}'")
+        marge_row = con.execute(
+            f"SELECT sum(ca_ligne), sum(cout_revient), sum(marge), sum(n_lignes) "
+            f"FROM client_margin WHERE {' AND '.join(mw)}").fetchone()
+    except Exception:
+        marge_row = None
+
+    if marge_row and marge_row[0] and float(marge_row[0]) > 0:
+        ca_lignes = float(marge_row[0])
+        marge = float(marge_row[2] or 0)
+        k["marge_brute"] = round(marge, 0)
+        k["taux_marge"] = float(marge / ca_lignes * 100)
+        k["marge_quality_score"] = float(max(0, min(100, k["taux_marge"])))
+        k["marge_ca_reference_dt"] = round(ca_lignes, 0)
+        k["marge_cout_revient_dt"] = round(float(marge_row[1] or 0), 0)
+        k["marge_source"] = "cout_revient_erp"
+        k["marge_note"] = (
+            "Marge réelle : chiffre d'affaires des lignes de vente moins le coût de "
+            "revient ERP (MTCRSIGNE), attribuable par client. Les lignes dont le coût "
+            "dépasse 5× le prix de vente (erreurs de saisie) sont écartées.")
+        # Signalement qualité (transparence sur le nettoyage appliqué)
+        try:
+            q = con.execute("SELECT lignes_exclues, lignes_facturees, lignes_offertes, "
+                            "cout_offert FROM margin_quality").fetchone()
+            if q and q[1]:
+                k["marge_lignes_exclues"] = int(q[0] or 0)
+                k["marge_lignes_exclues_pct"] = round(float(q[0] or 0) / float(q[1]) * 100, 2)
+                k["marge_cout_articles_offerts_dt"] = round(float(q[3] or 0), 0)
+        except Exception:
+            pass
+    else:
+        # Aucune ligne exploitable sur ce périmètre (client sans lignes détaillées)
         k["marge_brute"] = None
         k["taux_marge"] = None
         k["marge_quality_score"] = None
-        k["marge_note"] = "Marge non attribuable sur ce périmètre filtré (les achats ne suivent que le filtre année)."
-    else:
-        marge = k["ca_total_ht"] - k["achats_total_ttc"]
-        k["marge_brute"] = float(marge)
-        k["taux_marge"] = float(marge / k["ca_total_ht"] * 100) if k["ca_total_ht"] else 0
-        k["marge_quality_score"] = float(max(0, min(100, k["taux_marge"])))
-        k["marge_note"] = ("Marge commerciale estimée (CA HT − achats TTC). Le périmètre des achats "
-                           "peut différer de celui des ventes.")
+        k["marge_source"] = "indisponible"
+        k["marge_note"] = ("Marge non calculable sur ce périmètre : aucune ligne de vente "
+                           "avec coût de revient exploitable.")
 
-    # marge mensuelle estimée (CA HT - achats du mois)
-    k["monthly_margin"] = [
-        {"period": m["period"],
-         "marge": float(con_row_ht(con, W, m["period"]) - pm_map.get(m["period"], 0))}
-        for m in k["monthly_sales"]
-    ] if not marge_non_attribuable else []
+    # Marge mensuelle RÉELLE (issue des lignes, donc attribuable au client)
+    try:
+        mm = con.execute(
+            f"SELECT period, sum(marge) FROM client_margin "
+            f"WHERE {' AND '.join(mw)} GROUP BY period ORDER BY period").fetchall()
+        mm_map = {r[0]: float(r[1] or 0) for r in mm}
+        k["monthly_margin"] = [{"period": m["period"], "marge": mm_map.get(m["period"], 0.0)}
+                               for m in k["monthly_sales"]]
+    except Exception:
+        k["monthly_margin"] = []
 
-    # ── 11bis. Cascade « du CA au résultat » (waterfall P&L) ─────────────────
-    if not marge_non_attribuable and k.get("ca_total_ht"):
+    # ── 11bis. Cascade « du CA à la marge » (waterfall P&L) ──────────────────
+    # Construite sur la marge RÉELLE : CA des lignes − coût de revient.
+    if k.get("marge_brute") is not None and k.get("marge_ca_reference_dt"):
         k["waterfall"] = [
-            {"step": "CA HT", "value": float(k["ca_total_ht"]), "kind": "start"},
-            {"step": "Achats", "value": -float(k["achats_total_ttc"]), "kind": "neg"},
+            {"step": "CA (lignes)", "value": float(k["marge_ca_reference_dt"]), "kind": "start"},
+            {"step": "Coût de revient", "value": -float(k["marge_cout_revient_dt"]), "kind": "neg"},
             {"step": "Marge brute", "value": float(k["marge_brute"]), "kind": "total"},
         ]
     else:
@@ -1168,13 +1186,27 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     k["nb_devis"] = int(drow[0] or 0)
     k["montant_devis_total"] = float(drow[1] or 0)
     nb_clients_devis = int(drow[2] or 0)
-    # Taux de transformation = % des clients prospectés (devisés) ayant effectivement facturé
-    converted = int(_scalar(con, f"""
-        SELECT count(DISTINCT d.client) FROM devis d
-        WHERE {dwhere.replace('year(date)', 'year(d.date)')}
-          AND d.client IN (SELECT DISTINCT client FROM sales WHERE {W})
-    """)) if nb_clients_devis else 0
-    k["taux_conversion_devis"] = float(min(100, converted / nb_clients_devis * 100)) if nb_clients_devis else 0
+    # ── Taux de conversion RÉEL : basé sur le statut ERP du devis ────────────
+    # `transforme` = (ETATPIECE = '8'). Interprétation VALIDÉE empiriquement :
+    # 89,4 % des devis en état 8 ont une facture du même client au même montant
+    # (± 1 %), contre 37,4 % pour l'état 1 — l'écart ne laisse pas de doute.
+    # L'ancienne heuristique (« le client a-t-il facturé quelque chose ? »)
+    # surestimait massivement le taux (94,8 % au lieu de ~9 %).
+    conv = con.execute(f"""
+        SELECT count(*) FILTER (WHERE transforme) AS transformes,
+               count(*)                            AS total,
+               sum(ttc) FILTER (WHERE transforme)  AS montant_transforme
+        FROM devis WHERE {dwhere}
+    """).fetchone()
+    n_transf, n_devis_tot = int(conv[0] or 0), int(conv[1] or 0)
+    converted = n_transf
+    k["devis_transformes"] = n_transf
+    k["montant_devis_transforme"] = round(float(conv[2] or 0), 0)
+    k["taux_conversion_devis"] = float(n_transf / n_devis_tot * 100) if n_devis_tot else 0.0
+    k["taux_conversion_source"] = "etat_piece_erp"
+    k["taux_conversion_note"] = (
+        "Part des devis effectivement TRANSFORMÉS en facture (statut ERP "
+        "ETATPIECE=8, validé empiriquement à 89 % d'appariement montant/client).")
     nb_bl = int(_scalar(con, "SELECT count(*) FROM bl"))
     k["nb_bl"] = nb_bl
     k["montant_bl_total"] = None
@@ -1242,6 +1274,11 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
             enriched.append({
                 "client": cl, "nom": name_map.get(cl, cl), "score": score, "exposure": expo,
                 "avg_delay": float(v.get("avg_delay", 0)), "priority": priority,
+                # Pourquoi ce client est en tête du classement. Ici aucun modèle
+                # appris : une RÈGLE mesurée sur l'historique. L'explication est
+                # donc la règle elle-même — la valeur observée et le seuil
+                # franchi —, ce qui est plus vérifiable qu'une attribution.
+                "raisons": _raisons_credit(v),
             })
         k["nb_clients_risque_predit"] = nb_high
         k["exposition_risque_ponderee"] = expo_ponderee
@@ -1275,6 +1312,79 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     # ── 16. BFR / cycle de trésorerie ────────────────────────────────────────
     k["cash_conversion_cycle"] = float(k["dso_jours"] - k["dpo_jours"])
 
+    # ── 17. Factures importées par OCR ───────────────────────────────────────
+    # Bloc SÉPARÉ, jamais fondu dans les totaux ci-dessus. Les indicateurs ERP
+    # doivent rester rapprochables de l'export d'origine : une facture lue à
+    # 70 % de confiance n'a pas le même statut probatoire qu'une ligne d'ERP.
+    # L'interface et l'agent les présentent donc comme un apport distinct.
+    k["import_ocr"] = {"n_factures": 0, "total_ttc_dt": 0.0, "factures": []}
+    try:
+        clients_filtre = (filters or {}).get("selected_clients") or []
+        # Ce bloc parle de CLIENTS : seules les ventes y ont leur place. Un achat
+        # importé (sens = 'achat') n'est pas du chiffre d'affaires. Les lignes
+        # antérieures à la colonne `sens` sont des ventes.
+        colonnes = {r[0] for r in con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'factures_importees'").fetchall()}
+        conds = ["coalesce(sens, 'vente') = 'vente'"] if "sens" in colonnes else []
+        if clients_filtre:
+            conds.append("(client_code IN ? OR client_name IN ?)")
+        rows = con.execute(f"""
+            SELECT numero, client_code, client_name, date, ht, tva, ttc,
+                   net_a_payer, confiance_ocr, fichier_source
+            FROM factures_importees
+            {("WHERE " + " AND ".join(conds)) if conds else ""}
+            ORDER BY date DESC NULLS LAST, numero ASC
+            LIMIT 50
+        """, ([clients_filtre, clients_filtre] if clients_filtre else [])).fetchall()
+        k["import_ocr"] = {
+            "n_factures": len(rows),
+            "total_ttc_dt": round(sum(float(r[6] or 0) for r in rows), 3),
+            "factures": [{
+                "numero": r[0], "client_code": r[1], "client_name": r[2],
+                "date": r[3].isoformat() if r[3] else None,
+                "ht": r[4], "tva": r[5], "ttc": r[6], "net_a_payer": r[7],
+                "confiance_ocr": r[8], "fichier": r[9],
+            } for r in rows],
+            "note": ("Factures lues par OCR et validées à l'import. Comptabilisées "
+                     "à part des indicateurs ERP, dont elles ne modifient aucun total."),
+        }
+    except Exception:
+        # Table absente tant qu'aucune facture n'a été importée : cas normal.
+        pass
+
+    # ── 17 bis. Échéancier des factures OCR hors ERP ────────────────────────
+    # Décaissements et encaissements à venir des factures lues et non encore
+    # présentes dans l'ERP. Bloc séparé, comme ci-dessus : il ne modifie ni
+    # `cash_forecast` (échéances ERP) ni aucun total.
+    try:
+        from ml_engine.ocr.echeancier import echeancier as _echeancier
+        e = _echeancier()
+        k["echeancier_ocr"] = {c: e[c] for c in (
+            "a_payer_dt", "a_encaisser_dt", "a_payer_en_retard_dt", "a_encaisser_en_retard_dt",
+            "n_factures", "n_echeances_deduites", "mois", "note")}
+    except Exception:
+        k["echeancier_ocr"] = {"n_factures": 0, "mois": []}
+
+    # ── 17 ter. Exactitude de l'OCR en production ───────────────────────────
+    try:
+        from ml_engine.ocr.apprentissage import mesure_production
+        k["qualite_ocr_production"] = mesure_production()
+    except Exception:
+        k["qualite_ocr_production"] = {"n_factures_relues": 0, "par_moteur": {}}
+
+    # ── 18. Contrôle d'intégrité ─────────────────────────────────────────────
+    # Le CA a été faux de 5,44 % pendant toute la durée du projet sans que rien
+    # ne le signale : un montant erroné reste plausible. Les invariants sont
+    # donc vérifiés à chaque calcul, et le résultat accompagne les indicateurs
+    # plutôt que d'attendre un audit manuel.
+    try:
+        from ml_engine.analytics.data_quality import controler_integrite
+        k["integrite"] = controler_integrite(k)
+    except Exception as exc:
+        k["integrite"] = {"statut": "inconnu", "erreurs": [], "alertes": [],
+                          "infos": [], "resume": f"contrôle indisponible : {exc}"}
+
     con.close()
     return k
 
@@ -1288,11 +1398,7 @@ def con_row_ht(con, where: str, period: str) -> float:
 # CLI de test
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    import json
-    force = "--force" in os.sys.argv
-    print("Construction de l'entrepôt…")
-    build_store(force=force)
-    print("OK. Calcul des KPIs (sans filtre)…")
+    print("Calcul des KPIs (sans filtre)…")
     kpis = compute_dashboard({})
     preview = {key: v for key, v in kpis.items() if not isinstance(v, list)}
     print(json.dumps(preview, indent=2, ensure_ascii=False, default=str))

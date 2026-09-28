@@ -1,0 +1,18 @@
+{
+  "numero": "FV-2026-0142",
+  "date": "2026-09-14",
+  "fournisseur": "ATELIER NOVALUX",
+  "client": "STE DELTA COMPOSITES",
+  "devise": "TND",
+  "total_ht": 1995.0,
+  "total_tva": 364.65,
+  "timbre": 1.0,
+  "total_ttc": 2360.65,
+  "net_a_payer": 2337.043,
+  "_pieges": [
+    "deux taux de TVA (19 % et 7 %) : ne pas prendre 356,250 ni 8,400",
+    "net a payer != TTC (retenue a la source 1 % = 23,607)",
+    "fournisseur en blanc sur fond fonce",
+    "RIB, IBAN, telephone, registre de commerce : chiffres a ne pas lire comme montants"
+  ]
+}

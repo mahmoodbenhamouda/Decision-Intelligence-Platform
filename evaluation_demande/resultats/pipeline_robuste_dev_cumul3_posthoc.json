@@ -1,0 +1,22 @@
+{
+ "pre_validation": {
+  "mediane_12": 24.13,
+  "quantile_12_q55": 23.4,
+  "quantile_12_q60": 23.27,
+  "lightgbm_actuel": 24.74,
+  "lightgbm_stationnaire": 25.84,
+  "lightgbm_robuste": 25.83,
+  "combinaison_50_50": 23.44,
+  "hybride_par_classe": 24.4
+ },
+ "validation": {
+  "mediane_12": 21.8,
+  "quantile_12_q55": 21.46,
+  "quantile_12_q60": 21.31,
+  "lightgbm_actuel": 20.51,
+  "lightgbm_stationnaire": 20.78,
+  "lightgbm_robuste": 20.78,
+  "combinaison_50_50": 20.57,
+  "hybride_par_classe": 21.1
+ }
+}

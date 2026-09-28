@@ -36,17 +36,47 @@ def dossier_modele() -> Path:
                                _RACINE / "models" / "layoutlmv3_factures"))
 
 
-def disponible() -> bool:
-    """Le modèle affiné est-il présent ET utilisable sur ce serveur ?"""
+def etat() -> Dict[str, Any]:
+    """Pourquoi LayoutLMv3 est-il servi — ou non ?
+
+    « Règles seules » recouvrait trois situations très différentes (modèle
+    absent, dépendances absentes, modèle refusé), qui appellent trois actions
+    différentes. La plus traître est le refus : tout est installé, tout semble
+    normal, et la plateforme lit pourtant les factures avec des règles justes à
+    22 %. Le motif est donc renvoyé avec la réponse.
+
+    Le refus vient du registre des modèles (`ml_engine/registre.py`), qui lit
+    `reports/layoutlmv3_metrics.json`. Rapport absent = non servi : un modèle
+    dont on ne sait rien n'écrit pas dans des données comptables.
+    """
     d = dossier_modele()
     if not (d / "config.json").exists():
-        return False
+        return {"disponible": False, "cause": "modele_absent",
+                "motif": f"modèle absent de {d} — copiez le dossier produit par "
+                         "l'entraînement, puis redémarrez l'API"}
     try:
         import torch  # noqa: F401
         import transformers  # noqa: F401
-        return True
-    except Exception:
-        return False
+    except Exception as e:
+        return {"disponible": False, "cause": "dependance_absente",
+                "motif": f"modèle présent mais torch/transformers indisponibles ({e}) — "
+                         "`pip install torch transformers`"}
+    try:
+        from ml_engine.registre import etat_modele
+        reg = etat_modele("layoutlmv3")
+    except Exception as e:                      # registre illisible : on ne sert pas
+        return {"disponible": False, "cause": "registre_illisible",
+                "motif": f"registre des modèles illisible ({e})"}
+    if not reg.get("deploye"):
+        return {"disponible": False, "cause": "refuse_par_registre",
+                "motif": f"modèle présent mais refusé par le registre : {reg.get('motif')}",
+                "registre": reg}
+    return {"disponible": True, "cause": "servi", "motif": reg.get("motif"), "registre": reg}
+
+
+def disponible() -> bool:
+    """Le modèle affiné est-il présent, utilisable ET autorisé par le registre ?"""
+    return bool(etat()["disponible"])
 
 
 def _charger():
@@ -99,7 +129,10 @@ def _predire_page(image, mots: List[dict]) -> dict:
     pr = somme / np.maximum(vu, 1)[:, None]
     return {"mots": textes,
             "etiquettes": [id2label[int(i)] for i in pr.argmax(1)],
-            "probas": pr.max(1).tolist()}
+            "probas": pr.max(1).tolist(),
+            # boîtes en pixels : `recoller_milliers` en a besoin pour distinguer
+            # un séparateur de milliers d'un saut de colonne.
+            "boites": [[m["x"], m["y"], m["x"] + m["w"], m["y"] + m["h"]] for m in mots]}
 
 
 def extraire(content: bytes, filename: str) -> Optional[Dict[str, Any]]:
@@ -192,7 +225,12 @@ def combiner(fields, lu: Optional[Dict[str, Any]]):
             f"{cle} : {montant} lu par les règles, écarté comme invraisemblable "
             f"face aux autres montants — à saisir.")
     fields.coherence = message_coherence(fields)
-    if lu.get("fournisseur") and not fields.tiers:
-        fields.tiers = lu["fournisseur"]
+    # Fournisseur et client restent SÉPARÉS : `tiers` (règles) désigne surtout
+    # le client, y glisser le fournisseur mélangeait les deux côtés.
+    if lu.get("fournisseur"):
+        fields.fournisseur = lu["fournisseur"]
+    if lu.get("client"):
+        fields.client = lu["client"]
+        fields.tiers = fields.tiers or lu["client"]
     fields.is_invoice = fields.is_invoice or bool(h.get("total_ttc") or h.get("numero"))
     return fields

@@ -1,0 +1,22 @@
+.git
+.venv
+venv
+env
+__pycache__
+**/__pycache__
+*.pyc
+.env
+frontend/
+node_modules
+.next
+.pytest_cache
+*.ipynb
+docs/
+brainstorming*
+*.png
+*.pdf
+# Jamais copiés dans l'image (le Dockerfile copie des dossiers nommés) :
+# inutile de les envoyer au démon à chaque construction
+data_pfe/
+_sauvegarde_*.zip
+_a_supprimer/

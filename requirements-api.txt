@@ -1,0 +1,37 @@
+# Dépendances MINIMALES pour SERVIR l'API (image Docker légère).
+# Les extras lourds (torch, prophet, sentence-transformers, faiss, shap,
+# optuna, streamlit…) restent dans requirements.txt : l'API dispose de replis
+# fonctionnels quand ils sont absents (RAG → TF-IDF, LSTM → méthode
+# statistique, flotte → séquentiel). Entraînement complet : requirements.txt.
+
+numpy>=1.26
+pandas>=2.2
+scikit-learn>=1.4
+scipy>=1.13
+duckdb>=1.0
+joblib>=1.3
+
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+python-dotenv>=1.0
+pydantic-settings>=2.0
+email-validator>=2.0
+
+# LLM / agents (légers)
+langchain-core>=0.2
+langchain-groq>=0.1.9
+langgraph>=0.2
+requests>=2.31
+
+# Auth & RBAC
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+bcrypt>=4.0
+PyJWT>=2.8
+
+# Documents & OCR
+PyPDF2>=3.0            # texte natif des PDF
+Pillow>=10.0           # traitement d'images
+pytesseract>=0.3.10    # OCR (nécessite le binaire Tesseract, cf. docs/OCR.md)
+pypdfium2>=4.0         # rendu des PDF scannés pour l'OCR

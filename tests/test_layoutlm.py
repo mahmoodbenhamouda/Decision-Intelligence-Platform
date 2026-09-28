@@ -175,3 +175,109 @@ def test_combiner_signale_un_montant_ecarte():
     assert f.montant_tva is None                        # effacée, pas seulement signalée
     assert f.champs_confiance["montant_tva"] == "ecarte"
     assert any("total_tva" in a and "101 296,000" in a for a in f.avertissements)
+
+
+# ── gouvernance : le registre autorise, ou non, l'usage du modèle ──────────
+def _modele_factice(tmp_path):
+    (tmp_path / "config.json").write_text('{"architectures": ["LayoutLMv3ForTokenClassification"]}',
+                                          encoding="utf-8")
+    return tmp_path
+
+
+def test_etat_modele_absent(tmp_path, monkeypatch):
+    from ml_engine.ocr.layoutlm import etat
+    monkeypatch.setenv("OVERLYNE_LAYOUTLM_DIR", str(tmp_path / "absent"))
+    e = etat()
+    assert e["disponible"] is False and e["cause"] == "modele_absent"
+
+
+def test_etat_refuse_par_le_registre(tmp_path, monkeypatch):
+    from ml_engine.ocr.layoutlm import disponible, etat
+    pytest.importorskip("torch"); pytest.importorskip("transformers")
+    monkeypatch.setenv("OVERLYNE_LAYOUTLM_DIR", str(_modele_factice(tmp_path)))
+    monkeypatch.setattr("ml_engine.registre.etat_modele",
+                        lambda nom: {"deploye": False, "motif": "exactitude 41 % < seuil 60 %"})
+    e = etat()
+    assert e["cause"] == "refuse_par_registre" and disponible() is False
+    assert "refusé par le registre" in e["motif"] and "41 %" in e["motif"]
+
+
+def test_etat_servi(tmp_path, monkeypatch):
+    from ml_engine.ocr.layoutlm import disponible, etat
+    pytest.importorskip("torch"); pytest.importorskip("transformers")
+    monkeypatch.setenv("OVERLYNE_LAYOUTLM_DIR", str(_modele_factice(tmp_path)))
+    monkeypatch.setattr("ml_engine.registre.etat_modele",
+                        lambda nom: {"deploye": True, "motif": "servi : 79,9 %"})
+    assert disponible() is True and etat()["cause"] == "servi"
+
+
+def test_un_modele_refuse_ne_lit_pas_les_factures(tmp_path, monkeypatch):
+    """Garde-fou : refusé par le registre → la plateforme revient aux RÈGLES,
+    jamais à un modèle non évalué."""
+    from ml_engine.ocr.layoutlm import lire_facture
+    import io as _io
+    from PIL import Image, ImageDraw
+    monkeypatch.setenv("OVERLYNE_LAYOUTLM_DIR", str(_modele_factice(tmp_path)))
+    monkeypatch.setattr("ml_engine.registre.etat_modele",
+                        lambda nom: {"deploye": False, "motif": "rapport absent"})
+    im = Image.new("RGB", (900, 300), "white")
+    ImageDraw.Draw(im).text((20, 20), "FACTURE N F00007 TOTAL TTC 2381,000", fill="black")
+    buf = _io.BytesIO(); im.save(buf, format="PNG")
+    assert lire_facture(buf.getvalue(), "f.png")[2] == "regles"
+
+
+# ── recollage du chiffre des milliers ─────────────────────────────────────
+def _boites(largeurs, xs, y=100, h=20):
+    return [[x, y, x + w, y + h] for x, w in zip(xs, largeurs)]
+
+
+def test_recolle_le_chiffre_des_milliers(tmp_path):
+    """d003 réel : « 1 » + « 081,080 », écart de 11 px pour une largeur de 6."""
+    from ml_engine.ocr.layoutlm.champs import decoder, recoller_milliers
+    mots = ["Total", "HT", "1", "081,080"]
+    etq = ["O", "O", "O", "B-TOTAL_HT"]
+    boites = _boites([40, 20, 6, 60], [0, 45, 70, 87])        # écart 11 px
+    assert recoller_milliers(mots, etq, boites) == ["O", "O", "B-TOTAL_HT", "I-TOTAL_HT"]
+    r = decoder([{"mots": mots, "etiquettes": etq, "probas": [0.9] * 4, "boites": boites}])
+    assert r["total_ht"] == 1081.08
+
+
+def test_ne_recolle_pas_une_quantite_de_ligne():
+    """Facture fictive : « 4 » (quantité) puis « 312,500 » (prix unitaire),
+    séparés de 148 px pour une largeur de 12 — colonnes distinctes."""
+    from ml_engine.ocr.layoutlm.champs import decoder, recoller_milliers
+    mots = ["Moule", "4", "312,500"]
+    etq = ["O", "O", "B-TOTAL_HT"]
+    boites = _boites([60, 12, 70], [0, 100, 260])             # écart 148 px
+    assert recoller_milliers(mots, etq, boites) == etq
+    r = decoder([{"mots": mots, "etiquettes": etq, "probas": [0.9] * 3, "boites": boites}])
+    assert r["total_ht"] == 312.5
+
+
+def test_recollage_exige_la_meme_ligne():
+    from ml_engine.ocr.layoutlm.champs import recoller_milliers
+    mots, etq = ["1", "081,080"], ["O", "B-TOTAL_HT"]
+    dessous = [[70, 100, 76, 120], [87, 140, 147, 160]]       # ligne suivante
+    assert recoller_milliers(mots, etq, dessous) == etq
+
+
+def test_sans_boites_aucun_recollage():
+    """La géométrie est le seul garde-fou : sans elle, on ne devine pas."""
+    from ml_engine.ocr.layoutlm.champs import decoder
+    r = decoder([{"mots": ["1", "081,080"], "etiquettes": ["O", "B-TOTAL_HT"],
+                  "probas": [0.9, 0.9]}])
+    assert r["total_ht"] == 81.08
+
+
+@pytest.mark.parametrize("gauche,droite,recolle", [
+    ("1", "081,080", True), ("12", "345,000", True), ("2", "381,000", True),
+    ("1", "81,080", False),       # 2 chiffres : pas un groupe de milliers
+    ("1234", "081,080", False),   # plus de 3 chiffres à gauche
+    ("ref", "081,080", False),
+    ("1", "081", False),          # pas de décimale
+])
+def test_motifs_du_recollage(gauche, droite, recolle):
+    from ml_engine.ocr.layoutlm.champs import recoller_milliers
+    etq = recoller_milliers([gauche, droite], ["O", "B-TTC"],
+                            [[0, 0, 10, 20], [15, 0, 80, 20]])
+    assert (etq[0] == "B-TTC") is recolle
