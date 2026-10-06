@@ -1,15 +1,4 @@
-"""
-agents/copilote/contexte.py
-===========================
-Le contexte donné au modèle de langage : les indicateurs PERTINENTS pour la
-question, et eux seuls.
-
-Un contexte qui contient tout noie la réponse : le copilote répétait les mêmes
-chiffres quelle que soit la question. Chaque thème détecté apporte donc son
-bloc (recouvrement, trésorerie, marge, stock…), les sorties des modèles
-arrivent par la passerelle du registre, et les ratios sont CALCULÉS ICI : un
-modèle de langage à qui l'on laisse faire une division se trompe.
-"""
+"""Le contexte donné au modèle de langage : les indicateurs PERTINENTS pour la question, et eux seuls."""
 
 from __future__ import annotations
 
@@ -20,18 +9,7 @@ from agents.copilote.outils import codes_perimetre, dt_montant, fmt
 
 
 def _ratios_recouvrement(kpis: Dict[str, Any]) -> str:
-    """Ratios de recouvrement PRÉ-CALCULÉS, à citer tels quels par le modèle.
-
-    Le prompt interdit au LLM de calculer lui-même un pourcentage : livré à
-    lui-même, il annonçait « 2 % du CA total » pour 30,4 M DT d'encours sur
-    290,5 M DT de CA — la valeur exacte est 10,5 %, soit une sous-estimation
-    d'un facteur cinq sur une phrase de risque. Les ratios qui comptent sont
-    donc calculés ici, en Python, et fournis prêts à l'emploi.
-
-    (Les 290,5 M cités ci-dessus sont le CA d'avant l'audit d'intégrité ; il
-    est désormais de 274,7 M, avoirs déduits et doublons retirés. Le calcul
-    ci-dessous lit `kpis` à l'exécution et suit donc la correction.)
-    """
+    """Ratios de recouvrement PRÉ-CALCULÉS, à citer tels quels par le modèle."""
     expo = float(kpis.get("exposition_recente_dt") or 0)
     crit = float(kpis.get("exposition_recente_critique_dt") or 0)
     ca = float(kpis.get("ca_total_ttc") or 0)
@@ -137,19 +115,20 @@ def build_thematic_context(themes: List[str], kpis: Dict[str, Any]) -> str:
             f"{_ratios_recouvrement(kpis)}"
             f"  - DSO (délai encaissement moyen) : {kpis.get('dso_jours', 0):.0f} jours\n"
             f"  - Client prioritaire à relancer : {top_client_name or 'N/D'}\n"
-            f"  - Repère historique (comportement de paiement, PAS un encours dû) : "
-            f"{fmt(kpis.get('ca_retard_historique_ttc'))} de CA réglé avec >60j de retard sur tout l'historique"
+            # Ce montant porte sur le délai ACCORDÉ, inscrit sur la facture à
+            # l'émission. L'ERP n'a aucune date de règlement : « réglé avec
+            # retard », qui figurait ici, affirmait un fait non mesuré.
+            f"  - Délais accordés longs (conditions négociées, PAS un retard "
+            f"ni un encours dû) : "
+            f"{fmt(kpis.get('montant_delai_sup_60j_ttc'))} facturés à plus de "
+            f"60 jours sur tout l'historique"
         )
 
     if "change" in themes:
-        # Le suivi du taux de change a été retiré avec la veille externe. Plutôt
-        # que de renvoyer des « N/D », l'agent dit ce qu'il sait et ce qu'il ne
-        # sait pas : les achats fournisseurs sont mesurés, leur part en devises
-        # ne l'est pas — l'ERP n'expose aucune devise de règlement.
         parts.append(
             "💱 CHANGE :\n"
             f"  - Achats fournisseurs mesurés : {fmt(kpis.get('achats_total_ttc'))}\n"
-            "  - Part réglée en devises : NON DISPONIBLE — l'export ERP ne porte "
+            "  - Part réglée en devises : NON DISPONIBLE — aucune écriture ne porte "
             "aucune devise de règlement, et le suivi de taux externe a été retiré\n"
             "  - Conséquence : aucune exposition au change ne peut être chiffrée "
             "sans une donnée que l'entreprise devrait fournir"
@@ -236,9 +215,6 @@ def build_thematic_context(themes: List[str], kpis: Dict[str, Any]) -> str:
         top = (d.get("fournisseurs_top") or [{}])
         fc = d.get("demande_prevision") or []
         fc_str = ", ".join(f"{p['period']}≈{int(p['qte'])}" for p in fc) or "N/D"
-        # Le libellé précédent — « pas de données de stock ERP » — poussait le
-        # modèle à répondre « donnée indisponible » à toute question de stock,
-        # y compris celles que le module de stock simulé sait traiter.
         parts.append(
             f"📦 DEMANDE & APPROVISIONNEMENT (analyse fournisseur ; le stock par référence "
             f"est traité par le module de stock simulé, cf. section STOCK) :\n"
@@ -248,16 +224,12 @@ def build_thematic_context(themes: List[str], kpis: Dict[str, Any]) -> str:
             f"  - Prévision de demande (articles/mois, MAPE {d.get('demande_mape')}%) : {fc_str}"
         )
 
-    # Factures importées par OCR : présentes dans TOUT contexte, car elles
-    # modifient la lecture de n'importe quel indicateur si l'utilisateur vient
-    # d'en déposer une. Le modèle doit savoir qu'elles existent ET qu'elles ne
-    # sont pas comptées dans les totaux ERP, sinon il additionne les deux.
     imp = kpis.get("import_ocr") or {}
     if imp.get("n_factures"):
         recentes = imp["factures"][:3]
         parts.append(
-            "📄 FACTURES IMPORTÉES PAR OCR (comptées À PART des totaux ERP ci-dessus, "
-            "ne jamais les additionner aux montants ERP) :\n"
+            "📄 FACTURES SCANNÉES (comptées À PART des totaux de facturation ci-dessus, "
+            "ne jamais les additionner aux montants facturés) :\n"
             f"  - {imp['n_factures']} facture(s) importée(s), "
             f"{imp['total_ttc_dt']:,.3f} DT TTC au total\n".replace(",", " ")
             + "\n".join(
@@ -268,14 +240,12 @@ def build_thematic_context(themes: List[str], kpis: Dict[str, Any]) -> str:
                 for f in recentes))
 
     if "risque_stock_client" in themes:
-        # Croisement client × stock : la donnée existe (chaque ligne de stock
-        # porte un client), elle n'était simplement jamais agrégée.
         cl = outils.stock_par_client(limite=5)
         if cl.get("error"):
             parts.append(f"🏥 STOCK PAR CLIENT : indisponible ({cl['error']}).")
         else:
             def _lig(c):
-                nom = c["client"] if c["nom_resolu"] else f"{c['code']} (compte sans libellé ERP)"
+                nom = c["client"] if c["nom_resolu"] else f"{c['code']} (compte sans libellé)"
                 return (f"    · {nom} — {c['n_references']} références, "
                         f"{c['valeur_stock_dt']:,.0f} DT de stock, "
                         f"{c['n_a_risque']} à risque".replace(",", " "))
@@ -296,9 +266,6 @@ def build_thematic_context(themes: List[str], kpis: Dict[str, Any]) -> str:
             )
 
     if "risque_stock" in themes:
-        # Le modèle de risque de stock est RETIRÉ (cible dépendant de dates de
-        # péremption simulées). Le contexte vient des flux réels et de la règle
-        # de fin de commercialisation, via la passerelle du registre.
         try:
             ctx = outils.contexte_stock_reel(kpis)
         except Exception as e:
@@ -342,7 +309,7 @@ def build_history_context(history: List[Dict[str, str]], max_turns: int = 8) -> 
     """Formate les N derniers échanges de la conversation pour le contexte LLM."""
     if not history:
         return ""
-    recent = history[-(max_turns * 2):]  # max_turns aller-retours
+    recent = history[-(max_turns * 2):]
     lines = ["💬 HISTORIQUE DE CONVERSATION (contexte, ne pas répéter) :"]
     for msg in recent:
         role = msg.get("role", "user")
@@ -350,7 +317,6 @@ def build_history_context(history: List[Dict[str, str]], max_turns: int = 8) -> 
         if not text:
             continue
         prefix = "Utilisateur" if role == "user" else "Copilote"
-        # Tronquer les réponses longues dans l'historique
         if len(text) > 300:
             text = text[:300] + "…"
         lines.append(f"  [{prefix}] : {text}")

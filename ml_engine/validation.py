@@ -1,43 +1,4 @@
-"""
-ml_engine/validation.py
-========================
-Protocoles de validation partagés — walk-forward multi-origines et test apparié.
-
-Le problème que ce module résout
---------------------------------
-Le modèle de conversion des devis a été mesuré à **AUC 0,7165**, soit **+0,0341**
-sur la meilleure référence triviale. Les deux seuils déclarés étaient atteints.
-Puis le test de significativité l'a refusé :
-
-    écart médian +0,0350 · IC95 [-0,0290 ; +0,0948]  ->  NON SIGNIFICATIF
-    le modèle gagne dans 86,4 % des tirages
-
-Lecture exacte de ce résultat, et elle est importante : **le modèle n'est pas
-mauvais, le jeu de test est trop petit pour conclure**. 988 devis dont 92 signés.
-Avec si peu de positifs, l'intervalle sur l'écart mesure surtout notre ignorance.
-
-Une coupure unique 75/25 gaspille des données
----------------------------------------------
-Elle n'utilise qu'un seul quart de l'historique comme test, et toujours le même.
-Le remède n'est pas de desserrer un seuil : c'est de **mesurer sur plus
-d'observations, avec le même protocole**.
-
-Le walk-forward multi-origines entraîne et teste plusieurs fois, en avançant la
-coupure, puis **met en commun** les prédictions hors période. Chaque prédiction
-reste faite par un modèle qui n'a vu que le passé — la garantie anti-fuite est
-identique — mais le test agrégé porte sur trois à quatre fois plus de positifs, et
-l'intervalle de confiance se resserre d'autant.
-
-Ce n'est pas un assouplissement. C'est la même exigence, mieux mesurée. Et la
-conclusion peut rester négative : un écart qui disparaît sur un test élargi n'a
-jamais existé.
-
-Ce que ce module ne fait pas
-----------------------------
-Il ne choisit aucun modèle et ne fixe aucun seuil. Il fournit deux outils — un
-protocole de découpage et un test d'écart — que chaque module d'apprentissage
-appelle avec ses propres règles, déclarées chez lui.
-"""
+"""Protocoles de validation partagés — walk-forward multi-origines et test apparié."""
 
 from __future__ import annotations
 
@@ -58,35 +19,13 @@ def walk_forward(panel: pd.DataFrame,
                  marge: Optional[pd.DateOffset] = None,
                  min_train: int = 400,
                  min_test: int = 120) -> Dict[str, Any]:
-    """Plusieurs coupures temporelles, prédictions hors période mises en commun.
-
-    Paramètres
-    ----------
-    ajuster_et_predire
-        Reçoit `(train, test)` et renvoie les probabilités sur `test`. C'est
-        l'appelant qui décide du modèle, de ses variables et de son réglage — ce
-        module ne connaît rien de tout cela.
-    marge
-        Décalage à imposer entre la fin du train et le début du test, pour les
-        cibles observées sur une fenêtre future. `None` quand la cible est un état
-        atteint plutôt qu'un événement à venir.
-
-    Garantie
-    --------
-    Chaque prédiction est produite par un modèle entraîné **exclusivement** sur
-    des observations antérieures à sa propre coupure. Mettre les prédictions en
-    commun n'introduit donc aucune fuite : on agrège des mesures hors période, pas
-    des modèles.
-    """
+    """Plusieurs coupures temporelles, prédictions hors période mises en commun."""
     d = panel.sort_values(colonne_date).reset_index(drop=True)
     n = len(d)
     if n < min_train + min_test:
         return {"applicable": False,
                 "motif": f"{n} observations — insuffisant pour un walk-forward"}
 
-    # Les origines sont réparties sur la fin de l'historique : la première laisse
-    # assez de passé pour entraîner, la dernière teste les données les plus
-    # récentes exploitables.
     debut = max(min_train, int(n * (1.0 - n_origines * part_test)))
     if debut >= n - min_test:
         debut = max(min_train, n - int(n * part_test) - min_test)
@@ -172,16 +111,7 @@ def comparer_apparie(y: np.ndarray, p_modele: np.ndarray,
                      p_reference: np.ndarray,
                      n_tirages: int = 2000,
                      graine: int = SEED) -> Dict[str, Any]:
-    """L'écart d'AUC entre un modèle et sa référence est-il distinguable du bruit ?
-
-    Le test est **apparié** : chaque tirage rééchantillonne les mêmes observations
-    pour les deux scores. Comparer deux intervalles calculés séparément serait plus
-    faible — ils peuvent se chevaucher alors que la différence, elle, est stable.
-
-    Le critère porte sur l'intervalle de l'ÉCART, jamais sur celui des AUC : c'est
-    la seule formulation qui répond à la question « le modèle fait-il mieux, ou
-    a-t-il eu de la chance sur ce découpage ? ».
-    """
+    """L'écart d'AUC entre un modèle et sa référence est-il distinguable du bruit ?"""
     from sklearn.metrics import roc_auc_score
 
     rng = np.random.default_rng(graine)

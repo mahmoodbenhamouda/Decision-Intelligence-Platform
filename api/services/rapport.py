@@ -1,11 +1,4 @@
-"""
-api/services/rapport.py
-=======================
-Synthèse écrite déterministe (« En bref » + « Action prioritaire »).
-
-C'est le texte affiché quand aucun LLM n'est disponible : il ne dépend que des
-indicateurs et suit des règles fixes, donc il est toujours exact.
-"""
+"""Synthèse écrite déterministe (« En bref » + « Action prioritaire »)."""
 
 from __future__ import annotations
 
@@ -30,8 +23,8 @@ def build_dynamic_report(kpis: dict) -> str:
     dso = kpis.get("dso_jours") or 0
     yoy = kpis.get("yoy_growth") or 0
     tend = "en hausse" if yoy >= 0 else "en baisse"
-    expo = kpis.get("montant_risque_ttc")
-    risk_pct = kpis.get("paiements_a_risque_pct") or 0
+    expo = kpis.get("montant_delai_sup_60j_ttc")
+    risk_pct = kpis.get("part_factures_delai_sup_60j_pct") or 0
     forecast = kpis.get("forecast_next") or []
     topname = None
     if top_clients:
@@ -49,8 +42,13 @@ def build_dynamic_report(kpis: dict) -> str:
         lines.append(f"- **Prévision** : CA projeté à **{format_money(forecast[0].get('montant'))}** le mois prochain.\n")
 
     lines.append("\n### Action prioritaire\n")
-    if kpis.get("retards_critiques", 0) > 0:
-        action = f"Lancer le recouvrement sur les **{kpis['retards_critiques']} factures critiques (> 90 jours)**"
+    if kpis.get("factures_delai_sup_90j", 0) > 0:
+        # « Lancer le recouvrement » était faux : un délai de plus de 90 jours est
+        # une condition ACCORDÉE, pas une créance échue. Rien ne dit que ces
+        # factures sont impayées — l'ERP n'enregistre pas les règlements.
+        action = (f"Revoir les conditions de paiement accordées : "
+                  f"**{kpis['factures_delai_sup_90j']} factures émises à plus de "
+                  "90 jours**")
         action += f", en commençant par **{topname}**.\n" if topname else ".\n"
         lines.append(action)
     elif tx is not None and tx < 15:

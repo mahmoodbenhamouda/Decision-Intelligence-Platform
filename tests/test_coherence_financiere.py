@@ -1,25 +1,4 @@
-"""
-tests/test_coherence_financiere.py
-===================================
-Coherence de TOUS les indicateurs financiers, pas seulement du CA.
-
-Principe
---------
-Un montant faux ne se voit pas : 290 M ou 275 M sont aussi plausibles l'un que
-l'autre. On ne peut donc pas valider un indicateur « a l'oeil ». La seule
-defense est de verifier les IDENTITES qui doivent tenir par construction :
-
-    CA net        = CA des ventes  -  montant des avoirs
-    nb lignes     = nb factures    +  nb avoirs
-    panier moyen  = CA net / nb factures        (et non / nb lignes)
-    marge         = CA ligne       -  cout de revient
-    HHI           ∈ ]0, 10000]                  (jamais gonfle par un negatif)
-
-Chaque test ci-dessous encode une de ces identites. Si une formule est modifiee
-de facon incoherente, l'identite se brise et le test echoue.
-
-    python -m pytest tests/test_coherence_financiere.py -v
-"""
+"""Coherence de TOUS les indicateurs financiers, pas seulement du CA."""
 
 import os
 import re
@@ -38,7 +17,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def k():
     from ml_engine.analytics.kpi_engine import compute_dashboard
-    return compute_dashboard({})
+    return compute_dashboard({"periode": "tout"})
 
 
 @pytest.fixture(scope="module")
@@ -49,7 +28,6 @@ def con():
     c.close()
 
 
-# ── VENTES ─────────────────────────────────────────────────────────────────
 def test_ca_net_egale_ventes_moins_avoirs(con):
     """L'identite fondatrice : le CA affiche doit etre le net."""
     brut, avoirs, net = con.execute("""
@@ -73,13 +51,11 @@ def test_panier_moyen_divise_par_les_ventes_seules(k):
 
 
 def test_part_des_avoirs_plausible(k):
-    """Un taux d'avoirs au-dela de 15 % signalerait une anomalie metier ou un
-    signe a nouveau mal interprete."""
+    """Un taux d'avoirs au-dela de 15 % signalerait une anomalie metier ou un signe a nouveau mal…"""
     assert 0 < k["taux_avoirs_pct"] < 15, (
         f"taux d'avoirs de {k['taux_avoirs_pct']:.1f} % — invraisemblable")
 
 
-# ── ACHATS ─────────────────────────────────────────────────────────────────
 def test_achats_nets_et_comptage(k, con):
     brut, avoirs, net = con.execute("""
         SELECT sum(ttc) FILTER (WHERE NOT est_avoir),
@@ -101,10 +77,8 @@ def test_pas_de_doublon_de_piece_dans_les_achats(con):
     assert reste == 0
 
 
-# ── CONCENTRATION ──────────────────────────────────────────────────────────
 def test_hhi_dans_les_bornes(k):
-    """Le HHI est une somme de carres de parts, donc borne. Un depassement
-    trahirait des parts negatives elevees au carre."""
+    """Le HHI est une somme de carres de parts, donc borne."""
     for champ in ("hhi_clients", "hhi_fournisseurs"):
         v = k[champ]
         assert 0 < v <= 10_000, f"{champ} = {v}, hors bornes"
@@ -120,7 +94,6 @@ def test_parts_du_top_client_bornees(k):
         assert c["invoices"] >= 0 and c["avoirs"] >= 0
 
 
-# ── MARGE ──────────────────────────────────────────────────────────────────
 def test_marge_egale_ca_moins_cout(con):
     ca, cout, marge = con.execute(
         "SELECT sum(ca_ligne), sum(cout_revient), sum(marge) FROM client_margin"
@@ -129,8 +102,7 @@ def test_marge_egale_ca_moins_cout(con):
 
 
 def test_les_retours_sont_pris_en_compte_dans_la_marge(con):
-    """`ca > 0` ecartait tous les retours : on gardait la vente, on oubliait
-    l'avoir qui l'annule."""
+    """`ca > 0` ecartait tous les retours : on gardait la vente, on oubliait l'avoir qui l'annule."""
     n_retours = con.execute(
         "SELECT coalesce(sum(n_lignes_retour), 0) FROM client_margin").fetchone()[0]
     assert n_retours > 0, "aucune ligne de retour dans la marge — filtre trop strict"
@@ -143,10 +115,8 @@ def test_taux_de_marge_plausible(con):
     assert 0 < taux < 80, f"taux de marge de {taux:.1f} % — invraisemblable"
 
 
-# ── LIGNES PRODUITS ────────────────────────────────────────────────────────
 def test_le_ca_produit_est_signe(con):
-    """Si les retours etaient comptes en positif, aucune ligne ne serait
-    negative et le total produit depasserait le CA net."""
+    """Si les retours etaient comptes en positif, aucune ligne ne serait negative et le total produit…"""
     n_neg = con.execute(
         "SELECT count(*) FROM product_sales WHERE ca < 0").fetchone()[0]
     n_retours = con.execute(
@@ -157,10 +127,7 @@ def test_le_ca_produit_est_signe(con):
 
 
 def test_deduplication_des_lignes_ciblee_et_non_massive(con):
-    """11 412 lignes paraissent redondantes, mais seules ~8 518 appartiennent
-    aux factures dupliquees en en-tete ; les autres sont legitimes (deux lots
-    d'une meme reference sur une facture). Dedupliquer sans distinction
-    supprimerait pres de 3 000 lignes reelles."""
+    """11 412 lignes paraissent redondantes, mais seules ~8 518 appartiennent aux factures dupliquees…"""
     n = con.execute("SELECT count(*) FROM sales_lines").fetchone()[0]
     assert n < 340_912, "aucune ligne supprimee : la deduplication n'a pas tourne"
     assert n > 340_912 - 11_412, (
@@ -169,20 +136,10 @@ def test_deduplication_des_lignes_ciblee_et_non_massive(con):
 
 
 def test_les_repetitions_restantes_sont_legitimes(con):
-    """Des lignes repetees SUBSISTENT, et c'est normal : une facture peut porter
-    deux fois la meme reference (deux lots, deux dates de peremption).
-
-    Ce qui doit etre verifie, c'est que le total des lignes n'a pas ete ampute
-    au-dela de ce que la duplication des en-tetes justifie. La regle de
-    conservation est `n_exemplaires / n_copies_entete`, arrondi au superieur :
-    une facture presente deux fois et portant quatre exemplaires d'une ligne en
-    conserve deux, pas un.
-    """
+    """Des lignes repetees SUBSISTENT, et c'est normal : une facture peut porter deux fois la meme…"""
     n = con.execute("SELECT count(*) FROM sales_lines").fetchone()[0]
     rejets = con.execute("SELECT count(*) FROM sales_lines_rejetees").fetchone()[0]
     supprimees = 340_912 - n - rejets
-    # 8 518 lignes appartiennent aux 1 324 factures dupliquees, chacune presente
-    # exactement deux fois : la moitie doit partir, ni plus ni moins.
     assert supprimees == pytest.approx(8_518 / 2, abs=60), (
         f"{supprimees} lignes supprimees, attendu ~{8_518 // 2}. "
         "Au-dela, des lignes legitimes ont ete perdues ; en deca, des doublons "
@@ -190,25 +147,21 @@ def test_les_repetitions_restantes_sont_legitimes(con):
 
 
 def test_ca_produit_inferieur_au_ca_facture(k, con):
-    """Le CA des lignes ne peut pas depasser le CA des factures : c'est le meme
-    argent, vu a deux niveaux de detail."""
+    """Le CA des lignes ne peut pas depasser le CA des factures : c'est le meme argent, vu a deux…"""
     ca_lignes = con.execute("SELECT sum(ca) FROM product_sales").fetchone()[0] or 0
     assert ca_lignes <= k["ca_total_ttc"] * 1.05, (
         f"CA lignes {ca_lignes:,.0f} > CA factures {k['ca_total_ttc']:,.0f}")
 
 
-# ── EXPOSITION ─────────────────────────────────────────────────────────────
 def test_exposition_positive_et_bornee(k):
-    assert k["montant_risque_ttc"] >= 0
-    assert k["montant_critique_ttc"] >= 0
-    assert k["montant_critique_ttc"] <= k["montant_risque_ttc"] + 1
-    assert k["montant_risque_ttc"] <= k["ca_total_ttc"]
+    assert k["montant_delai_sup_60j_ttc"] >= 0
+    assert k["montant_delai_sup_90j_ttc"] >= 0
+    assert k["montant_delai_sup_90j_ttc"] <= k["montant_delai_sup_60j_ttc"] + 1
+    assert k["montant_delai_sup_60j_ttc"] <= k["ca_total_ttc"]
 
 
 def test_le_radar_public_est_une_part_de_l_exposition_recente(k):
-    """La carte « recouvrement public » du radar et l'exposition récente du
-    tableau de bord portent sur les mêmes factures : la première est une part
-    de la seconde, et le pourcentage affiché est exactement ce rapport."""
+    """La carte « recouvrement public » du radar et l'exposition récente du tableau de bord portent sur…"""
     from ml_engine.analytics.kpi_engine import finance_radar
 
     cartes = [c for c in finance_radar({}, {}) if c["id"] == "recouvrement_public"]
@@ -217,16 +170,11 @@ def test_le_radar_public_est_une_part_de_l_exposition_recente(k):
     c, expo = cartes[0], k["exposition_recente_dt"]
     assert 0 < c["montant_dt"] <= expo + 1
     part = int(re.search(r"soit (\d+) % de l'exposition récente", c["constat"]).group(1))
-    assert abs(part - c["montant_dt"] / expo * 100) <= 0.5 + 1e-6   # arrondi d'affichage
+    assert abs(part - c["montant_dt"] / expo * 100) <= 0.5 + 1e-6
 
 
-# ── CONTROLE D'INTEGRITE AUTOMATIQUE ───────────────────────────────────────
 def test_le_controle_d_integrite_ne_remonte_aucune_erreur(k):
-    """Le test qui resume tous les autres.
-
-    `controler_integrite` verifie une trentaine d'invariants sur l'ensemble des
-    tables. Une seule erreur signifie qu'un montant affiche quelque part est
-    faux. Ce test est la garantie de non-regression la plus large du projet."""
+    """Le test qui resume tous les autres."""
     from ml_engine.analytics.data_quality import controler_integrite, rapport_texte
     r = controler_integrite(k)
     assert not r["erreurs"], "\n" + rapport_texte(r)
@@ -239,13 +187,12 @@ def test_le_controle_est_attache_aux_indicateurs(k):
 
 
 def test_le_controle_detecte_une_incoherence_fabriquee():
-    """Un controle qui ne detecte jamais rien ne prouve rien. On lui soumet des
-    indicateurs volontairement faux : il doit les refuser."""
+    """Un controle qui ne detecte jamais rien ne prouve rien."""
     from ml_engine.analytics.data_quality import controler_integrite
     from ml_engine.analytics.kpi_engine import compute_dashboard
-    faux = dict(compute_dashboard({}))
-    faux["panier_moyen"] = faux["panier_moyen"] * 2      # rompt CA / nb ventes
-    faux["hhi_clients"] = 99_999                          # hors bornes
+    faux = dict(compute_dashboard({"periode": "tout"}))
+    faux["panier_moyen"] = faux["panier_moyen"] * 2
+    faux["hhi_clients"] = 99_999
     r = controler_integrite(faux)
     controles = {e["controle"] for e in r["erreurs"]} | {
         a["controle"] for a in r["alertes"]}
@@ -254,12 +201,10 @@ def test_le_controle_detecte_une_incoherence_fabriquee():
 
 
 def test_les_lignes_illisibles_sont_ecartees_pas_perdues(con):
-    """`SENS` ne peut valoir que 1 ou 2. Une autre valeur trahit un decalage de
-    colonnes : les montants lus appartiennent alors a d'autres colonnes."""
+    """`SENS` ne peut valoir que 1 ou 2."""
     restantes = con.execute(
         "SELECT count(*) FROM sales_lines WHERE NOT format_valide").fetchone()[0]
     assert restantes == 0, "des lignes au format invalide alimentent encore les montants"
-    # Ecartees, mais conservees : une ligne illisible doit rester consultable.
     assert con.execute(
         "SELECT count(*) FROM sales_lines_rejetees").fetchone()[0] >= 0
 
@@ -274,16 +219,13 @@ def test_pas_de_doublon_de_devis(con):
 
 
 def test_aging_sans_montant_negatif(k):
-    """Une tranche d'age decrit des creances a encaisser : un avoir n'y a pas
-    sa place, et sa presence produirait une tranche negative."""
-    for b in k["aging_creances"]:
+    """Une tranche d'age decrit des creances a encaisser : un avoir n'y a pas sa place, et sa presence…"""
+    for b in k["echelonnement_delais_accordes"]:
         assert b["montant"] >= 0, f"tranche {b['bucket']} negative"
 
 
 def test_une_borne_atteinte_a_l_arrondi_pres_n_est_pas_une_anomalie():
-    """Sur le périmètre d'un seul client, la part vaut 100 % et le HHI 10 000,
-    à 1e-14 près au-dessus ou au-dessous selon l'ordre des additions. Le
-    contrôle affichait alors « des montants affichés sont faux »."""
+    """Sur le périmètre d'un seul client, la part vaut 100 % et le HHI 10 000, à 1e-14 près au-dessus…"""
     from ml_engine.analytics.data_quality import _Contexte, _ctrl_concentration
     c = _Contexte()
     _ctrl_concentration(None, c, {"hhi_clients": 10000.000000000002, "hhi_fournisseurs": 5000,

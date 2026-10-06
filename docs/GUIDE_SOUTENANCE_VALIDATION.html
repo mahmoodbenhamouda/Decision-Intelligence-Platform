@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Decision Intelligence Platform - Guide de Soutenance & Validation Technique</title>
+<style>
+  @page {
+    size: A4;
+    margin: 15mm 12mm 15mm 12mm;
+    @bottom-right {
+      content: counter(page);
+    }
+  }
+  body {
+    font-family: 'Segoe UI', Helvetica, Arial, sans-serif;
+    color: #1e293b;
+    line-height: 1.5;
+    font-size: 10.5pt;
+    margin: 0 auto;
+    max-width: 900px;
+    padding: 20px;
+    background-color: #fff;
+  }
+  .header {
+    border-bottom: 3px solid #2563eb;
+    padding-bottom: 12px;
+    margin-bottom: 20px;
+  }
+  .title {
+    font-size: 20pt;
+    font-weight: 800;
+    color: #0f172a;
+    margin: 0 0 4px 0;
+    letter-spacing: -0.5px;
+  }
+  .subtitle {
+    font-size: 12pt;
+    color: #475569;
+    font-weight: 600;
+    margin: 0 0 8px 0;
+  }
+  .meta {
+    font-size: 8.5pt;
+    color: #64748b;
+    display: flex;
+    justify-content: space-between;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+  .btn-print {
+    background: #2563eb;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    font-size: 11pt;
+    font-weight: 700;
+    border-radius: 6px;
+    cursor: pointer;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 4px rgba(37,99,235,0.2);
+    display: inline-block;
+  }
+  .btn-print:hover {
+    background: #1d4ed8;
+  }
+  @media print {
+    .btn-print { display: none; }
+    body { font-size: 9.5pt; line-height: 1.4; padding: 0; }
+    h1 { page-break-before: always; }
+    h1:first-of-type { page-break-before: avoid; }
+    .card, .highlight-box, .alert-box, .success-box, table, pre { page-break-inside: avoid; }
+  }
+  h1 {
+    font-size: 14pt;
+    color: #0f172a;
+    border-bottom: 2px solid #e2e8f0;
+    padding-bottom: 5px;
+    margin-top: 24px;
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  h2 {
+    font-size: 11.5pt;
+    color: #1e40af;
+    margin-top: 16px;
+    margin-bottom: 6px;
+  }
+  h3 {
+    font-size: 10.5pt;
+    color: #334155;
+    margin-top: 10px;
+    margin-bottom: 4px;
+  }
+  p {
+    margin: 0 0 8px 0;
+  }
+  ul, ol {
+    margin: 0 0 10px 0;
+    padding-left: 18px;
+  }
+  li {
+    margin-bottom: 3px;
+  }
+  .highlight-box {
+    background: #eff6ff;
+    border-left: 4px solid #2563eb;
+    padding: 10px 12px;
+    border-radius: 0 6px 6px 0;
+    margin: 12px 0;
+    font-size: 10pt;
+  }
+  .alert-box {
+    background: #fef2f2;
+    border-left: 4px solid #ef4444;
+    padding: 10px 12px;
+    border-radius: 0 6px 6px 0;
+    margin: 12px 0;
+    font-size: 10pt;
+  }
+  .success-box {
+    background: #f0fdf4;
+    border-left: 4px solid #16a34a;
+    padding: 10px 12px;
+    border-radius: 0 6px 6px 0;
+    margin: 12px 0;
+    font-size: 10pt;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 10px 0;
+    font-size: 9pt;
+  }
+  th, td {
+    border: 1px solid #cbd5e1;
+    padding: 6px 8px;
+    text-align: left;
+  }
+  th {
+    background-color: #f1f5f9;
+    color: #0f172a;
+    font-weight: 700;
+  }
+  tr:nth-child(even) td {
+    background-color: #f8fafc;
+  }
+  code {
+    background-color: #f1f5f9;
+    color: #b91c1c;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 8.5pt;
+  }
+  pre {
+    background-color: #0f172a;
+    color: #f8fafc;
+    padding: 10px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 8pt;
+    line-height: 1.35;
+    margin: 10px 0;
+  }
+  .badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-size: 7.5pt;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .badge-prod { background: #dcfce7; color: #15803d; }
+  .badge-refused { background: #fee2e2; color: #b91c1c; }
+  .badge-stat { background: #e0e7ff; color: #4338ca; }
+  .badge-deep { background: #fef3c7; color: #b45309; }
+  .card {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+  }
+</style>
+</head>
+<body>
+
+<button class="btn-print" onclick="window.print()">📥 Imprimer / Enregistrer en PDF (Ctrl+P)</button>
+
+<div class="header">
+  <div class="title">Decision Intelligence Platform</div>
+  <div class="subtitle">Guide Complet de Soutenance & Validation Technique</div>
+  <div class="meta">
+    <span>Projet de Fin d'Études (PFE)</span>
+    <span>Validation Technique Data, ML, Agents & Ingénierie Logicielle</span>
+  </div>
+</div>
+
+<div class="success-box">
+  <strong>L'histoire clé à retenir :</strong> Plateforme d'intelligence décisionnelle sur données ERP réelles d'un distributeur pharmaceutique. Détection et correction d'une surévaluation de <strong>15,8 M DT (5,44 %)</strong> du CA, associées à une stricte politique de validation industrielle : aucun modèle ML n'est déployé s'il ne bat pas significativement une référence statistique simple sur un split temporel hors-période.
+</div>
+
+<h1>1. Architecture & Fondations Techniques</h1>
+
+<h2>1.1. Dualité des Bases de Données (PostgreSQL & DuckDB)</h2>
+<ul>
+  <li><strong>PostgreSQL (<code>auth-db</code>) — aucun repli</strong> : Gère l'authentification, les comptes (<code>User</code>), le hachage bcrypt (12 rounds), l'invalidation par version (<code>token_version</code>), la liste de révocation JWT (<code>revoked_tokens</code> sur <code>jti</code>), les logs d'audit et l'orchestration des tâches/délégation.</li>
+  <li><strong>DuckDB (OLAP In-Process)</strong> : Moteur analytique vectorisé en colonnes. Il exécute les calculs sur l'entrepôt de données issu de l'ERP (faits, dimensions, marts, vues de présentation) avec des performances optimales.</li>
+  <li><strong>Lien Logique</strong> : Il n'existe <strong>aucune clé étrangère physique</strong> entre PostgreSQL et DuckDB. L'isolation est assurée par le service <code>perimetre.py</code> qui réécrit impérativement <code>selected_clients</code> avec le <code>client_code</code> de l'utilisateur authentifié.</li>
+</ul>
+
+<h2>1.2. Sécurité, Rôles RBAC et JWT</h2>
+<ul>
+  <li><strong>Cookies HttpOnly</strong> : Le JWT est transporté dans un cookie <code>HttpOnly</code> avec <code>SameSite=Lax</code> et <code>Secure</code> activé en production. Le code JavaScript frontend ne peut pas lire le jeton (protection contre les failles XSS). <code>localStorage</code> ne contient que des préférences d'affichage.</li>
+  <li><strong>Double Révocation JWT</strong> : 
+    <ol>
+      <li>Déconnexion (<code>/logout</code>) : Le <code>jti</code> du token est ajouté à la table <code>revoked_tokens</code>.</li>
+      <li>Changement de mot de passe : Incrémentation du champ <code>token_version</code> de l'utilisateur, invalidant immédiatement tous les anciens tokens émis.</li>
+    </ol>
+  </li>
+  <li><strong>Périmètre des Rôles</strong> :
+    <ul>
+      <li><code>directeur</code> : Accès global, réglages d'automatisation, validation des délégations.</li>
+      <li><code>employe</code> : Accès aux tâches qui lui sont affectées, fiches opérationnelles, tableau de bord restreint.</li>
+      <li><code>client</code> : Accès strictement bridé à son espace client et à ses propres données financières.</li>
+    </ul>
+  </li>
+</ul>
+
+<h2>1.3. Environnements et Ports Réseau</h2>
+<table>
+  <thead>
+    <tr><th>Environnement</th><th>API FastAPI</th><th>Frontend Next.js</th><th>Base PostgreSQL</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>Local (Développement)</strong></td><td><code>http://127.0.0.1:9000</code></td><td><code>http://localhost:4000</code></td><td>Port <code>5432</code> (PostgreSQL requis)</td></tr>
+    <tr><td><strong>Docker Compose (Production/Démo)</strong></td><td>Port <code>8000</code></td><td>Port <code>3000</code></td><td>Port <code>5432</code> (Service <code>auth-db</code>)</td></tr>
+  </tbody>
+</table>
+
+<h1>2. Pipeline ETL & Qualité des Données (Audit du CA)</h1>
+
+<h2>2.1. L'Audit du CA : Détection et Correction de 15,8 M DT</h2>
+<table>
+  <thead>
+    <tr><th>Indicateur</th><th>Montant</th><th>Part / Impact</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>CA brut affiché avant audit</td><td>290 506 268 DT</td><td>Surévaluation initiale</td></tr>
+    <tr><td><strong>CA net corrigé</strong></td><td><strong>274 696 489 DT</strong></td><td><strong>Chiffre exact certifié</strong></td></tr>
+    <tr><td><strong>Écart total corrigé</strong></td><td><strong>15 809 779 DT (5,44 %)</strong></td><td><strong>Erreur majeure redressée</strong></td></tr>
+    <tr><td>├─ Double comptage des avoirs</td><td>14 755 841 DT</td><td>93 % de l'erreur (signe <code>MONTANTSIGNE_DEV</code>)</td></tr>
+    <tr><td>└─ Factures dupliquées éliminées</td><td>1 053 938 DT</td><td>1 324 factures dédupliquées (clé <code>PIECENOFULL</code>)</td></tr>
+  </tbody>
+</table>
+
+<div class="highlight-box">
+  <strong>La preuve d'intégrité absolue (Rapprochement En-têtes vs Lignes) :</strong><br>
+  Somme HT calculée depuis les lignes de détail : <strong>266 012 496 DT</strong>.<br>
+  Somme HT calculée depuis les en-têtes de factures : <strong>266 235 708 DT</strong>.<br>
+  <strong>Écart résiduel : 0,08 %</strong> (8 points de base). Deux exports ERP séparés concordent au dinar près.
+</div>
+
+<h2>2.2. Volumétrie et Chronologie Réelle</h2>
+<ul>
+  <li><strong>Historique Exploitable</strong> : <strong>2021 → 2026</strong> (92,5 % du volume total).</li>
+  <li><strong>Trou Temporel 2019-2020</strong> : Ces années sont absentes de tous les fichiers ERP (migration d'ERP historique). 2017 et 2018 ne comportent que 1 329 factures (1,1 % du total).</li>
+  <li><strong>Croissance Réelle</strong> : 2021 (47,6 M DT) → 2022 (47,8 M, +0,3 %) → 2023 (49,6 M, +3,7 %) → 2024 (53,9 M, +8,7 %) → 2025 (62,1 M, +15,4 %). <strong>+30,5 % en 4 ans avec nette accélération en 2025.</strong></li>
+</ul>
+
+<h2>2.3. Architecture du Pipeline DuckDB</h2>
+<pre>
+CSV ERP ──► stg_* (Staging temporaire typé)
+             ├──► fait_vente + fait_ligne_vente (Grain unifié & montants signés)
+             ├──► rejet_ligne_vente (Traçabilité des anomalies de décalage)
+             ├──► dim_* (Dimensions conformes : Client, Produit, Dépôt, Calendrier continu)
+             ├──► mart_* (Tables matérialisées pré-agrégées)
+             └──► Vues de présentation (sales, sales_lines, purchases...)
+</pre>
+<ul>
+  <li><strong>Transaction Atomique</strong> : Exécution sous transaction unique. Si l'un des 30 invariants de qualité échoue, un <code>ROLLBACK</code> automatique préserve l'état antérieur sain.</li>
+  <li><strong>Signature MD5</strong> : L'ETL calcule une signature (nom, taille, mtime des CSV + <code>VERSION_SCHEMA</code>) pour ne reconstruire l'entrepôt que si la source change.</li>
+</ul>
+
+<h1>3. Moteur Machine Learning & Deep Learning</h1>
+
+<table>
+  <thead>
+    <tr><th>Problématique</th><th>Modèle Servi</th><th>Statut</th><th>Métriques Clés & Comparaisons</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Décrochage Client (Churn)</strong></td>
+      <td>Régression Logistique</td>
+      <td><span class="badge badge-prod">Production</span></td>
+      <td><strong>AUC Hors-Période = 0.9224</strong> (vs Baseline fréquence 0.9002). HistGradientBoosting (0.9243) non retenu par parcimonie (écart &lt; 0.01). Priorisation par Enjeu = P(Churn) × CA 12m.</td>
+    </tr>
+    <tr>
+      <td><strong>Segmentation Client</strong></td>
+      <td>KMeans (k=5)</td>
+      <td><span class="badge badge-prod">Production</span></td>
+      <td><strong>Score Silhouette = 0.468</strong>, Stabilité bootstrap = 0.942. 5 profils : Grands comptes, Réguliers, Opportunistes, Nouveaux, Dormants.</td>
+    </tr>
+    <tr>
+      <td><strong>Conversion des Devis</strong></td>
+      <td>Régression Logistique</td>
+      <td><span class="badge badge-prod">Production</span></td>
+      <td><strong>AUC = 0.7165</strong>. Exclusion des devis des 6 derniers mois (anti-censure à droite). Décile supérieur avec un <strong>Lift de 2.49</strong>.</td>
+    </tr>
+    <tr>
+      <td><strong>Érosion de Marge</strong></td>
+      <td>HistGradientBoosting</td>
+      <td><span class="badge badge-prod">Production</span></td>
+      <td><strong>AUC = 0.7969</strong> (vs Baseline marge passée 0.7620). Gain confirmé par bootstrap [+0.0321; +0.0449]. Cible = Marge 3 mois &le; 20e percentile.</td>
+    </tr>
+    <tr>
+      <td><strong>Risque de Crédit</strong></td>
+      <td>Médiane Historique (Règle)</td>
+      <td><span class="badge badge-stat">Règle Servie</span></td>
+      <td><strong>AUC Hors-Période = 0.9200</strong> pour les clients connus. Modèle ML Cold-Start refusé car AUC (0.597) inférieure à la baseline (0.665).</td>
+    </tr>
+    <tr>
+      <td><strong>Demande par Référence</strong></td>
+      <td>Médiane Historique 12m</td>
+      <td><span class="badge badge-stat">Règle Servie</span></td>
+      <td><strong>WAPE = 38.31 %</strong> sur test 18 mois (37 % de demande intermittente). Bat LightGBM (39.87 %), DeepAR et N-HiTS.</td>
+    </tr>
+    <tr>
+      <td><strong>Recommandation Cross-Selling</strong></td>
+      <td>LightGBM (Challenger: Wide & Deep)</td>
+      <td><span class="badge badge-deep">Challenger</span></td>
+      <td>Wide & Deep : <strong>NDCG@10 = 0.3501</strong> vs LightGBM : 0.3439. Écart non significatif (IC95 inclut 0) : LightGBM servi par parcimonie.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>3.1. Détails du Réseau Wide & Deep (PyTorch)</h2>
+<ul>
+  <li><strong>Branche Wide</strong> : Modèle linéaire capturant les mémorisations directes d'associations client-produit.</li>
+  <li><strong>Branche Deep</strong> : Embeddings (Produit 16, Famille 16, Établissement 4) + 15 variables standardisées. Couches <code>Dense(51) → Dense(64) → ReLU → Dropout(0.2) → Dense(32) → ReLU → Dense(1)</code>. Perte <code>BCEWithLogitsLoss</code> avec <code>pos_weight</code>.</li>
+</ul>
+
+<h1>4. Flotte Multi-Agents, Arbitre Économique & RAG</h1>
+
+<h2>4.1. Architecture LangGraph & Gestion des Pannes</h2>
+<p>Exécution parallèle (Fan-Out) de 5 agents spécialisés (Recouvrement, Commercial, Stock, Trésorerie, Risque Client) avec isolation <code>_safe_node</code> en cas de défaillance.</p>
+
+<h2>4.2. Formule de l'Arbitre Économique</h2>
+<pre>Enjeu Court Terme = Montant Brut × Coefficient Métier</pre>
+<ul>
+  <li><strong>Recouvrement / Trésorerie (Coeff 0.15)</strong> : Risque de décalage d'encaissement.</li>
+  <li><strong>Rétention Client / Marge (Coeff 0.20)</strong> : Risque sur la valeur récurrente.</li>
+  <li><strong>Stock Immobilisé (Coeff 0.10)</strong> : Actif physique convertible.</li>
+  <li><strong>Commercial / Devis (Coeff 0.10)</strong> : Opportunité potentielle non encore signée.</li>
+  <li><strong>Approvisionnement (Coeff 0.05)</strong> : Risque logistique.</li>
+</ul>
+
+<h2>4.3. Délégation Autonome & RAG Anti-Hallucination</h2>
+<ul>
+  <li>Plafond strict de <strong>8 tâches par cycle</strong>, carence de <strong>14 jours</strong>, max 10 tâches ouvertes par agent.</li>
+  <li><strong>Garde-fou déterministe (<code>verification.py</code>)</strong> : Tout montant numérique cité par le LLM est confronté aux sources documentaires et aux tables DuckDB. En cas de montant introuvable, la réponse LLM est rejetée et remplacée par la règle déterministe.</li>
+</ul>
+
+<h1>5. Synthèse des Questions-Pièges du Jury</h1>
+
+<div class="card">
+  <h3>Q1 : « Pourquoi votre CA est-il inférieur de 15,8 M DT à l'ERP ? »</h3>
+  <p><strong>Réponse :</strong> L'ERP d'origine présentait deux anomalies majeures : la colonne <code>TTC_DEV</code> était positive sur les avoirs et les ajoutait au CA au lieu de les soustraire (erreur identifiée dans <code>MONTANTSIGNE_DEV</code>), et 1 324 factures étaient dupliquées par rejeux d'exports. Après correction, les exports d'en-têtes et de lignes concordent à <strong>0,08 % près</strong>.</p>
+</div>
+
+<div class="card">
+  <h3>Q2 : « Pourquoi le modèle Wide & Deep n'est-il pas en production ? »</h3>
+  <p><strong>Réponse :</strong> Bien qu'il obtienne un NDCG@10 légèrement supérieur (0.3501 vs 0.3439), l'intervalle de confiance à 95 % de leur écart [-0.004 ; +0.016] contient zéro. Par principe de parcimonie (rasoir d'Ockham), nous servons LightGBM, plus sobre et rapide, et conservons Wide & Deep comme challenger.</p>
+</div>
+
+<div class="card">
+  <h3>Q3 : « Pourquoi la médiane bat-elle le Deep Learning sur la prévision de demande ? »</h3>
+  <p><strong>Réponse :</strong> Notre catalogue présente 37 % de demande intermittente. Sur notre test hors-période de 18 mois, la médiane 12 mois obtient un WAPE de 38.31 %, battant LightGBM (39.87 %), DeepAR et N-HiTS qui ont surappris sur des dynamiques passées non récurrentes.</p>
+</div>
+
+<div class="card">
+  <h3>Q4 : « Comment prouvez-vous l'absence de fuite de données (Data Leakage) ? »</h3>
+  <p><strong>Réponse :</strong> Toutes les variables sont construites sur le passé strict. Pour le churn et la marge, une marge d'exclusion égale à l'horizon futur (90 jours) sépare le train et le test. Des tests automatisés modifient artificiellement le futur et vérifient que les features passées restent strictement identiques.</p>
+</div>
+
+<div class="card">
+  <h3>Q5 : « Prédisez-vous les retards de paiement réels ? »</h3>
+  <p><strong>Réponse :</strong> Non, et nous l'assumons d'emblée : l'ERP ne contient aucune date de règlement effectif. Notre DSO et nos métriques de crédit mesurent le <em>délai contractuel accordé</em> (<code>MODEREGL</code>). Prétendre prédire le retard réel sans date de paiement aurait constitué un artefact méthodologique non fondé.</p>
+</div>
+
+<h1>6. Commandes Clés pour la Démonstration</h1>
+<ul>
+  <li><code>pytest</code> : Exécute l'ensemble des 666 tests unitaires, d'intégration et d'invariants.</li>
+  <li><code>python scripts/audit_ca_corrige.py</code> : Reproduit l'audit et la preuve de réconciliation du CA au dinar près.</li>
+  <li><code>python scripts/tableau_metriques.py</code> : Génère le tableau officiel de toutes les métriques et baselines.</li>
+  <li><code>python scripts/preflight_demo.py</code> : Contrôle l'état complet des bases, ports, modèles et services avant la démo.</li>
+  <li><code>python -m etl --forcer</code> : Reconstruit l'intégralité de l'entrepôt DuckDB de zéro sous transaction.</li>
+</ul>
+
+</body>
+</html>

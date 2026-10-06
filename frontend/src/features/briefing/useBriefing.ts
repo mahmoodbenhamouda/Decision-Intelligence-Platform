@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * ViewModel — onglet « Priorités ».
- *
- * Demande le briefing à la flotte d'agents pour les filtres courants, écarte
- * les constats techniques, puis prépare : les actions, les six plus gros
- * enjeux, le total, le nombre d'urgences, les clients à signaux multiples et
- * l'enjeu par domaine. Gère aussi la fenêtre « Confier ».
- */
 import { useMemo, useState } from "react";
 import { useRequete } from "@/core/hooks/useRequete";
 import { useConfiees } from "@/features/taches/useConfiees";
@@ -21,8 +13,7 @@ export function useBriefing(filterPayload: Record<string, unknown>, peutConfier:
   const data = r.donnees ?? null;
   const [ouvert, setOuvert] = useState<number | null>(null);
   const [confier, setConfier] = useState<Origine | null>(null);
-  // Les alertes déjà confiées viennent du serveur : elles survivent au
-  // rechargement de la page, contrairement à une simple liste en mémoire.
+
   const { confiees, recharger: rechargerConfiees } = useConfiees(peutConfier);
 
   const vue = useMemo(() => {

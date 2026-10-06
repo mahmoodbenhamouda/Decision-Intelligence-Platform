@@ -1,10 +1,4 @@
-"""
-tests/test_copilote.py
-======================
-Le graphe du copilote (agents/copilote/) : ordre des nœuds, choix de la source
-de réponse, et honnêteté du champ `via`. Indicateurs et modèle de langage sont
-remplacés par des doublures : aucun entrepôt, aucun appel réseau.
-"""
+"""Le graphe du copilote (agents/copilote/) : ordre des nœuds, choix de la source de réponse, et…"""
 
 from __future__ import annotations
 
@@ -61,7 +55,7 @@ def test_le_prefixe_doc_passe_par_la_base_documentaire(monkeypatch):
                         lambda q: f"extrait pour « {q} »")
     r = graph.copilote.repondre({}, question="doc: procédure de relance")
     assert r["via"] == "rag" and r["text"] == "extrait pour « procédure de relance »"
-    assert _outils(r)[-2:] == ["aiguillage", "documents"]      # ni LLM, ni repli
+    assert _outils(r)[-2:] == ["aiguillage", "documents"]
 
 
 def _llm_factice(monkeypatch, reponse):
@@ -80,9 +74,7 @@ def test_reponse_du_modele_retenue_quand_ses_montants_sont_sources(monkeypatch):
 
 @pytest.mark.vitrine
 def test_via_dit_d_ou_vient_la_reponse(monkeypatch):
-    """Un montant inventé fait écarter la réponse du modèle : c'est alors la
-    règle qui répond, et `via` le dit (il annonçait « llm » dès qu'une clé
-    existait, même quand la réponse affichée venait des règles)."""
+    """Un montant inventé fait écarter la réponse du modèle : c'est alors la règle qui répond, et `via`…"""
     _llm_factice(monkeypatch, "Exposition secteur public : 30 396 136 DT.")
     r = graph.copilote.repondre({}, question="Qui dois-je relancer ?")
     assert r["via"] == "regles"

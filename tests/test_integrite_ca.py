@@ -1,26 +1,4 @@
-"""
-tests/test_integrite_ca.py
-==========================
-Non-regression sur l'integrite du chiffre d'affaires.
-
-Contexte
---------
-La table `sales` a longtemps surevalue le CA de 15 809 779 DT (5,44 %) pour
-deux raisons cumulees, mesurees sur les donnees reelles :
-
-  * 5 761 AVOIRS etaient AJOUTES au CA au lieu d'en etre retranches. `TTC_DEV`
-    est toujours positif ; le sens comptable est porte par `MONTANTSIGNE_DEV`.
-    Chaque avoir comptait donc deux fois : 7 377 921 DT x 2 = 14 755 841 DT.
-
-  * 1 324 FACTURES apparaissaient en double. `ENT_ID` est un identifiant
-    technique d'export, unique par construction, donc aveugle aux doublons ;
-    la cle metier est `PIECENOFULL`. Impact : 1 053 938 DT.
-
-Ces tests figent le resultat corrige. Ils echouent si quelqu'un revient a une
-somme de `TTC_DEV` non signee, ou retire la deduplication.
-
-    python -m pytest tests/test_integrite_ca.py -v
-"""
+"""Non-regression sur l'integrite du chiffre d'affaires."""
 
 import os
 import sys
@@ -34,13 +12,12 @@ from ml_engine.analytics.kpi_engine import STORE_PATH  # noqa: E402
 pytestmark = pytest.mark.skipif(
     not STORE_PATH.exists(), reason="entrepot DuckDB absent")
 
-# Valeurs etablies par scripts/audit_ca_corrige.py sur le jeu de donnees reel.
 CA_NET_ATTENDU = 274_696_489.0
 CA_AVANT_CORRECTION = 290_506_268.0
 N_AVOIRS = 5_761
 TTC_AVOIRS = 7_377_921.0
 N_DOUBLONS_SUPPRIMES = 1_324
-TOLERANCE = 50_000.0        # marge d'arrondi sur les conversions de type
+TOLERANCE = 50_000.0
 
 
 @pytest.fixture(scope="module")
@@ -52,8 +29,7 @@ def con():
 
 
 def test_colonnes_de_tracabilite_presentes(con):
-    """Sans `ent_id` ni `piece_no`, un doublon est indiscernable de deux ventes
-    identiques legitimes — cas frequent sur les livraisons recurrentes."""
+    """Sans `ent_id` ni `piece_no`, un doublon est indiscernable de deux ventes identiques legitimes —…"""
     cols = {d[0] for d in con.execute("DESCRIBE sales").fetchall()}
     for attendue in ("ent_id", "piece_no", "est_avoir"):
         assert attendue in cols, f"colonne `{attendue}` absente de sales"
@@ -109,11 +85,10 @@ def test_le_nombre_de_lignes_a_bien_diminue(con):
 def test_un_avoir_n_est_pas_compte_comme_une_facture():
     """Le panier moyen divisait un CA net par un nombre de pieces brut."""
     from ml_engine.analytics.kpi_engine import compute_dashboard
-    k = compute_dashboard({})
+    k = compute_dashboard({"periode": "tout"})
     assert k["nb_avoirs"] > 0
     assert k["nb_factures_vente"] + k["nb_avoirs"] == pytest.approx(
         con_lignes(), abs=50)
-    # Le panier moyen doit se calculer sur les seules ventes.
     attendu = k["ca_total_ttc"] / k["nb_factures_vente"]
     assert k["panier_moyen"] == pytest.approx(attendu, rel=1e-6)
 
@@ -129,6 +104,6 @@ def con_lignes() -> int:
 
 def test_exposition_au_recouvrement_exclut_les_avoirs():
     from ml_engine.analytics.kpi_engine import compute_dashboard
-    k = compute_dashboard({})
-    assert k["montant_risque_ttc"] >= 0
-    assert k["montant_critique_ttc"] >= 0
+    k = compute_dashboard({"periode": "tout"})
+    assert k["montant_delai_sup_60j_ttc"] >= 0
+    assert k["montant_delai_sup_90j_ttc"] >= 0

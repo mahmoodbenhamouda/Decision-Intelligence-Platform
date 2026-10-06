@@ -1,19 +1,4 @@
-"""
-tests/test_demande_reference.py
-===============================
-Garanties du protocole de prévision par référence.
-
-Ce qui est testé ici n'est pas la qualité du modèle — elle se mesure, elle ne se
-teste pas —, mais les propriétés sans lesquelles aucune mesure ne vaudrait rien :
-
-  * aucune variable ne lit un mois postérieur à l'origine ;
-  * l'éligibilité se décide avec le seul passé ;
-  * les fenêtres de validation et de test sont celles annoncées, et disjointes ;
-  * la WAPE, le biais et l'intervalle bootstrap disent ce qu'ils prétendent ;
-  * les méthodes de demande intermittente se comportent comme dans la littérature.
-
-Tout tourne sur un panel synthétique : aucune dépendance à l'entrepôt.
-"""
+"""Garanties du protocole de prévision par référence."""
 
 from __future__ import annotations
 
@@ -43,7 +28,6 @@ def _donnees(n_refs: int = 12, graine: int = 0, dernier_mois: str = "2026-04-01"
                     lignes.append({"reference": f"R{i:02d}", "designation": f"VIDAS TEST {i}",
                                    "famille": "REACTIF", "client": c, "mois": m,
                                    "qte": q / 2, "montant": q * 10.0, "cout": q * 6.0})
-    # une ligne de service, qui doit être exclue
     lignes.append({"reference": "S1", "designation": "REPARATION", "famille": "SERVICE SAV",
                    "client": "C1", "mois": mois[5], "qte": 3, "montant": 900.0, "cout": 0.0})
     L = pd.DataFrame(lignes)
@@ -76,8 +60,7 @@ def test_fenetres_validation_et_test(panel):
 
 @pytest.mark.vitrine
 def test_aucune_variable_ne_lit_le_futur(panel):
-    """Modifier tous les mois APRÈS l'origine ne doit rien changer aux variables
-    ni à l'éligibilité — seul le mois calendaire de la cible est connu d'avance."""
+    """Modifier tous les mois APRÈS l'origine ne doit rien changer aux variables ni à l'éligibilité —…"""
     o = dr.origines(panel)["test"][3]
     m = dr.eligibles(panel, o)
     avant = dr.variables(panel, o, 2, m)
@@ -91,8 +74,8 @@ def test_aucune_variable_ne_lit_le_futur(panel):
         futur.clients_type[t][:, o + 1:] = 999.0
     futur.entrees[:, o + 1:] = 777.0
     futur.position[:, o + 1:] = -5.0
-    futur.C[:, o + 1:] = 333.0        # achats futurs de chaque client
-    futur.D[:, o + 1:] = 1e7          # devis futurs
+    futur.C[:, o + 1:] = 333.0
+    futur.D[:, o + 1:] = 1e7
 
     assert np.array_equal(dr.eligibles(futur, o), m)
     apres = dr.variables(futur, o, 2, m)
@@ -148,7 +131,6 @@ def test_structure_client_typee(panel):
     assert (X["part_hopital_public"].dropna() > 0).all(), "« CHU SFAX » doit être un hôpital public"
 
 
-# ── Entraînement, décision et prévision servie ──────────────────────────────
 @pytest.fixture()
 def dossiers(tmp_path, monkeypatch):
     monkeypatch.setattr(dr, "REPORTS_DIR", tmp_path / "reports")

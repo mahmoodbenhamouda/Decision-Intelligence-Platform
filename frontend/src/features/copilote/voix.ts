@@ -1,11 +1,4 @@
-/**
- * Choix de la voix de synthèse (API Web Speech du navigateur).
- */
 
-/* ── Sélection de la meilleure voix française disponible ──────────────────
- * Priorité aux voix NEURONALES du système (Microsoft "…Online (Natural)",
- * Google, Apple Siri/Amélie/Thomas), puis n'importe quelle voix fr-*.
- * Repli implicite : voix par défaut du navigateur. */
 const PREFERRED_FR_VOICES = [
   /natural/i, /neural/i, /denise/i, /vivienne/i, /henri/i,
   /google.*fran/i, /am[ée]lie/i, /thomas/i, /audrey/i, /siri/i,

@@ -20,7 +20,7 @@
 > précédé la reconstruction.
 
 > ⚠️ **Avertissement méthodologique, à lire avant tout.**
-> L'export ERP d'Overlyne ne contient **aucune donnée de stock** — vérifié par recherche systématique sur les 32 fichiers (motifs `STOCK`, `QTESTOCK`, `DISPO`, `INVENTAIRE`, `REAPPRO`, `SEUIL` : zéro colonne).
+> Les exports de l'ERP du distributeur ne contiennent **aucune donnée de stock** — vérifié par recherche systématique sur les 32 fichiers (motifs `STOCK`, `QTESTOCK`, `DISPO`, `INVENTAIRE`, `REAPPRO`, `SEUIL` : zéro colonne).
 > Ce module **simule** un stock, il ne le mesure pas. Aucun chiffre produit ici ne décrit une réalité observée.
 
 ## Pourquoi simuler plutôt que renoncer
@@ -59,7 +59,7 @@ d      = quantité annuelle moyenne ÷ 365          (demande journalière)
 | *défaut* | 40 j | 60 j | 18 mois | oui |
 | SERVICE | — | — | — | **exclu** (pas de stock physique) |
 
-Les délais reflètent la réalité d'Overlyne : réactifs importés d'un fournisseur unique dominant (Biomérieux, 84,6 % des achats — donnée réelle), équipements fabriqués à la commande.
+Les délais reflètent la réalité du distributeur : réactifs importés d'un fournisseur unique dominant (Biomérieux, 84,6 % des achats — donnée réelle), équipements fabriqués à la commande.
 
 ### 3. Politique de réapprovisionnement (s, S)
 

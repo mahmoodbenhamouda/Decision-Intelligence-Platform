@@ -1,46 +1,4 @@
-"""
-ml_engine/metriques.py
-======================
-Métriques de classification COMPLÈTES, identiques pour tous les modèles.
-
-Pourquoi un module commun
--------------------------
-Chaque modèle calculait ses propres métriques, avec des noms et des seuils
-différents : l'un publiait une accuracy au seuil 0,5, l'autre seulement une AUC,
-un troisième une précision « au décile ». Impossible, dans ces conditions, de
-présenter un tableau comparable — ni de répondre simplement à la question
-« quelle est l'accuracy de vos modèles ? ».
-
-Pourquoi l'accuracy seule ne suffit pas — et pourquoi on la publie quand même
------------------------------------------------------------------------------
-Sur une cible déséquilibrée, l'accuracy trompe. Le décrochage client concerne
-8 % des observations : un classifieur qui répond « ne décroche pas » à tout le
-monde affiche 92 % d'accuracy sans rien détecter. Publier 92,9 % sans cette
-référence laisserait croire à un modèle excellent.
-
-On publie donc toujours, côte à côte :
-
-  * `accuracy`                   — la part de prédictions justes ;
-  * `accuracy_classe_majoritaire`— ce que ferait « toujours la classe la plus
-                                   fréquente » : la barre à dépasser ;
-  * `balanced_accuracy`          — la moyenne du rappel des deux classes,
-                                   insensible au déséquilibre ;
-  * `mcc` (Matthews)             — corrélation prédiction/réalité, de −1 à +1,
-                                   0 pour un classifieur aléatoire ;
-  * précision, rappel, spécificité, F1 et la matrice de confusion.
-
-Et le seuil ?
--------------
-Une probabilité doit être convertie en décision par un seuil. Le seuil 0,5 est
-une convention, pas une optimisation : sur une cible rare, il ne déclenche
-presque jamais. Deux seuils sont donc publiés :
-
-  * `au_seuil_0_5`              — la convention, pour comparaison ;
-  * `au_seuil_optimise_train`   — le seuil maximisant le F1 **sur le jeu
-                                   d'entraînement seul**. Le choisir sur le test
-                                   serait une fuite : on choisirait le seuil qui
-                                   flatte le résultat qu'on annonce.
-"""
+"""Métriques de classification COMPLÈTES, identiques pour tous les modèles."""
 
 from __future__ import annotations
 
@@ -80,12 +38,7 @@ def _bloc(y: np.ndarray, pred: np.ndarray) -> Dict[str, Any]:
 
 
 def seuil_optimal_f1(y_train: np.ndarray, p_train: np.ndarray) -> float:
-    """Seuil maximisant le F1 sur l'ENTRAÎNEMENT — jamais sur le test.
-
-    On balaie les quantiles des probabilités plutôt qu'une grille fixe : sur une
-    cible rare, toutes les probabilités peuvent être sous 0,2, et une grille de
-    0,05 en 0,05 ne verrait que deux ou trois seuils utiles.
-    """
+    """Seuil maximisant le F1 sur l'ENTRAÎNEMENT — jamais sur le test."""
     from sklearn.metrics import f1_score
 
     y_train = np.asarray(y_train).astype(int)
@@ -105,12 +58,7 @@ def metriques_classification(y_test, p_test,
                              y_train=None, p_train=None,
                              score_est_une_probabilite: bool = True
                              ) -> Dict[str, Any]:
-    """Toutes les métriques d'un classifieur binaire, sur le jeu de TEST.
-
-    `p_test` est un score croissant avec la classe positive. S'il ne s'agit pas
-    d'une probabilité (règle déterministe), le Brier et le seuil 0,5 n'ont pas de
-    sens : ils sont omis et le rapport le dit.
-    """
+    """Toutes les métriques d'un classifieur binaire, sur le jeu de TEST."""
     from sklearn.metrics import (average_precision_score, brier_score_loss,
                                  roc_auc_score)
 
@@ -146,7 +94,6 @@ def metriques_classification(y_test, p_test,
         bopt["gain_accuracy_vs_majoritaire"] = round(bopt["accuracy"] - majoritaire, 4)
         out["au_seuil_optimise_train"] = bopt
 
-    # Lecture : le bloc de référence est le seuil optimisé s'il existe.
     ref = out.get("au_seuil_optimise_train") or out.get("au_seuil_0_5")
     if ref:
         out["accuracy"] = ref["accuracy"]
@@ -168,13 +115,7 @@ def metriques_classification(y_test, p_test,
 
 
 def metriques_decision(y_test, pred_test, score_test=None) -> Dict[str, Any]:
-    """Métriques d'une RÈGLE dont la décision binaire est déjà fixée.
-
-    Une règle déterministe (« délai habituel > 60 jours ») n'a pas de seuil à
-    optimiser : sa décision est sa définition. On mesure donc cette décision
-    telle quelle, avec les mêmes grandeurs que pour un modèle appris — pour que
-    le tableau comparatif mette règles et modèles sur la même échelle.
-    """
+    """Métriques d'une RÈGLE dont la décision binaire est déjà fixée."""
     from sklearn.metrics import average_precision_score, roc_auc_score
 
     y = np.asarray(y_test).astype(int)
@@ -207,12 +148,7 @@ def metriques_decision(y_test, pred_test, score_test=None) -> Dict[str, Any]:
 
 
 def metriques_depuis_matrice(matrice) -> Dict[str, Any]:
-    """Accuracy et compagnie reconstruites d'une matrice de confusion publiée.
-
-    Sert aux rapports antérieurs à ce module, qui publiaient la matrice au seuil
-    0,5 sans les métriques dérivées. Aucune prédiction n'est recalculée : on lit
-    ce que l'entraînement a mesuré.
-    """
+    """Accuracy et compagnie reconstruites d'une matrice de confusion publiée."""
     (tn, fp), (fn, tp) = matrice
     n = tn + fp + fn + tp
     if n == 0 or (tp + fn) == 0 or (tn + fp) == 0:

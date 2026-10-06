@@ -1,24 +1,4 @@
-"""
-ml_engine/ocr/reconcile.py
-==========================
-RAPPROCHEMENT d'une facture scannée avec l'entrepôt analytique (DuckDB).
-
-C'est l'usage à plus forte valeur : une facture papier arrive, on la
-photographie, et la plateforme répond immédiatement :
-
-  - « Facture retrouvée dans l'ERP, montants identiques » → rien à faire ;
-  - « Retrouvée mais écart de 120,500 DT » → litige à instruire ;
-  - « Introuvable » → facture non saisie, ou tiers inconnu ;
-  - « Doublon probable » → même client, même montant, à quelques jours près.
-
-Méthode (déterministe, sans LLM) : recherche par montant TTC dans une
-tolérance, fenêtre de dates autour de la date lue, et similarité de nom du
-tiers. Chaque candidat reçoit un score explicable, et la décision est rendue
-avec le détail du calcul — un utilisateur doit pouvoir la contester.
-
-Respect du périmètre : `client_code` restreint la recherche aux factures d'un
-client (utilisé par le portail pour l'isolation des données).
-"""
+"""RAPPROCHEMENT d'une facture scannée avec l'entrepôt analytique (DuckDB)."""
 
 from __future__ import annotations
 
@@ -27,10 +7,9 @@ import unicodedata
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-# Tolérances (paramétrables par appel)
-TOL_MONTANT_PCT = 0.01      # 1 % d'écart accepté (arrondis, OCR)
-TOL_MONTANT_ABS = 1.0       # ou 1 DT en absolu, le plus grand des deux
-FENETRE_JOURS = 45          # écart de date acceptable autour de la date lue
+TOL_MONTANT_PCT = 0.01
+TOL_MONTANT_ABS = 1.0
+FENETRE_JOURS = 45
 
 
 def _norm(s: str) -> str:
@@ -60,9 +39,6 @@ def _connect():
     return duckdb.connect(path, read_only=True)
 
 
-# Où chercher selon le sens de la facture (point de vue de l'entreprise).
-# `numero` : colonne qui porte le numéro IMPRIMÉ sur la facture. Pour un achat,
-# c'est le numéro chez le fournisseur (`piece_externe`), `piece_no` étant interne.
 SOURCES = {
     "vente": {"table": "sales", "code": "client", "nom": "client_name",
               "numero": "piece_no", "genre": "client"},
@@ -82,21 +58,7 @@ def _fmt(x: float) -> str:
 
 def reconcile_invoice(fields: Any, client_code: Optional[str] = None,
                       limit: int = 5, sens: str = "vente") -> Dict[str, Any]:
-    """Rapproche une facture lue avec l'ERP : ventes (`sales`) ou achats (`purchases`).
-
-    Deux recherches, de la plus sûre à la moins sûre :
-      1. par NUMÉRO de facture (si l'ERP le connaît) : une correspondance exacte
-         sur le numéro désigne la même facture, même si le montant diffère — et
-         un montant différent devient alors un vrai litige ;
-      2. par MONTANT TTC (tolérance), dans une fenêtre de dates, avec la
-         similarité du nom du tiers.
-
-    Args:
-        fields: `InvoiceFields` ou dict équivalent.
-        client_code: restreint la recherche à ce client (ventes, isolation portail).
-        limit: nombre de candidats renvoyés.
-        sens: 'vente' ou 'achat'.
-    """
+    """Rapproche une facture lue avec l'ERP : ventes (`sales`) ou achats (`purchases`)."""
     f = fields.to_dict() if hasattr(fields, "to_dict") else dict(fields or {})
     sens = sens if sens in SOURCES else "vente"
     cfg = SOURCES[sens]
@@ -143,13 +105,11 @@ def reconcile_invoice(fields: Any, client_code: Optional[str] = None,
             portee.append(f"trim({cfg['code']}) = trim(?)"); p_portee.append(client_code)
 
         lignes: Dict[tuple, tuple] = {}
-        # 1. par numéro
         if col_num and _norm_num(numero):
             w = portee + [f"ltrim(regexp_replace(upper({col_num}), '[^A-Z0-9]', '', 'g'), '0') = ?"]
             for r in con.execute(select + " AND ".join(w) + " LIMIT 20",
                                  p_portee + [_norm_num(numero)]).fetchall():
                 lignes[(r[7], r[0], r[2], r[4])] = r
-        # 2. par montant (dans la fenêtre de dates, puis sans)
         elargi = False
         if ttc:
             w = portee + ["ttc BETWEEN ? AND ?"]
@@ -174,7 +134,6 @@ def reconcile_invoice(fields: Any, client_code: Optional[str] = None,
         out["message"] = f"Entrepôt analytique inaccessible : {e}"
         return out
 
-    # ── Scoring explicable ──
     candidats: List[Dict[str, Any]] = []
     for code, nom, dd, ech, r_ttc, r_ht, num_erp, piece in lignes.values():
         ecart = abs(float(r_ttc or 0) - float(ttc or 0)) if ttc else None
@@ -201,7 +160,7 @@ def reconcile_invoice(fields: Any, client_code: Optional[str] = None,
             raisons.append("autre tiers")
         candidats.append({
             "tiers_code": code, "tiers_nom": nom or code,
-            "client_code": code, "client_nom": nom or code,          # compatibilité interface
+            "client_code": code, "client_nom": nom or code,
             "date": dd, "echeance": ech,
             "montant_ttc": float(r_ttc or 0), "montant_ht": float(r_ht or 0),
             "ecart_montant": round(ecart, 3) if ecart is not None else None,
@@ -214,21 +173,16 @@ def reconcile_invoice(fields: Any, client_code: Optional[str] = None,
     out["candidats"] = candidats[:limit]
     g = cfg["genre"]
 
-    # ── Décision ──
     par_numero = [c for c in candidats if c["meme_numero"]]
     if par_numero:
         b = par_numero[0]
         memes = [c for c in par_numero if c["tiers_code"] == b["tiers_code"]]
-        # Un numéro partagé n'est PAS un doublon : dans cet ERP, certaines
-        # références reviennent sur plusieurs pièces à des mois d'écart et à des
-        # montants sans rapport (références de contrat), ou une facture est
-        # saisie en plusieurs pièces. Doublon = même numéro ET même montant.
         identiques = [c for c in memes if c["ecart_montant"] is not None and c["ecart_montant"] < 0.01]
         partage = (f" (le numéro figure sur {len(memes)} pièces de l'ERP)" if len(memes) > 1 else "")
         somme = sum(c["montant_ttc"] for c in memes)
         if len(identiques) >= 2:
             out["statut"] = "doublon_probable"
-            out["message"] = (f"Le numéro {numero} figure {len(identiques)} fois dans l'ERP chez "
+            out["message"] = (f"Le numéro {numero} figure {len(identiques)} fois en comptabilité chez "
                               f"{b['tiers_nom']} avec le même montant ({_fmt(identiques[0]['montant_ttc'])}) : "
                               "doublon de saisie probable.")
         elif identiques:
@@ -239,7 +193,7 @@ def reconcile_invoice(fields: Any, client_code: Optional[str] = None,
         elif len(memes) > 1 and ttc and abs(somme - float(ttc)) < 0.01:
             out["statut"] = "rapprochee"
             out["message"] = (f"Facture retrouvée par son numéro, saisie en {len(memes)} pièces "
-                              f"dans l'ERP ({' + '.join(_fmt(c['montant_ttc']) for c in memes)} "
+                              f"en comptabilité ({' + '.join(_fmt(c['montant_ttc']) for c in memes)} "
                               f"= {_fmt(somme)}).")
         else:
             out["statut"] = "ecart_detecte"
@@ -248,14 +202,13 @@ def reconcile_invoice(fields: Any, client_code: Optional[str] = None,
                               f"{_fmt(float(ttc or 0))} sur le document — litige à instruire." + partage)
         return out
 
-    # Postérieure à l'export : son absence ne prouve rien.
     fin = datetime.fromisoformat(out["erp_jusqu_au"]).date() if out["erp_jusqu_au"] else None
     if d_ref and fin and d_ref > fin:
         out["statut"] = "hors_periode"
         out["candidats"] = []
-        out["message"] = (f"L'export ERP s'arrête au {fin:%d/%m/%Y} : impossible de dire si cette "
+        out["message"] = (f"Les écritures s'arrêtent au {fin:%d/%m/%Y} : impossible de dire si cette "
                           f"facture du {d_ref:%d/%m/%Y} a été saisie. À revérifier après la "
-                          "prochaine mise à jour de l'ERP.")
+                          "prochaine mise à jour des écritures.")
         return out
 
     fiables = [c for c in candidats if not (tiers and c["similarite_nom"] == 0)]
@@ -263,7 +216,7 @@ def reconcile_invoice(fields: Any, client_code: Optional[str] = None,
         out["statut"] = "introuvable"
         base = f"Aucune facture de {_fmt(float(ttc or 0))} (± {_fmt(tol)})" if ttc else "Aucune facture"
         if sens == "achat":
-            out["message"] = (base + f" de « {tiers or '?'} » dans les achats de l'ERP. "
+            out["message"] = (base + f" de « {tiers or '?'} » dans vos achats. "
                               "Facture fournisseur NON SAISIE ? C'est une dette qui ne "
                               "figure pas en comptabilité — ou un montant mal lu.")
         else:

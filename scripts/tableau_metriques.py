@@ -1,15 +1,4 @@
-"""
-scripts/tableau_metriques.py
-============================
-Tableau comparatif de TOUS les modules, lu dans les rapports — jamais recopié.
-
-Pour chaque classifieur : AUC hors période, accuracy, accuracy de la classe
-majoritaire (la barre à dépasser), balanced accuracy, F1 et MCC, au seuil choisi
-sur l'entraînement. Pour les autres : leur métrique propre (MAPE, silhouette,
-NDCG@10).
-
-    python scripts/tableau_metriques.py            # tableau Markdown
-"""
+"""Tableau comparatif de TOUS les modules, lu dans les rapports — jamais recopié."""
 
 from __future__ import annotations
 

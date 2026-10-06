@@ -1,21 +1,4 @@
-"""
-api/services/ocr.py
-===================
-Documents & OCR : lecture de factures scannées, enregistrement du bon côté
-(achat ou vente), rapprochement avec l'ERP, échéancier, base documentaire.
-
-Le moteur est `ml_engine/ocr` ; ce service décide de QUI peut faire QUOI avec :
-
-* un compte client ne lit, ne rapproche et n'importe que des VENTES à son
-  propre code — faute de quoi n'importe qui pourrait injecter des montants dans
-  le portefeuille d'un autre ;
-* le directeur choisit le sens, crée les tiers inconnus, relance les
-  rapprochements, marque les règlements et alimente la base documentaire.
-
-Une lecture est CONSERVÉE (`lecture_id`) : l'enregistrement se fait ensuite
-sur ces valeurs, corrigées au besoin, sans relire le document ; les écarts avec
-la lecture d'origine sont enregistrés comme corrections.
-"""
+"""Documents & OCR : lecture de factures scannées, enregistrement du bon côté (achat ou vente),…"""
 
 from __future__ import annotations
 
@@ -37,9 +20,7 @@ from ml_engine.ocr import ocr_document, reconcile_invoice
 from ml_engine.ocr.engine import install_hint, ocr_available
 from ml_engine.ocr.layoutlm import etat as layoutlm_etat, lire_facture
 
-#: Formats de document acceptés.
 FORMATS = {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
-#: Taille maximale d'un document (20 Mo).
 TAILLE_MAX = 20 * 1024 * 1024
 
 
@@ -56,15 +37,12 @@ def _saisie_json(facture: str) -> Dict[str, Any]:
     return saisie
 
 
-# ── État du moteur ──────────────────────────────────────────────────────────
 def etat(user: User) -> Dict[str, Any]:
     """Le moteur OCR est-il opérationnel sur ce serveur ?"""
     dispo = ocr_available()
     e = layoutlm_etat()
     info: Dict[str, Any] = {"disponible": dispo, "formats": sorted(FORMATS),
                             "layoutlmv3": e["disponible"],
-                            # Le motif n'est utile qu'à l'exploitant : un compte
-                            # client n'a pas à connaître la gouvernance des modèles.
                             **({"layoutlmv3_motif": e["motif"], "layoutlmv3_cause": e["cause"]}
                                if _est_directeur(user) else {})}
     if dispo:
@@ -79,7 +57,6 @@ def etat(user: User) -> Dict[str, Any]:
     return info
 
 
-# ── Lecture ─────────────────────────────────────────────────────────────────
 def extraire_texte(db: Session, user: User, contenu: bytes, nom: str) -> Dict[str, Any]:
     """Extraction de texte brute, avec indicateur de qualité de lecture."""
     res = ocr_document(contenu, nom)
@@ -94,18 +71,13 @@ def extraire_texte(db: Session, user: User, contenu: bytes, nom: str) -> Dict[st
 def _rapprocher(facture: Dict[str, Any], sens: Optional[str], user: User) -> Dict[str, Any]:
     if sens not in ("achat", "vente"):
         return {"statut": "sens_a_choisir", "candidats": [],
-                "message": "Choisissez « achat » ou « vente » pour rapprocher la facture de l'ERP."}
-    scope = None if _est_directeur(user) else user.client_code
-    return reconcile_invoice(facture, client_code=scope, sens=sens)
+                "message": "Choisissez « achat » ou « vente » pour rapprocher la facture de vos écritures."}
+    return reconcile_invoice(facture, client_code=None, sens=sens)
 
 
 def lire_une_facture(db: Session, user: User, contenu: bytes, nom: str,
                      rapprocher: bool) -> Dict[str, Any]:
-    """Facture scannée → champs structurés + sens proposé + rapprochement ERP.
-
-    Directeur : rapprochement sur tout l'entrepôt.
-    Client    : rapprochement RESTREINT à son propre `client_code`.
-    """
+    """Facture scannée → champs structurés + sens proposé + rapprochement ERP."""
     from ml_engine.ocr.entreprise import detecter_sens, identite
     from ml_engine.ocr.lectures import conserver_lecture
 
@@ -115,14 +87,8 @@ def lire_une_facture(db: Session, user: User, contenu: bytes, nom: str,
                                "Aucun texte exploitable n'a pu être extrait du document.")
 
     lecture = conserver_lecture(contenu, nom, res.to_dict(), fields.to_dict(), moteur)
-    if _est_directeur(user):
-        sens = detecter_sens(fields.fournisseur, fields.client or fields.tiers, res.text)
-    else:
-        sens = {"sens": "vente", "confiance": "haute",
-                "motif": "compte client : facture émise par l'entreprise à votre nom"}
+    sens = detecter_sens(fields.fournisseur, fields.client or fields.tiers, res.text)
 
-    # Le rapprochement dépend du sens : une vente se cherche dans les ventes,
-    # un achat dans les achats. Sens inconnu : on attend le choix de l'utilisateur.
     rapprochement: Optional[Dict[str, Any]] = None
     if rapprocher:
         rapprochement = _rapprocher(fields.to_dict(), sens["sens"], user)
@@ -146,8 +112,7 @@ def lire_une_facture(db: Session, user: User, contenu: bytes, nom: str,
 
 def rapprocher_lecture(user: User, lecture_id: str, sens: str,
                        facture: Optional[str]) -> Dict[str, Any]:
-    """Refait le rapprochement d'une lecture conservée, dans le sens choisi et
-    sur les valeurs éventuellement corrigées — sans relire le document."""
+    """Refait le rapprochement d'une lecture conservée, dans le sens choisi et sur les valeurs…"""
     from ml_engine.ocr import nettoyer_saisie
     from ml_engine.ocr.lectures import charger_lecture
     lec = charger_lecture(lecture_id)
@@ -158,28 +123,14 @@ def rapprocher_lecture(user: User, lecture_id: str, sens: str,
         saisie = _saisie_json(facture)
         if isinstance(saisie, dict):
             valeurs.update(nettoyer_saisie(saisie))
-    if not _est_directeur(user):
-        sens = "vente"
     return _rapprocher(valeurs, sens, user)
 
 
-# ── Enregistrement ──────────────────────────────────────────────────────────
 def importer(db: Session, user: User, *, contenu: Optional[bytes], nom_fichier: Optional[str],
              lecture_id: Optional[str], facture: Optional[str], sens: Optional[str],
              client_code: Optional[str], tiers_code: Optional[str],
              creer_client: bool) -> Dict[str, Any]:
-    """ENREGISTRE une facture lue, du bon côté (achat ou vente).
-
-    Chemin normal : `lecture_id` + `facture`, le JSON des valeurs validées. Le
-    document n'est pas relu ; les écarts avec la lecture d'origine sont
-    enregistrés comme corrections.
-
-    Chemin historique : le document seul — il est lu puis enregistré tel quel,
-    marqué « sans relecture ».
-
-    `sens` : 'achat' ou 'vente'. Absent, il est détecté ; s'il ne peut pas
-    l'être, l'import est refusé (`Conflit`) plutôt que deviné.
-    """
+    """ENREGISTRE une facture lue, du bon côté (achat ou vente)."""
     from ml_engine.ocr import detecter_sens, importer_facture, nettoyer_saisie
     from ml_engine.ocr.layoutlm.extracteur import message_coherence
     from ml_engine.ocr.lectures import charger_lecture, conserver_lecture
@@ -209,14 +160,9 @@ def importer(db: Session, user: User, *, contenu: Optional[bytes], nom_fichier: 
         if not isinstance(saisie, dict):
             raise DonneesInvalides("`facture` doit être un objet JSON.")
         valide.update(nettoyer_saisie(saisie))
-        # la cohérence affichée doit porter sur les montants VALIDÉS
         valide["coherence"] = message_coherence(SimpleNamespace(
             montant_ht=valide.get("montant_ht"), montant_tva=valide.get("montant_tva"),
             montant_ttc=valide.get("montant_ttc"), timbre_fiscal=valide.get("timbre_fiscal")))
-
-    if not _est_directeur(user):
-        client_code, tiers_code = user.client_code, None
-        creer_client, sens = False, "vente"   # un client ne crée pas de comptes
 
     if sens not in (None, "", "achat", "vente"):
         raise DonneesInvalides("`sens` doit valoir 'achat' ou 'vente'.")
@@ -228,13 +174,13 @@ def importer(db: Session, user: User, *, contenu: Optional[bytes], nom_fichier: 
                 "action_requise": "Précisez s'il s'agit d'un achat ou d'une vente."})
         sens = d["sens"]
 
-    rapprochement = _rapprocher(valide, sens, user)    # lecture seule : avant l'écriture
+    rapprochement = _rapprocher(valide, sens, user)
     resultat = importer_facture(
         valide, ocr=ocr, fichier=name,
         utilisateur=getattr(user, "username", "") or "",
         client_code=client_code, creer_client=creer_client,
         sens=sens, tiers_code=tiers_code,
-        lecture=lu if relue else None,        # sans relecture, pas de « corrections »
+        lecture=lu if relue else None,
         moteur=moteur, fichier_sha256=sha, fichier_chemin=chemin,
         rapprochement=rapprochement)
 
@@ -246,8 +192,6 @@ def importer(db: Session, user: User, *, contenu: Optional[bytes], nom_fichier: 
                   f"{resultat.get('n_corrections', 0)} correction(s)"))
 
     if not resultat.get("ok"):
-        # Conflit : la lecture a réussi, c'est l'enregistrement qui est refusé
-        # (doublon, tiers ambigu, tiers inconnu à confirmer).
         raise Conflit({"facture": valide, "ocr": ocr, "lecture_id": sha, **resultat})
     return {"filename": name, "ocr": ocr, "moteur": moteur, "lecture_id": sha,
             "facture": valide, "import": resultat, "rapprochement": rapprochement}
@@ -255,18 +199,15 @@ def importer(db: Session, user: User, *, contenu: Optional[bytes], nom_fichier: 
 
 def factures_importees(user: User, client_code: Optional[str], sens: Optional[str],
                        rapprochement: Optional[str]) -> Dict[str, Any]:
-    """Un client ne voit que les siennes, donc des ventes."""
+    """Factures importées par OCR, filtrables par client, sens et statut de rapprochement."""
     from ml_engine.ocr import factures_importees as lister, stats_import
-    if not _est_directeur(user):
-        client_code, sens = user.client_code, "vente"
     return {"factures": lister(client_code=client_code, sens=sens,
                                rapprochement=rapprochement),
-            "stats": stats_import() if _est_directeur(user) else None}
+            "stats": stats_import()}
 
 
 def rerapprocher(db: Session, admin: User, seulement: Optional[str]) -> Dict[str, Any]:
-    """Refait le rapprochement des factures importées, après une mise à jour de
-    l'ERP. `seulement` : statuts à revoir, séparés par des virgules."""
+    """Refait le rapprochement des factures importées, après une mise à jour des écritures."""
     from ml_engine.ocr import rerapprocher_imports
     statuts: Optional[List[str]] = ([x.strip() for x in seulement.split(",")]
                                     if seulement else None)
@@ -277,11 +218,8 @@ def rerapprocher(db: Session, admin: User, seulement: Optional[str]) -> Dict[str
 
 
 def echeancier(user: User, sens: Optional[str]) -> Dict[str, Any]:
-    """Ce qu'il reste à payer (achats) et à encaisser (ventes) sur les factures
-    lues par OCR, absentes de l'ERP et non réglées, mois par mois."""
+    """Ce qu'il reste à payer (achats) et à encaisser (ventes) sur les factures lues par OCR, absentes…"""
     from ml_engine.ocr import echeancier as calculer
-    if not _est_directeur(user):
-        return calculer(sens="vente", client_code=user.client_code)
     return calculer(sens=sens)
 
 
@@ -303,13 +241,11 @@ def marquer_reglement(db: Session, admin: User, facture_id: int, le: Optional[st
 
 
 def qualite_en_production(depuis: Optional[str]) -> Dict[str, Any]:
-    """Exactitude RÉELLE du modèle en production, mesurée sur les corrections
-    faites à l'écran de validation, par champ et par moteur."""
+    """Exactitude RÉELLE du modèle en production, mesurée sur les corrections faites à l'écran de…"""
     from ml_engine.ocr import mesure_production
     return mesure_production(depuis)
 
 
-# ── Identité de l'entreprise ────────────────────────────────────────────────
 def identite_entreprise() -> Dict[str, Any]:
     """Sert à savoir si une facture est un achat ou une vente."""
     from ml_engine.ocr import identite
@@ -329,7 +265,6 @@ def declarer_entreprise(db: Session, admin: User, nom: str, alias: str,
     return ident
 
 
-# ── Base documentaire du copilote ───────────────────────────────────────────
 def _safe_slug(name: str) -> str:
     s = unicodedata.normalize("NFKD", name)
     s = "".join(c for c in s if not unicodedata.combining(c))
@@ -339,12 +274,7 @@ def _safe_slug(name: str) -> str:
 
 def indexer_pour_le_copilote(db: Session, admin: User, contenu: bytes, nom: str,
                              reindexer: bool) -> Dict[str, Any]:
-    """Océrise un document et l'ajoute à la base documentaire du copilote (RAG).
-
-    Un contrat ou une notice scannée devient ainsi interrogeable en langage
-    naturel via le préfixe `doc:` du copilote. Réservé au directeur : ces
-    documents sont visibles de tous les utilisateurs du RAG.
-    """
+    """Océrise un document et l'ajoute à la base documentaire du copilote (RAG)."""
     res = ocr_document(contenu, nom)
     if not res.ok:
         raise DonneesInvalides(" ".join(res.warnings) or

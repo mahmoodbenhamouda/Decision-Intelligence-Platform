@@ -1,9 +1,6 @@
-/**
- * Model — stock réel, approvisionnement et prévision des volumes.
- */
+
 import type { Raison } from "@/shared/ui/Pourquoi";
 
-/* Approvisionnement (/api/supply) */
 export interface Supplier { fournisseur: string; part_pct: number; achats_dt: number; n_factures: number }
 export interface Forecast {
   period: string; qte: number;
@@ -13,6 +10,13 @@ export interface SupplyData {
   demande_mape?: number | null;
   demande_methode?: string;
   demande_prevision?: Forecast[];
+  /** Vrai tant que l'erreur reste sous le seuil déclaré d'exploitabilité. */
+  demande_exploitable?: boolean;
+  demande_seuil_mape?: number;
+  demande_reserve?: string;
+  /** Motif quand l'historique du périmètre filtré est trop court. */
+  demande_motif?: string;
+  perimetre?: { n_clients: number; libelle: string };
   fournisseurs_nb?: number;
   fournisseurs_hhi?: number;
   fournisseur_top1_pct?: number;
@@ -22,7 +26,6 @@ export interface SupplyData {
   error?: string;
 }
 
-/* Prévision des volumes (/api/stock/forecast) */
 export interface Prevision {
   produit: string; derniere_periode: string;
   demande_observee_dernier_mois: number; moyenne_3m: number;
@@ -32,7 +35,6 @@ export interface ForecastData {
   error?: string; previsions?: Prevision[];
 }
 
-/* Stock réel (/api/stock) */
 export interface Obsolescence {
   produit: string; position: number; conso_mensuelle: number; mois_couverture: number;
   valeur_stock_dt: number; perte_probable_dt: number; gravite: string;
@@ -54,4 +56,4 @@ export interface FinDeVie {
   top?: { produit: string; valeur_stock_dt: number; capital_expose_dt: number;
           n_clients_12m: number; mois_sans_vente: number; raisons?: Raison[] }[];
 }
-export interface StockData { error?: string; flux_reel?: FluxReel; fin_de_vie?: FinDeVie }
+export interface StockData { error?: string; masque?: boolean; flux_reel?: FluxReel; fin_de_vie?: FinDeVie }

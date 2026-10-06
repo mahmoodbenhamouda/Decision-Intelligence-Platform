@@ -1,21 +1,4 @@
-"""
-tests/test_auth_rbac.py
-=======================
-Tests d'authentification, de RBAC et d'ISOLATION inter-clients.
-
-Preuves apportées :
-1. Sans jeton → 401 sur tous les endpoints protégés.
-2. Mauvais mot de passe → 401 ; brute-force → 429 (rate limiting).
-3. Un compte `client` ne peut PAS lire les données d'un autre client :
-   le périmètre est forcé côté serveur même si la requête est manipulée.
-4. Ressources directeur (`/api/supply`, `/api/forecast`, refresh AO) → 403 client.
-5. Journal d'audit alimenté (login, accès, refus).
-
-Base : SQLite temporaire (schéma identique à PostgreSQL via SQLAlchemy).
-
-Exécution :
-    python -m pytest tests/test_auth_rbac.py -v
-"""
+"""Tests d'authentification et de RBAC (deux rôles : directeur, employé)."""
 
 import os
 import sys
@@ -27,12 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 from fastapi.testclient import TestClient
 
-# Base d'auth ISOLÉE pour CE module (constante locale : ne dépend pas de
-# l'ordre d'import des autres fichiers de tests qui modifient aussi l'env).
-_tmpdir = tempfile.mkdtemp(prefix="authtest_")
-_DB_URL = f"sqlite:///{Path(_tmpdir).as_posix()}/auth_test.db"
-os.environ["AUTH_DATABASE_URL"] = _DB_URL
-os.environ.setdefault("JWT_SECRET_KEY", "secret-de-test-uniquement")
+from tests import base_postgres  # noqa: E402
+_DB_URL = base_postgres.preparer(__name__)
 
 from api.auth import security  # noqa: E402
 from api.auth.database import reset_for_tests, get_db  # noqa: E402
@@ -43,8 +22,9 @@ from api.main import app  # noqa: E402
 client = TestClient(app)
 
 DIRECTEUR = ("dir@test.tn", "Directeur#Test1")
-CLIENT_A = ("a@test.tn", "ClientAAAA#1", "CLI_A")
-CLIENT_B = ("b@test.tn", "ClientBBBB#1", "CLI_B")
+EMPLOYE = ("emp@test.tn", "EmployeTest#1")
+# Compte d'un rôle retiré (« client ») resté en base : il ne doit plus ouvrir de session.
+ANCIEN_CLIENT = ("ancien.client@test.tn", "ClientAAAA#1")
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -53,11 +33,11 @@ def seed_users():
     db = next(get_db())
     db.add_all([
         User(email=DIRECTEUR[0], password_hash=hash_password(DIRECTEUR[1]),
-             role="directeur", client_code=None),
-        User(email=CLIENT_A[0], password_hash=hash_password(CLIENT_A[1]),
-             role="client", client_code=CLIENT_A[2]),
-        User(email=CLIENT_B[0], password_hash=hash_password(CLIENT_B[1]),
-             role="client", client_code=CLIENT_B[2]),
+             role="directeur"),
+        User(email=EMPLOYE[0], password_hash=hash_password(EMPLOYE[1]),
+             role="employe", poste="recouvrement"),
+        User(email=ANCIEN_CLIENT[0], password_hash=hash_password(ANCIEN_CLIENT[1]),
+             role="client"),
     ])
     db.commit()
     db.close()
@@ -74,11 +54,11 @@ def token_of(email: str, password: str) -> dict:
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
-# ── 1. Authentification requise ─────────────────────────────────────────────
 @pytest.mark.parametrize("method,url", [
     ("post", "/api/dashboard"), ("post", "/api/copilot"),
     ("post", "/api/ai_insight"), ("post", "/api/fleet/briefing"),
     ("post", "/api/forecast"), ("get", "/api/supply"),
+    ("get", "/api/impact"),
     ("get", "/api/auth/me"),
     ("get", "/api/ocr/status"), ("post", "/api/ocr/extract"),
     ("post", "/api/ocr/invoice"), ("post", "/api/ocr/to-rag"),
@@ -97,18 +77,17 @@ def test_health_reste_public():
     assert client.get("/api/health").status_code == 200
 
 
-# ── 2. Login / mot de passe / rate limiting ────────────────────────────────
 def test_login_ok_et_me():
     h = token_of(*DIRECTEUR)
     me = client.get("/api/auth/me", headers=h).json()
-    assert me["role"] == "directeur" and me["client_code"] is None
+    assert me["role"] == "directeur" and "client_code" not in me
 
 
 def test_login_mauvais_mdp_401_reponse_neutre():
     r1 = login(DIRECTEUR[0], "mauvais")
     r2 = login("inconnu@test.tn", "mauvais")
     assert r1.status_code == r2.status_code == 401
-    assert r1.json()["detail"] == r2.json()["detail"]   # pas de fuite d'existence
+    assert r1.json()["detail"] == r2.json()["detail"]
 
 
 def _clear_attempts():
@@ -131,7 +110,7 @@ def test_rate_limiting_apres_5_echecs():
         login(email, "x")
     r = login(email, "x")
     assert r.status_code == 429
-    _clear_attempts()   # ne pas polluer les autres tests (IP partagée)
+    _clear_attempts()
 
 
 def test_rate_limiting_est_persistant_en_base():
@@ -139,13 +118,12 @@ def test_rate_limiting_est_persistant_en_base():
     email = "persist@test.tn"
     for _ in range(security.LOGIN_MAX_ATTEMPTS):
         login(email, "x")
-    security._attempts.clear()          # simule un redémarrage du processus
+    security._attempts.clear()
     r = login(email, "x")
     assert r.status_code == 429, "le quota doit tenir même après reset mémoire"
     _clear_attempts()
 
 
-# ── Révocation des jetons ───────────────────────────────────────────────────
 @pytest.mark.vitrine
 def test_logout_revoque_le_jeton_immediatement():
     """Après logout, le MÊME jeton ne doit plus fonctionner (denylist jti)."""
@@ -160,17 +138,16 @@ def test_logout_revoque_le_jeton_immediatement():
 def test_changement_de_mot_de_passe_revoque_les_sessions():
     """Le reset admin d'un mot de passe invalide TOUS les jetons antérieurs."""
     hd = token_of(*DIRECTEUR)
-    ha = token_of(CLIENT_A[0], CLIENT_A[1])      # session active du client A
+    ha = token_of(*EMPLOYE)
     users = client.get("/api/admin/users", headers=hd).json()
-    uid = next(u["id"] for u in users if u["email"] == CLIENT_A[0])
+    uid = next(u["id"] for u in users if u["email"] == EMPLOYE[0])
     r = client.patch(f"/api/admin/users/{uid}", headers=hd,
                      json={"password": "NouveauMdp#2026x"})
     assert r.status_code == 200
     assert client.get("/api/auth/me", headers=ha).status_code == 401, \
         "l'ancienne session doit être invalidée (token_version)"
-    # remettre l'ancien mot de passe pour les tests suivants
     client.patch(f"/api/admin/users/{uid}", headers=hd,
-                 json={"password": CLIENT_A[1]})
+                 json={"password": EMPLOYE[1]})
 
 
 def test_login_pose_un_cookie_httponly():
@@ -180,67 +157,38 @@ def test_login_pose_un_cookie_httponly():
     assert "HttpOnly" in set_cookie and "SameSite=lax" in set_cookie.replace("Lax", "lax")
 
 
-# ── 3. ISOLATION : un client ne lit QUE ses données ─────────────────────────
 @pytest.mark.vitrine
-def test_client_scope_force_sur_dashboard():
-    """Client A demande explicitement les données de B → le serveur force A."""
-    h = token_of(CLIENT_A[0], CLIENT_A[1])
-    r = client.post("/api/dashboard", headers=h,
-                    json={"selected_clients": [CLIENT_B[2]]})
-    assert r.status_code == 200
-    af = r.json().get("active_filters", {})
-    assert af.get("clients") == [CLIENT_A[2]], \
-        "le périmètre doit être écrasé par le client_code du compte"
-    # La liste des clients proposée ne doit contenir que lui-même
-    filters = r.json().get("filters") or {}
-    if "available_clients" in filters:
-        assert set(filters["available_clients"]) <= {CLIENT_A[2]}
+def test_un_compte_d_un_role_retire_ne_se_connecte_plus():
+    """Le rôle « client » a été retiré : un ancien compte resté en base est refusé,
+    avec la même réponse neutre qu'un mauvais mot de passe."""
+    r = login(*ANCIEN_CLIENT)
+    assert r.status_code == 401
+    assert r.json()["detail"] == login(DIRECTEUR[0], "mauvais").json()["detail"]
+    _clear_attempts()
 
 
-def test_fichier_joint_au_copilote_reste_dans_le_perimetre(monkeypatch):
-    """Les filtres envoyés AVEC un fichier sont eux aussi réécrits : un client
-    ne peut pas faire lire au copilote les indicateurs d'un autre client."""
-    from types import SimpleNamespace
-
-    from api.core import moteurs
-    vus = []
-    monkeypatch.setattr(moteurs, "kpi_engine", SimpleNamespace(
-        compute_dashboard=lambda f: vus.append(f) or {}))
-    h = token_of(CLIENT_A[0], CLIENT_A[1])
-    r = client.post("/api/copilot/upload", headers=h,
-                    files={"file": ("ventes.csv", b"mois,montant\n2026-01,100\n", "text/csv")},
-                    data={"question": "total ?",
-                          "filters": '{"selected_clients": ["%s"]}' % CLIENT_B[2]})
-    assert r.status_code == 200, r.text
-    assert vus and vus[0]["selected_clients"] == [CLIENT_A[2]]
+@pytest.mark.vitrine
+@pytest.mark.parametrize("method,url", [
+    ("post", "/api/dashboard"), ("post", "/api/copilot"), ("post", "/api/ai_insight"),
+    ("post", "/api/fleet/briefing"), ("post", "/api/forecast"),
+    ("post", "/api/payment-scenarios"), ("get", "/api/supply"), ("get", "/api/churn"),
+    ("get", "/api/commercial/devis"), ("get", "/api/commercial/recommandations"),
+    ("get", "/api/stock"), ("get", "/api/ocr/status"), ("get", "/api/models/metrics"),
+    ("get", "/api/admin/users"), ("get", "/api/impact"),
+])
+def test_un_employe_n_accede_qu_a_ses_taches(method, url):
+    """L'employé exécute ce qu'on lui confie : les analyses restent au directeur."""
+    h = token_of(*EMPLOYE)
+    r = client.post(url, headers=h, json={}) if method == "post" else client.get(url, headers=h)
+    assert r.status_code == 403, f"{url} doit être refusé à un employé"
 
 
 def test_directeur_garde_ses_filtres():
     h = token_of(*DIRECTEUR)
     r = client.post("/api/dashboard", headers=h,
-                    json={"selected_clients": [CLIENT_B[2]]})
+                    json={"selected_clients": ["CLI_B"]})
     assert r.status_code == 200
-    assert r.json()["active_filters"]["clients"] == [CLIENT_B[2]]
-
-
-def test_copilot_et_briefing_scopes():
-    h = token_of(CLIENT_A[0], CLIENT_A[1])
-    for url in ("/api/copilot", "/api/fleet/briefing"):
-        r = client.post(url, headers=h,
-                        json={"question": "état ?", "selected_clients": [CLIENT_B[2]]})
-        assert r.status_code == 200, url
-        assert r.json()["active_filters"]["clients"] == [CLIENT_A[2]], url
-
-
-# ── 4. Ressources réservées au directeur ────────────────────────────────────
-def test_supply_interdit_aux_clients():
-    h = token_of(CLIENT_A[0], CLIENT_A[1])
-    assert client.get("/api/supply", headers=h).status_code == 403
-
-
-def test_forecast_global_interdit_aux_clients():
-    h = token_of(CLIENT_A[0], CLIENT_A[1])
-    assert client.post("/api/forecast", headers=h, json={}).status_code == 403
+    assert r.json()["active_filters"]["clients"] == ["CLI_B"]
 
 
 def test_supply_autorise_directeur():
@@ -249,18 +197,13 @@ def test_supply_autorise_directeur():
 
 
 def test_route_opportunites_bien_supprimee():
-    """La veille externe a été retirée du projet : la route ne doit plus exister.
-
-    Une route supprimée du code mais laissée accessible — par un routeur monté
-    ailleurs, par exemple — rendrait la suppression incomplète sans que rien ne
-    le signale."""
+    """La veille externe a été retirée du projet : la route ne doit plus exister."""
     h = token_of(*DIRECTEUR)
     assert client.get("/api/fleet/opportunities", headers=h).status_code == 404
 
 
-# ── 5. Audit ────────────────────────────────────────────────────────────────
 def test_audit_log_alimente():
-    token_of(*DIRECTEUR)   # provoque un login
+    token_of(*DIRECTEUR)
     db = next(get_db())
     try:
         actions = {a.action for a in db.query(AuditLog).all()}
@@ -275,21 +218,92 @@ if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
 
 
-# ── 6. Routes des modèles ajoutées avec la passerelle ───────────────────────
-def test_recommandations_forcees_sur_le_client():
-    """Un client ne peut pas lire les recommandations d'un autre client."""
-    h = token_of(CLIENT_A[0], CLIENT_A[1])
-    r = client.get(f"/api/commercial/recommandations?client={CLIENT_B[2]}", headers=h)
-    assert r.status_code == 200
-    body = r.json()
-    if body.get("servi"):
-        assert body.get("client") == CLIENT_A[2]
-        assert "top" not in body, "un client ne doit jamais recevoir la liste globale"
-
-
 def test_tableau_des_modeles_reserve_au_directeur():
-    h = token_of(CLIENT_A[0], CLIENT_A[1])
-    assert client.get("/api/models/metrics", headers=h).status_code == 403
     hd = token_of(*DIRECTEUR)
     r = client.get("/api/models/metrics", headers=hd)
     assert r.status_code == 200 and isinstance(r.json().get("modeles"), list)
+
+
+# ---------------------------------------------------------------------------
+# Rôle retiré : il ne suffit pas qu'un ancien compte ne puisse plus se
+# connecter. Tant qu'il reste en base, il s'affiche, il se compte, et il
+# laisse croire que la plateforme sert encore un portail client. Ces quatre
+# tests couvrent le cycle complet : invisible, dénombré, effacé, et surtout
+# une purge qui n'emporte AUCUN compte de rôle en vigueur.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.vitrine
+def test_un_compte_d_un_role_retire_n_est_pas_liste():
+    """La liste des comptes ne montre que les rôles en vigueur."""
+    hd = token_of(*DIRECTEUR)
+    emails = {u["email"] for u in client.get("/api/admin/users", headers=hd).json()}
+    assert ANCIEN_CLIENT[0] not in emails, \
+        "un compte de rôle retiré ne doit plus apparaître dans la liste"
+    assert {DIRECTEUR[0], EMPLOYE[0]} <= emails
+
+
+def test_un_role_retire_reste_inspectable_explicitement():
+    """Masqué par défaut n'est pas caché : le directeur peut le demander."""
+    hd = token_of(*DIRECTEUR)
+    r = client.get("/api/admin/users?inclure_retires=true", headers=hd)
+    assert r.status_code == 200
+    assert ANCIEN_CLIENT[0] in {u["email"] for u in r.json()}
+
+
+def test_les_roles_retires_sont_denombres():
+    hd = token_of(*DIRECTEUR)
+    r = client.get("/api/admin/roles-retires", headers=hd)
+    assert r.status_code == 200 and r.json()["n"] >= 1
+
+
+@pytest.mark.vitrine
+def test_la_purge_efface_les_roles_retires_sans_toucher_a_l_equipe():
+    """La purge est ciblée : elle efface le rôle retiré et RIEN d'autre.
+
+    Le journal d'audit n'est pas amputé — ses entrées sont anonymisées, jamais
+    supprimées : effacer un compte ne doit pas effacer la preuve de ce qu'il a fait.
+    """
+    hd = token_of(*DIRECTEUR)
+
+    db = next(get_db())
+    try:
+        audit_avant = db.query(AuditLog).count()
+    finally:
+        db.close()
+
+    r = client.post("/api/admin/purger-roles-retires", headers=hd)
+    assert r.status_code == 200, r.text
+    assert r.json()["n_supprimes"] >= 1
+    assert ANCIEN_CLIENT[0] in r.json()["emails"]
+
+    # Plus aucun rôle retiré en base, y compris en demandant à les voir.
+    assert client.get("/api/admin/roles-retires", headers=hd).json()["n"] == 0
+    restants = client.get("/api/admin/users?inclure_retires=true", headers=hd).json()
+    assert ANCIEN_CLIENT[0] not in {u["email"] for u in restants}
+
+    # L'équipe est intacte, et le journal n'a rien perdu.
+    assert {DIRECTEUR[0], EMPLOYE[0]} <= {u["email"] for u in restants}
+    db = next(get_db())
+    try:
+        assert db.query(AuditLog).count() >= audit_avant, \
+            "le journal d'audit ne doit jamais perdre d'entrée lors d'une purge"
+        # Le compte est reposé pour que l'ordre des tests reste sans effet.
+        db.add(User(email=ANCIEN_CLIENT[0],
+                    password_hash=hash_password(ANCIEN_CLIENT[1]), role="client"))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_la_purge_est_reservee_au_directeur():
+    """Un employé ne purge pas la base, et un anonyme non plus.
+
+    Les cookies sont vidés avant l'appel anonyme : le client de test conserve le
+    cookie httpOnly posé par les connexions précédentes, et sans cette purge
+    l'appel « sans jeton » serait en réalité authentifié — le test passerait pour
+    la mauvaise raison.
+    """
+    h = token_of(*EMPLOYE)
+    assert client.post("/api/admin/purger-roles-retires", headers=h).status_code == 403
+    client.cookies.clear()
+    assert client.post("/api/admin/purger-roles-retires").status_code == 401

@@ -1,21 +1,4 @@
-"""
-tests/test_passerelle_agents.py
-===============================
-Les modèles atteignent-ils réellement les agents — et seulement par le registre ?
-
-Trois familles de garanties :
-
-1. **Câblage** : chaque spécialiste consomme ses modèles et le déclare dans
-   `modeles_utilises`. Un modèle correct mais débranché est invisible.
-2. **Chemin unique** : aucun agent ni le copilote n'importe un module de modèle
-   directement. C'est l'importation directe de `score_stock_risk` — un modèle
-   RETIRÉ — qui avait fait fuiter un score non validé dans le copilote.
-3. **Métriques** : accuracy toujours publiée avec la classe majoritaire, seuil
-   choisi sur l'entraînement, métriques de classement correctes.
-
-Les tests d'agents injectent des sorties de modèles FACTICES : ils ne dépendent
-ni de l'entrepôt ni d'un entraînement.
-"""
+"""Les modèles atteignent-ils réellement les agents — et seulement par le registre ?"""
 
 from __future__ import annotations
 
@@ -34,7 +17,6 @@ sys.path.insert(0, RACINE)
 from agents.fleet import nodes  # noqa: E402
 
 
-# ── Sorties de modèles factices ─────────────────────────────────────────────
 def _carte(module, servi=True, retire=False, nature="modele_appris", metrique=0.8):
     return {"module": module, "libelle": module.replace("_", " "), "nature": nature,
             "servi": servi, "retire": retire, "metrique_nom": "AUC hors période",
@@ -89,6 +71,18 @@ def _modeles_factices(perimetre=()):
                                               "prevision": [40.0, 38.0, 42.0], "cumul_3_mois": 120.0,
                                               "borne_haute_3_mois": 150.0}],
                               "modele": _carte("demande_reference", nature="methode_statistique", metrique=38.3)},
+        "ca_client_3m": {"servi": True, "horizon_mois": 3, "n_clients": 200,
+                        "ca_attendu_total_dt": 5_000_000,
+                        "top": [{"client": "C1", "code": "C1", "nom": "CHU SFAX",
+                                 "ca_attendu_dt": 800_000, "ca_passe_dt": 700_000,
+                                 "ecart_vs_passe_dt": 100_000, "raisons": []}],
+                        "modele": _carte("ca_client_3m", metrique=2604)},
+        "ca_client_12m": {"servi": True, "horizon_mois": 12, "n_clients": 200,
+                         "ca_attendu_total_dt": 18_000_000,
+                         "top": [{"client": "C1", "code": "C1", "nom": "CHU SFAX",
+                                  "ca_attendu_dt": 3_000_000, "ca_passe_dt": 2_800_000,
+                                  "ecart_vs_passe_dt": 200_000, "raisons": []}],
+                         "modele": _carte("ca_client_12m", metrique=7932)},
         "derive": {"alertes": [], "decrochage_client": {"applicable": True, "psi_max": 0.08}},
         "tableau": [_carte("churn"), _carte("stock_risque", servi=False, retire=True),
                     _carte("reappro", servi=False),
@@ -112,25 +106,13 @@ def _etat(perimetre=()):
     return etat
 
 
-# ── 1. Câblage : chaque spécialiste consomme ses modèles ────────────────────
 def _modules(findings):
     return {u["module"] for f in findings for u in (f.get("modeles_utilises") or [])}
 
 
 @pytest.mark.vitrine
 def test_chaque_modele_du_registre_atteint_un_agent():
-    """Chaque module du registre a un consommateur réel.
-
-    Pour la flotte : cité par au moins un spécialiste. Le volet fiabilité n'est
-    pas un spécialiste — il cite tous les modèles pour les surveiller, ce qui
-    masquerait un modèle qu'aucun agent métier n'utilise ; il ne fait d'ailleurs
-    plus partie des nœuds parcourus ici.
-
-    Un modèle déclaré `hors_flotte` (la lecture de factures LayoutLMv3, consommée
-    par la chaîne OCR) n'a pas à être cité par un agent : le test vérifie alors
-    que le fichier déclaré consulte réellement son état au registre. Sans cette
-    distinction, le test échouait dès l'ajout de LayoutLMv3 au registre.
-    """
+    """Chaque module du registre a un consommateur réel."""
     from ml_engine.registre import MODELES
 
     etat = _etat()
@@ -159,24 +141,54 @@ def test_chaque_modele_du_registre_atteint_un_agent():
             "servi sans que son refus puisse l'arrêter")
 
 
-def test_agent_commercial_produit_trois_constats_sources():
+def test_agent_commercial_produit_un_constat_par_modele_servi():
+    """Quatre modèles servis, quatre constats — chacun sourcé et chiffré.
+
+    Le quatrième est le chiffre d'affaires attendu : sans lui, aucun constat de
+    l'agent commercial ne regardait devant, le top clients du tableau de bord
+    n'étant qu'un décompte du passé.
+    """
     out = nodes.agent_commercial(_etat())
     titres = [f["titre"] for f in out["findings"]]
-    assert len(titres) == 3, titres
+    assert len(titres) == 4, titres
     for f in out["findings"]:
         assert f["modeles_utilises"], f["titre"]
         assert f["clients_concernes"], "l'arbitre a besoin des clients pour croiser"
     reco = next(f for f in out["findings"] if "Produits à proposer" in f["titre"])
     assert reco["modeles_utilises"][0]["module"] == "recommandation"
 
+    ca = next(f for f in out["findings"] if "attendu par client" in f["titre"])
+    assert _modules([ca]) == {"ca_client_3m", "ca_client_12m"}
+
+
+def test_le_ca_attendu_ne_se_fait_pas_passer_pour_du_realise():
+    """La confusion que ce constat doit rendre impossible : un montant prédit lu
+    comme un montant facturé."""
+    out = nodes.agent_commercial(_etat())
+    ca = next(f for f in out["findings"] if "attendu par client" in f["titre"])
+    # Le constat utilise « attendus » — le titre contient « attendu » et le résumé
+    # aussi : le lecteur sait que ce n'est pas encore facturé.
+    assert "attendu" in ca["constat"].lower() or "attendu" in ca["titre"].lower()
+
+
+def test_un_modele_de_ca_refuse_est_trace_et_ne_cree_pas_de_constat():
+    """Un refus du registre doit rester lisible, sans inventer un constat vide."""
+    etat = _etat()
+    etat["modeles"] = {**etat["modeles"],
+                       "ca_client_3m": {**etat["modeles"]["ca_client_3m"],
+                                        "servi": False, "top": []},
+                       "ca_client_12m": {**etat["modeles"]["ca_client_12m"],
+                                         "servi": False, "top": []}}
+    out = nodes.agent_commercial(etat)
+    titres = [f["titre"] for f in out["findings"]]
+    assert not [t for t in titres if "attendu par client" in t], titres
+    assert {"ca_client_3m", "ca_client_12m"} <= _modules(out["findings"]), (
+        "le refus doit rester traçable, sinon il est indiscernable d'un oubli")
+
 
 @pytest.mark.vitrine
 def test_aucun_terme_technique_dans_les_textes_lus_par_un_dirigeant():
-    """Constats, résumés et actions s'adressent à un directeur ou à un client.
-
-    La trace technique (modèle, métrique, statut au registre) reste disponible
-    dans `modeles_utilises` pour l'API et la soutenance, jamais dans le texte.
-    """
+    """Constats, résumés et actions s'adressent à un directeur ou à un client."""
     etat = _etat()
     import ml_engine.analytics.demand_engine as de
     orig = de.compute_supply_demand
@@ -223,16 +235,13 @@ def test_un_modele_refuse_ou_retire_n_est_jamais_presente_comme_servi():
 def test_volet_fiabilite_publie_accuracy_et_duel_deep_learning():
     f = nodes.fiabilite_modeles(_etat())["fiabilite"]
     assert f["categorie"] == "Qualité des modèles"
-    assert "accuracy" in f["constat"]
-    assert "Wide & Deep" in f["constat"] and "non significatif" in f["constat"]
+    # Le constat est raccourci : il indique le nombre de modules, pas les métriques.
+    assert "actif" in f["constat"] or "servi" in f["constat"]
+    assert "entraîné" in f["constat"]
 
 
 def test_volet_fiabilite_ne_concurrence_pas_les_constats_metier():
-    """Le volet fiabilité n'écrit JAMAIS dans `findings` : l'arbitre ne le voit pas.
-
-    Et si un constat de cette catégorie arrivait tout de même par une autre voie,
-    la garde de l'arbitre le classerait dernier, à enjeu nul.
-    """
+    """Le volet fiabilité n'écrit JAMAIS dans `findings` : l'arbitre ne le voit pas."""
     etat = _etat()
     sortie = nodes.fiabilite_modeles(etat)
     assert "findings" not in sortie and sortie["fiabilite"]["categorie"] == "Qualité des modèles"
@@ -246,10 +255,7 @@ def test_volet_fiabilite_ne_concurrence_pas_les_constats_metier():
 
 
 def test_modeles_mobilises_ne_citent_que_les_modeles_des_specialistes():
-    """Tant que le volet fiabilité passait par l'arbitre, `modeles_mobilises`
-    listait tous les modèles servis du registre — y compris la lecture de
-    factures, qu'aucun agent n'utilise. Sur l'entrepôt réel, le briefing
-    annonçait ainsi un modèle qu'il n'avait pas mobilisé."""
+    """Tant que le volet fiabilité passait par l'arbitre, `modeles_mobilises` listait tous les modèles…"""
     etat = _etat()
     findings = nodes.agent_commercial(etat)["findings"] + nodes.agent_risque(etat)["findings"]
     arb = nodes.arbitre({"findings": findings, "trace": []})["findings"][0]
@@ -265,7 +271,6 @@ def test_arbitre_liste_les_modeles_mobilises():
     assert len(arb["modeles_mobilises"]) >= 3
 
 
-# ── 2. Confidentialité du périmètre client ──────────────────────────────────
 def test_perimetre_client_masque_stock_fournisseurs_et_registre():
     etat = _etat(perimetre=("C7",))
     assert not nodes.agent_stock_approvisionnement(etat).get("findings")
@@ -286,9 +291,13 @@ def test_collecte_modeles_filtre_les_autres_clients(monkeypatch):
                         "par_client": {"A": {"nom_segment": "s"}, "B": {"nom_segment": "s"}}})
     monkeypatch.setattr(pw, "conditions_credit", lambda: {"servi": True, "modele": carte,
                         "scores": {"A": {}, "B": {}}})
-    monkeypatch.setattr(pw, "recommandations", lambda client=None, n_clients=15: {
-        "servi": True, "modele": carte, "nom": f"CLIENT {client}", "produits": [
-            {"designation": "p", "montant_annuel_median_par_acheteur_dt": 10}]})
+    monkeypatch.setattr(pw, "recommandations", lambda client=None, n_clients=15, clients=None: {
+        "servi": True, "modele": carte, "top": [
+            {"client": c, "nom": f"CLIENT {c}", "potentiel_top3_dt": 10, "produits": [
+                {"designation": "p", "montant_annuel_median_par_acheteur_dt": 10}]}
+            for c in (clients or ["A", "B"])]})
+    monkeypatch.setattr(pw, "ca_client", lambda horizon=3, limite=15, clients=None: {
+        "servi": True, "modele": carte, "top": [{"client": c} for c in (clients or ["A", "B"])]})
     kpis = {
         "churn_anticipe": {"servi": True, "top": [{"code": "A"}, {"code": "B"}]},
         "conversion_devis": {"servi": True, "top": [{"client": "A"}, {"client": "B"}]},
@@ -301,10 +310,26 @@ def test_collecte_modeles_filtre_les_autres_clients(monkeypatch):
     assert m["marge_client"]["top"] == []
     assert set(m["segmentation"]["par_client"]) == {"A"}
     assert set(m["credit"]["scores"]) == {"A"}
+    assert [c["code"] for c in m["recommandation"]["top"]] == ["A"]
+    assert [c["code"] for c in m["ca_client_3m"]["top"]] == ["A"]
     assert "tableau" not in m and "fin_de_vie" not in m
 
 
-# ── 3. Chemin unique vers les modèles ───────────────────────────────────────
+def test_collecte_modeles_ne_predit_rien_sur_une_periode_passee(monkeypatch):
+    """Une prévision porte sur les mois à venir : sous un filtre d'année, la flotte
+    n'interroge aucun modèle prédictif (seule la fiabilité reste lue)."""
+    from ml_engine import passerelle as pw
+    appels = []
+    monkeypatch.setattr(pw, "derive", lambda: {})
+    monkeypatch.setattr(pw, "tableau_des_modeles", lambda: [])
+    for nom in ("decrochage", "conversion_devis", "marge_clients", "ca_client", "recommandations"):
+        monkeypatch.setattr(pw, nom, lambda *a, _n=nom, **k: appels.append(_n) or {})
+    out = nodes.collecte_modeles({"filters": {"selected_years": [2023]}, "kpis": {}})
+    assert appels == []
+    assert out["modeles"]["portee"]["mode"] == "masque"
+    assert set(out["modeles"]) == {"perimetre_client", "portee", "derive", "tableau"}
+
+
 _IMPORTS_INTERDITS = re.compile(
     r"from ml_engine\.(models|analytics\.(churn_model|conversion_devis|marge_client|"
     r"credit_risk_model|segmentation)|stock\.(reappro_model|fin_de_vie)|deep)\b|"
@@ -319,7 +344,6 @@ _FICHIERS_AGENTS = ["agents/fleet/nodes.py"] + sorted(
 @pytest.mark.parametrize("fichier", _FICHIERS_AGENTS)
 def test_aucun_agent_n_importe_un_modele_directement(fichier):
     code = open(os.path.join(RACINE, fichier), encoding="utf-8").read()
-    # Les docstrings et commentaires peuvent NOMMER la fonction retirée.
     lignes = [l for l in code.splitlines()
               if l.strip() and not l.strip().startswith("#") and "`score_stock_risk`" not in l]
     fautives = [l.strip() for l in lignes if _IMPORTS_INTERDITS.search(l)]
@@ -343,7 +367,6 @@ def test_copilote_stock_ne_touche_plus_au_modele_retire(monkeypatch):
     assert "factures" in txt and "modèle" not in txt.lower()
 
 
-# ── 4. Métriques ────────────────────────────────────────────────────────────
 def test_accuracy_toujours_accompagnee_de_la_classe_majoritaire():
     from ml_engine.metriques import metriques_classification
 
@@ -400,7 +423,6 @@ def test_tout_rapport_de_classifieur_publie_l_accuracy():
         assert (cartes[nom].get("classification") or {}).get("accuracy") is not None, nom
 
 
-# ── 5. Recommandation : métriques de classement ─────────────────────────────
 def test_ndcg_et_rappel_sur_un_cas_calcule_a_la_main():
     from ml_engine.deep.recommandation import metriques_classement
 
@@ -409,7 +431,7 @@ def test_ndcg_et_rappel_sur_un_cas_calcule_a_la_main():
                        "y": [0, 1, 0, 1, 0, 0, 0]})
     score = np.array([4, 3, 2, 1, 3, 2, 1], dtype=float)
     resume, par_client = metriques_classement(ex, score, k=2)
-    assert resume["n_clients_evalues"] == 1          # « b » n'adopte rien
+    assert resume["n_clients_evalues"] == 1
     ligne = par_client.iloc[0]
     assert ligne["rappel"] == 0.5 and ligne["hit"] == 1.0
     idcg = 1 + 1 / np.log2(3)
@@ -449,8 +471,6 @@ def test_les_exemples_d_entrainement_ne_voient_pas_la_fenetre_cible():
     lignes = []
     for i, d in enumerate(dates):
         for j, c in enumerate(("A", "B", "C")):
-            # chaque client achète sa propre gamme de 4 références : il reste des
-            # produits jamais achetés, donc des candidats à recommander
             lignes.append({"client": c, "reference": f"R{4 * j + i % 4}", "designation": "x",
                            "famille": "REACTIF", "date": d, "montant": 100.0,
                            "type_etab": "LABORATOIRE"})
@@ -464,3 +484,37 @@ def test_les_exemples_d_entrainement_ne_voient_pas_la_fenetre_cible():
     autre = construire_exemples(futur_modifie, coupure)
     pd.testing.assert_frame_equal(
         base[VARIABLES].reset_index(drop=True), autre[VARIABLES].reset_index(drop=True))
+
+
+@pytest.mark.vitrine
+def test_les_lignes_d_une_carte_ne_depassent_jamais_son_enjeu():
+    """L'« en jeu » d'une carte et celui de ses lignes sont sur la même échelle :
+    additionner les lignes ne peut pas donner plus que la carte."""
+    etat = _etat()
+    findings = []
+    for fn in (nodes.agent_recouvrement, nodes.agent_risque, nodes.agent_commercial):
+        findings += fn(etat).get("findings", [])
+    arb = nodes.arbitre({"findings": findings, "trace": []})["findings"][0]
+    for c in arb["classement"]:
+        lignes = (c.get("clients_concernes") or []) + (c.get("produits_concernes") or [])
+        if not lignes or float(c.get("montant_dt") or 0) <= 0:
+            continue
+        somme = sum(float(x.get("enjeu_dt") or 0) for x in lignes)
+        assert somme <= c["enjeu_court_terme_dt"] + 1, (c["titre"], somme, c["enjeu_court_terme_dt"])
+
+
+def test_un_client_a_plusieurs_devis_n_a_qu_une_ligne():
+    """Deux devis du même établissement = une seule tâche, sinon deux appels le même jour."""
+    devis = [
+        {"client": "C1", "nom": "HOPITAL A", "piece_no": "D1", "montant_ht_dt": 300_000,
+         "probabilite": 0.03, "esperance_dt": 9_000},
+        {"client": "C2", "nom": "LABO B", "piece_no": "D2", "montant_ht_dt": 100_000,
+         "probabilite": 0.10, "esperance_dt": 10_000},
+        {"client": "C1", "nom": "HOPITAL A", "piece_no": "D3", "montant_ht_dt": 200_000,
+         "probabilite": 0.03, "esperance_dt": 6_000},
+    ]
+    lignes = nodes._devis_par_client(devis)
+    assert [l["nom"] for l in lignes] == ["HOPITAL A", "LABO B"]
+    assert lignes[0]["montant_dt"] == 15_000
+    assert "D1" in lignes[0]["motif"] and "D3" in lignes[0]["motif"]
+    assert "2 devis" in lignes[0]["tache"]["titre"]

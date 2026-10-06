@@ -1,47 +1,4 @@
-"""
-ml_engine/analytics/conversion_devis.py
-========================================
-Quel devis a une chance d'être signé ? — sur données entièrement réelles.
-
-Pourquoi cette question
------------------------
-Le taux de conversion réel des devis est de **9,0 %** (établi en décodant
-`ETATPIECE=8`, validé empiriquement à 89,4 % d'appariement facture). Autrement
-dit : plus de neuf devis sur dix ne se transforment jamais. Un commercial qui
-relance dans l'ordre d'arrivée passe donc l'essentiel de son temps sur des
-dossiers morts.
-
-C'est une question de **comportement**, pas de volume — la même famille que le
-décrochage client, seul modèle supervisé du projet à avoir été accepté (+0,0222
-sur la meilleure référence triviale). Les questions de volume ont toutes échoué
-dans ce projet, et pour une raison mesurée : la série de demande n'a pas de signal
-exploitable au-delà des méthodes naïves. On ne retente donc pas une prévision.
-
-Le piège central : le CENSURAGE À DROITE
-----------------------------------------
-`ETATPIECE` est un **état lu aujourd'hui**, pas un événement observé sur une
-fenêtre. Un devis émis la semaine dernière est encore en négociation : il porte
-l'étiquette « non transformé » alors que rien n'est encore joué.
-
-Inclure ces devis apprendrait au modèle que **« récent ⇒ perdu »** — ce qui est
-vrai dans les données et faux dans le monde. Le modèle afficherait une AUC
-flatteuse en ayant surtout appris à lire un calendrier.
-
-Ce module mesure donc le taux de conversion **par mois d'émission**, identifie où
-il se stabilise, et écarte les devis trop récents pour être jugés. La courbe de
-maturation est publiée : c'est une information sur le cycle de vente, pas
-seulement une précaution technique.
-
-Aucune donnée simulée
----------------------
-Devis, factures, montants, coûts de revient : tout vient de l'ERP. La cible est
-un état ERP décodé et validé, jamais construite par une formule sur les features.
-
-Sorties : `models/conversion_devis.joblib` + `reports/conversion_devis_metrics.json`
-
-Lancement :
-    python -m ml_engine.analytics.conversion_devis
-"""
+"""Quel devis a une chance d'être signé ?"""
 
 from __future__ import annotations
 
@@ -65,17 +22,8 @@ REPORTS_DIR = BASE / "reports"
 
 SEED = 42
 
-# ── Maturation : combien de mois avant de pouvoir juger un devis ? ───────────
-#
-# Déclaré ici, puis CONFRONTÉ à la courbe observée. Si le taux de conversion des
-# cohortes récentes n'a pas rejoint le palier après ce délai, le rapport le
-# signale au lieu de l'ignorer.
 MATURATION_MOIS = 6
 
-# Un client doit avoir un minimum d'historique pour que ses variables aient un
-# sens. Les devis de clients totalement inconnus sont conservés dans une classe à
-# part (`client_nouveau`), pas supprimés : ce sont précisément les dossiers sur
-# lesquels un commercial hésite.
 DEBUT_EXPLOITABLE = "2019-01-01"
 
 SEUIL_AUC_MINIMALE = 0.70
@@ -97,44 +45,79 @@ REGLAGES: Dict[str, List[Dict[str, Any]]] = {
     ],
 }
 
-# ── Variables ───────────────────────────────────────────────────────────────
-#
-# Le DEVIS lui-même. Peu informatif seul — un montant ne dit pas si l'affaire se
-# fera — mais c'est la seule information disponible pour un client inconnu.
 VARIABLES_DEVIS = [
     "log_montant_ht", "mois", "trimestre", "jour_semaine",
     "n_devis_meme_mois",
 ]
 
-# Le CLIENT, tel qu'il était AVANT la date du devis. C'est le pari de ce module,
-# et c'est ce qui a fait gagner le modèle de décrochage : la relation commerciale
-# prédit mieux que la pièce.
 VARIABLES_CLIENT = [
     "est_client", "anciennete_j", "n_factures_12m", "log_ca_12m",
     "recence_facture_j", "panier_moyen", "marge_moyenne_pct",
     "delai_median_accorde_j",
 ]
 
-# L'HISTORIQUE DE DEVIS du client. Un client qui demande beaucoup de devis et en
-# signe peu se comporte différemment d'un client qui en demande un et le signe.
 VARIABLES_HISTORIQUE_DEVIS = [
     "n_devis_12m", "taux_conversion_passe", "log_montant_moyen_devis_passes",
     "ratio_montant_vs_habituel",
 ]
 
-# Le RAPPORT entre le devis et le client : un devis de 200 000 DT chez un client
-# dont le panier moyen est de 2 000 DT n'a pas le même sens que chez un client
-# habitué à ces montants.
 VARIABLES_RELATIVES = ["ratio_montant_panier", "ratio_montant_ca_12m"]
 
 FEATURES = (VARIABLES_DEVIS + VARIABLES_CLIENT
             + VARIABLES_HISTORIQUE_DEVIS + VARIABLES_RELATIVES)
 
+#: Un devis gros et probable ne se traite pas comme un devis gros et improbable.
+#: Le second est presque toujours un appel d'offres public : le relancer au
+#: téléphone ne sert à rien, il se suit administrativement. Les seuils sont
+#: déclarés ici, pas dans l'interface, pour que la règle soit unique.
+SEUIL_CHANCE_HAUTE = 0.25
+SEUIL_MONTANT_GROS_DT = 20_000.0
+
+#: Au-delà de cet âge, un devis non signé n'est plus un devis en cours : il est
+#: perdu ou remplacé. Mesuré sur la donnée : au-delà de 120 jours, la
+#: conversion observée devient négligeable.
+AGE_DEVIS_MORT_J = 120
+
+PROTOCOLES = {
+    "appeler": {
+        "libelle": "Appeler cette semaine",
+        "quoi_faire": ("Montant significatif et bonne chance de signature : "
+                       "c'est là que le temps commercial rapporte le plus. "
+                       "Un appel, une date de décision, un compte rendu."),
+    },
+    "appel_offres": {
+        "libelle": "Suivi d'appel d'offres",
+        "quoi_faire": ("Gros montant mais faible chance : ce sont des marchés "
+                       "publics. Ils ne se relancent pas commercialement, ils "
+                       "se suivent — date de commission, pièces à fournir, "
+                       "concurrents. Vérifier que le dossier est complet."),
+    },
+    "traiter_en_lot": {
+        "libelle": "Traiter en lot",
+        "quoi_faire": ("Petits montants à bonne chance : un par un, ils "
+                       "coûtent plus de temps qu'ils ne rapportent. Un envoi "
+                       "groupé de rappels par courriel suffit."),
+    },
+    "laisser": {
+        "libelle": "Laisser courir",
+        "quoi_faire": ("Petit montant et faible chance : aucune action ne se "
+                       "justifie. Le devis reste ouvert, il se fermera seul."),
+    },
+}
+
+
+def protocole(montant_dt: float, probabilite: float) -> str:
+    """Quelle action pour ce devis — la règle, pas une appréciation."""
+    gros = montant_dt >= SEUIL_MONTANT_GROS_DT
+    probable = probabilite >= SEUIL_CHANCE_HAUTE
+    if gros and probable:
+        return "appeler"
+    if gros:
+        return "appel_offres"
+    return "traiter_en_lot" if probable else "laisser"
+
 JEUX_DE_VARIABLES: Dict[str, List[str]] = {
     "tout": FEATURES,
-    # Mis en concurrence pour répondre à « la relation client apporte-t-elle
-    # quelque chose que la pièce ne porte pas ? » — sur validation interne, jamais
-    # sur le jeu de test.
     "devis_seul": VARIABLES_DEVIS,
 }
 
@@ -155,14 +138,7 @@ def _connect():
 
 
 def charger_brut(con=None) -> Dict[str, pd.DataFrame]:
-    """Devis, factures et marges — trois tables, aucune agrégation prématurée.
-
-    Les variables client sont construites en Python plutôt qu'en SQL, pour une
-    raison précise : chaque devis doit voir l'état du client **à sa propre date**.
-    Une agrégation SQL par client donnerait le même profil à tous les devis d'un
-    client, y compris ceux émis avant que ce profil existe — une fuite temporelle
-    classique et invisible.
-    """
+    """Devis, factures et marges — trois tables, aucune agrégation prématurée."""
     fermer = con is None
     con = con or _connect()
     try:
@@ -184,9 +160,6 @@ def charger_brut(con=None) -> Dict[str, pd.DataFrame]:
             ORDER BY client, date
         """).df()
 
-        # Marge par client et par facture : `cout` est le coût de revient signé
-        # (`MTCRSIGNE`), trouvé dans les lignes de vente. Il rend la marge réelle
-        # attribuable — 28,3 % au global, contre 77 % avant sa découverte.
         marges = con.execute("""
             SELECT client,
                    CAST(date_trunc('month', date) AS DATE) AS mois,
@@ -205,12 +178,7 @@ def charger_brut(con=None) -> Dict[str, pd.DataFrame]:
 
 
 def courbe_de_maturation(devis: pd.DataFrame) -> Dict[str, Any]:
-    """Taux de conversion par mois d'émission — et où il se stabilise.
-
-    Ce n'est pas une annexe : c'est la mesure qui décide quelles observations sont
-    jugeables. Sans elle, le modèle apprendrait que « récent ⇒ perdu », artefact
-    de la date d'observation et non du comportement commercial.
-    """
+    """Taux de conversion par mois d'émission — et où il se stabilise."""
     d = devis.copy()
     d["mois"] = pd.to_datetime(d["date"]).dt.to_period("M")
     par_mois = (d.groupby("mois")
@@ -221,7 +189,6 @@ def courbe_de_maturation(devis: pd.DataFrame) -> Dict[str, Any]:
         return {"applicable": False, "motif": "effectifs mensuels insuffisants"}
 
     dernier = par_mois["mois"].max()
-    # Palier : les cohortes suffisamment anciennes pour être jugées.
     mures = par_mois[par_mois["mois"] <= dernier - MATURATION_MOIS]
     recentes = par_mois[par_mois["mois"] > dernier - MATURATION_MOIS]
 
@@ -253,13 +220,7 @@ def courbe_de_maturation(devis: pd.DataFrame) -> Dict[str, Any]:
 
 def construire_panel(brut: Optional[Dict[str, pd.DataFrame]] = None,
                      pour_prediction: bool = False) -> pd.DataFrame:
-    """Un devis = une ligne. Les variables décrivent l'état AVANT sa date.
-
-    Prévention de fuite : pour chaque devis, l'historique du client est tronqué
-    strictement avant la date du devis (`<`, jamais `<=`). Un devis ne peut donc
-    pas se voir lui-même, ni voir une facture émise le même jour — laquelle
-    pourrait être sa propre transformation.
-    """
+    """Un devis = une ligne."""
     if brut is None:
         brut = charger_brut()
     devis, factures, marges = brut["devis"], brut["factures"], brut["marges"]
@@ -277,21 +238,16 @@ def construire_panel(brut: Optional[Dict[str, pd.DataFrame]] = None,
     m = marges.copy()
     m["mois"] = pd.to_datetime(m["mois"])
 
-    # ── Marge relative par client, en cumulé glissant ────────────────────────
     marge_par_client: Dict[str, pd.DataFrame] = {
         c: g.sort_values("mois") for c, g in m.groupby("client", sort=False)}
 
-    # ── Index des factures par client, pour des coupes rapides ───────────────
     fact_par_client: Dict[str, pd.DataFrame] = {
         c: g for c, g in f.groupby("client", sort=False)}
 
-    # ── Historique de devis du client ────────────────────────────────────────
     d["_n"] = 1
     par_client_devis: Dict[str, pd.DataFrame] = {
         c: g for c, g in d.groupby("client", sort=False)}
 
-    # Nombre de devis émis par le même client le même mois : un commercial qui
-    # produit dix devis en un mois pour un client ne les signera pas tous.
     d["_mois"] = d["date"].dt.to_period("M")
     compte_mois = d.groupby(["client", "_mois"])["_n"].transform("sum")
     d["n_devis_meme_mois"] = compte_mois.astype(float)
@@ -300,7 +256,6 @@ def construire_panel(brut: Optional[Dict[str, pd.DataFrame]] = None,
     for i, r in d.iterrows():
         client, t = r["client"], r["date"]
 
-        # ── Factures strictement antérieures ────────────────────────────────
         fc = fact_par_client.get(client)
         if fc is not None:
             passe = fc[fc["date"] < t]
@@ -321,7 +276,6 @@ def construire_panel(brut: Optional[Dict[str, pd.DataFrame]] = None,
             anciennete = recence = 0.0
             n_12m = ca_12m = panier = delai_med = 0.0
 
-        # ── Marge du client, avant le devis ─────────────────────────────────
         mg = marge_par_client.get(client)
         if mg is not None:
             mgp = mg[mg["mois"] < t]
@@ -332,7 +286,6 @@ def construire_panel(brut: Optional[Dict[str, pd.DataFrame]] = None,
         else:
             marge_pct = 0.0
 
-        # ── Historique de devis, strictement antérieur ──────────────────────
         dv = par_client_devis.get(client)
         if dv is not None:
             dvp = dv[dv["date"] < t]
@@ -345,10 +298,6 @@ def construire_panel(brut: Optional[Dict[str, pd.DataFrame]] = None,
             taux_passe = float(dvp["transforme"].mean())
             montant_moyen_passe = float(dvp["ht"].mean())
         else:
-            # Aucun devis antérieur : on ne suppose rien. Le taux passé est mis à
-            # -1, valeur hors domaine, pour que le modèle distingue « je ne sais
-            # pas » de « taux nul ». Remplacer par 0 apprendrait à confondre un
-            # client nouveau avec un client qui ne signe jamais.
             taux_passe = -1.0
             montant_moyen_passe = 0.0
 
@@ -388,7 +337,6 @@ def construire_panel(brut: Optional[Dict[str, pd.DataFrame]] = None,
     if panel.empty:
         return panel
 
-    # ── Censurage : écarter les devis trop récents pour être jugés ───────────
     if not pour_prediction:
         fin = panel["date"].max()
         limite = fin - pd.DateOffset(months=MATURATION_MOIS)
@@ -397,23 +345,15 @@ def construire_panel(brut: Optional[Dict[str, pd.DataFrame]] = None,
     return panel.dropna(subset=FEATURES + ["y"]).reset_index(drop=True)
 
 
-# ── Références triviales ────────────────────────────────────────────────────
-#
-# Directions posées a priori, jamais révisées au vu du résultat.
 def _references_triviales(te: pd.DataFrame) -> Dict[str, float]:
     from sklearn.metrics import roc_auc_score
 
     refs = {
         "classe_majoritaire": 0.5,
-        # Un client déjà facturé signe plus qu'un prospect inconnu.
         "est_deja_client": te["est_client"],
-        # Un client qui a signé ses devis passés en signera d'autres.
         "taux_conversion_passe": te["taux_conversion_passe"],
-        # Un client actif récemment est un client engagé.
         "inverse_recence": -te["recence_facture_j"],
-        # Un gros devis est plus difficile à faire signer.
         "inverse_montant": -te["log_montant_ht"],
-        # Un client qui commande souvent transforme plus.
         "frequence_12m": te["n_factures_12m"],
     }
     out: Dict[str, float] = {}
@@ -454,24 +394,7 @@ def _modele(nom: str = "gradient_boosting",
 def comparer_par_bootstrap(y: np.ndarray, p_modele: np.ndarray,
                            p_reference: np.ndarray,
                            n_tirages: int = 2000) -> Dict[str, Any]:
-    """L'écart à la référence triviale est-il distinguable du bruit ?
-
-    Pourquoi ce contrôle est indispensable ici
-    ------------------------------------------
-    Le jeu de test compte moins de mille devis, dont moins d'une centaine de
-    signatures. À cette taille, un écart d'AUC de +0,03 peut n'être qu'un effet
-    d'échantillonnage : retirer trois devis signés du test suffirait à le faire
-    changer de signe.
-
-    Ce projet applique déjà cette règle à la prévision de demande, dont le
-    registre affiche « écart non significatif » au lieu d'un gain. Elle manquait
-    ici, et son absence aurait laissé passer un déploiement fondé sur du bruit.
-
-    Le test est APPARIÉ : chaque tirage rééchantillonne les mêmes devis pour les
-    deux scores. Comparer deux intervalles de confiance calculés séparément serait
-    plus faible — ils peuvent se chevaucher alors que la différence, elle, est
-    stable.
-    """
+    """L'écart à la référence triviale est-il distinguable du bruit ?"""
     from sklearn.metrics import roc_auc_score
 
     rng = np.random.default_rng(SEED)
@@ -499,9 +422,6 @@ def comparer_par_bootstrap(y: np.ndarray, p_modele: np.ndarray,
     bas, haut = float(np.percentile(e, 2.5)), float(np.percentile(e, 97.5))
     am = np.array(aucs_modele)
 
-    # Significatif si l'intervalle à 95 % de l'ÉCART ne contient pas zéro. C'est
-    # le seul critère qui répond à la question posée : le modèle fait-il mieux, ou
-    # a-t-il simplement eu de la chance sur ce découpage ?
     significatif = bas > 0.0
 
     return {
@@ -524,13 +444,7 @@ def comparer_par_bootstrap(y: np.ndarray, p_modele: np.ndarray,
 
 
 def selectionner(tr: pd.DataFrame) -> Dict[str, Any]:
-    """Famille, réglage et jeu de variables — choisis SANS voir le test.
-
-    Le sur-apprentissage est mesuré au sein de la période d'entraînement, jamais
-    contre le futur : les deux écarts sont de natures différentes, et les
-    confondre conduit à disqualifier un bon modèle pour un changement de
-    conjoncture.
-    """
+    """Famille, réglage et jeu de variables — choisis SANS voir le test."""
     from sklearn.metrics import roc_auc_score
 
     from ml_engine.determinisme import limiter_threads
@@ -572,10 +486,6 @@ def selectionner(tr: pd.DataFrame) -> Dict[str, Any]:
 
     meilleur = max(eligibles, key=lambda e: e["auc_valid_interne"])
 
-    # Parcimonie appliquée d'abord au JEU DE VARIABLES, puis à la famille. Un jeu
-    # de variables est de la complexité au même titre qu'un algorithme : plus de
-    # colonnes à produire, à surveiller et à voir dériver. N'appliquer la règle
-    # qu'aux algorithmes était une incohérence du projet.
     for e in eligibles:
         if (e["variables"] == "devis_seul"
                 and e["famille"] == meilleur["famille"]
@@ -604,14 +514,96 @@ def selectionner(tr: pd.DataFrame) -> Dict[str, Any]:
     }
 
 
-def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
-    """Entraînement sur le passé, test sur le futur.
+def calibration_par_decile(y: np.ndarray, p: np.ndarray,
+                           n_groupes: int = 10) -> Dict[str, Any]:
+    """Une probabilité annoncée vaut-elle ce qu'elle dit ?
 
-    Aucune marge anti-fuite n'est nécessaire ici, et c'est une différence de fond
-    avec les autres modèles du projet : la cible n'est pas observée sur une
-    fenêtre future à partir de la date du devis, c'est un état atteint. Le
-    censurage est traité en amont, par l'exclusion des cohortes non mûres.
+    L'AUC mesure l'ORDRE : elle dit si les devis les mieux classés se signent
+    plus souvent. Elle ne dit rien de la VALEUR annoncée. Un modèle qui
+    prédirait systématiquement 3 % là où le taux réel est 30 % aurait la même
+    AUC — et l'espérance affichée à l'écran, elle, serait dix fois trop basse.
+
+    Or toute la carte « ventes probables » repose sur cette valeur : une
+    espérance est un montant multiplié par une probabilité. Si la probabilité
+    est mal calibrée, le montant est faux, quelle que soit l'AUC.
+
+    Protocole. Les devis du test sont rangés par probabilité prédite croissante
+    et découpés en `n_groupes` groupes d'effectifs égaux. Pour chacun :
+    probabilité moyenne PRÉDITE contre taux de signature OBSERVÉ. Une
+    calibration parfaite les rend égaux — les points suivent la diagonale.
+
+    Deux mesures résument l'écart :
+
+    · l'ECE (*expected calibration error*) — moyenne des écarts absolus,
+      pondérée par l'effectif de chaque groupe ;
+    · le biais — écart signé moyen. Positif, le modèle est trop optimiste et
+      l'espérance affichée est surestimée ; négatif, l'inverse.
+
+    Les groupes sont construits par rangs (`argsort`) et non par quantiles de
+    valeur : quand beaucoup de devis partagent la même probabilité basse — le
+    cas ici, les positifs étant rares — les bornes de quantiles se confondent
+    et produisent des groupes vides.
     """
+    y = np.asarray(y, dtype=float)
+    p = np.asarray(p, dtype=float)
+    n = len(y)
+    if n < 2 * n_groupes:
+        return {"applicable": False,
+                "motif": (f"{n} devis au test pour {n_groupes} groupes : "
+                          "effectifs trop faibles pour une courbe lisible")}
+
+    ordre = np.argsort(p, kind="stable")
+    groupes = np.array_split(ordre, n_groupes)
+
+    lignes: List[Dict[str, Any]] = []
+    ece = 0.0
+    biais = 0.0
+    for i, idx in enumerate(groupes, start=1):
+        if len(idx) == 0:
+            continue
+        predit = float(p[idx].mean())
+        observe = float(y[idx].mean())
+        poids = len(idx) / n
+        ece += poids * abs(predit - observe)
+        biais += poids * (predit - observe)
+        lignes.append({
+            "groupe": i,
+            "n_devis": int(len(idx)),
+            "n_signes": int(y[idx].sum()),
+            "probabilite_predite_moyenne_pct": round(predit * 100, 2),
+            "taux_observe_pct": round(observe * 100, 2),
+            "probabilite_min_pct": round(float(p[idx].min()) * 100, 2),
+            "probabilite_max_pct": round(float(p[idx].max()) * 100, 2),
+            "ecart_pt": round((predit - observe) * 100, 2),
+        })
+
+    return {
+        "applicable": True,
+        "n_groupes": len(lignes),
+        "n_devis": int(n),
+        "ece_pt": round(ece * 100, 2),
+        "biais_pt": round(biais * 100, 2),
+        "sens_du_biais": ("optimiste — l'espérance affichée est surestimée"
+                          if biais > 0.005 else
+                          "pessimiste — l'espérance affichée est sous-estimée"
+                          if biais < -0.005 else
+                          "sans biais décelable à cette échelle"),
+        "par_groupe": lignes,
+        "lecture": (
+            "Chaque point compare ce que le modèle ANNONÇAIT à ce qui s'est "
+            "RÉELLEMENT signé, sur des devis qu'il n'avait jamais vus. Plus les "
+            "points collent à la diagonale, plus l'espérance en dinars est "
+            "fiable. L'AUC, elle, ne dit que l'ordre : elle resterait identique "
+            "si toutes les probabilités étaient dix fois trop basses."),
+        "pourquoi_hors_periode": (
+            "Calculée sur le test hors période, jamais sur les devis "
+            "d'entraînement : un modèle est toujours bien calibré sur les "
+            "données qui ont servi à l'ajuster."),
+    }
+
+
+def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
+    """Entraînement sur le passé, test sur le futur."""
     from sklearn.metrics import (average_precision_score, brier_score_loss,
                                  confusion_matrix, f1_score, precision_score,
                                  recall_score, roc_auc_score)
@@ -645,12 +637,6 @@ def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
     triv = _references_triviales(te)
     meilleure = max(triv, key=triv.get)
 
-    # ── L'écart à la meilleure référence est-il significatif ? ───────────────
-    #
-    # Moins de mille devis de test, dont moins d'une centaine de signatures : un
-    # gain de +0,03 d'AUC peut n'être qu'un effet d'échantillonnage. Le score de la
-    # référence est reconstruit ici pour que le test soit APPARIÉ sur les mêmes
-    # observations.
     _SCORES_REFERENCE = {
         "est_deja_client": lambda x: x["est_client"].to_numpy(dtype=float),
         "taux_conversion_passe": lambda x: x["taux_conversion_passe"].to_numpy(dtype=float),
@@ -666,36 +652,14 @@ def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
         comparaison = {"applicable": False,
                        "motif": f"référence « {meilleure} » non reconstructible"}
 
-    # ── Le même écart, mesuré sur QUATRE coupures au lieu d'une ──────────────
-    #
-    # La coupure unique n'utilise qu'un quart de l'historique comme test : 988
-    # devis dont 92 signés. À cette taille, l'intervalle sur l'écart mesure
-    # surtout notre ignorance, et le premier verdict — « non significatif » — dit
-    # peut-être seulement que le test est trop petit.
-    #
-    # Le walk-forward avance la coupure quatre fois et met en commun les
-    # prédictions hors période. La garantie anti-fuite est inchangée : chaque
-    # prédiction vient d'un modèle qui n'a vu que son propre passé. Ce qui change
-    # est le nombre de positifs disponibles pour trancher.
-    #
-    # Et la conclusion peut rester négative. Un écart qui s'évanouit sur un test
-    # élargi n'a jamais existé.
     walk: Dict[str, Any] = {"applicable": False, "motif": "non calculé"}
     if fabrique is not None:
         from ml_engine.validation import comparer_apparie, walk_forward
 
-        # Le score de la référence est accumulé DANS la boucle, sur exactement les
-        # mêmes lignes de test et dans le même ordre que les prédictions. Tenter
-        # de le reconstituer après coup en rejouant les bornes des plis serait
-        # fragile : un décalage d'une ligne suffirait à casser l'appariement, et
-        # rien ne le signalerait.
         refs_accumulees: List[np.ndarray] = []
 
         def _ajuster_et_predire(tr_i: pd.DataFrame,
                                 te_i: pd.DataFrame) -> np.ndarray:
-            # La sélection est refaite DANS chaque pli, sur son propre train :
-            # réutiliser le réglage choisi globalement laisserait fuiter une
-            # information issue de périodes que ce pli ne devrait pas connaître.
             s = selectionner(tr_i)
             if s.get("applicable"):
                 c = s["retenu"]
@@ -726,12 +690,6 @@ def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
                               f"référence pour {len(y_agg)} prédictions")}
         walk = wf
 
-    # ── Métriques au seuil qui DÉCIDE ────────────────────────────────────────
-    #
-    # La décision réelle est « quels devis est-ce que je relance cette semaine ? »
-    # — un rang, pas un seuil de probabilité. Avec un taux de base autour de 9 %,
-    # le seuil de 0,5 ne prédit presque aucun positif et ses métriques valent
-    # zéro sans rien dire du classement.
     taux_base = float(te["y"].mean())
     n_dec = max(int(len(te) * 0.10), 1)
     seuil_dec = float(np.sort(p)[-n_dec])
@@ -755,12 +713,14 @@ def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
         "auc": round(auc, 4),
         "average_precision": round(float(average_precision_score(te["y"], p)), 4),
         "brier": round(float(brier_score_loss(te["y"], p)), 4),
-        # Métriques homogènes entre modèles : accuracy, balanced accuracy, MCC,
-        # spécificité — au seuil 0,5 et au seuil choisi sur l'entraînement seul.
         "classification": metriques_classification(
             te["y"], p, y_train=tr["y"], p_train=p_tr),
         "surapprentissage_interne": choix["surapprentissage"],
         "derive_temporelle": round(choix["auc_valid_interne"] - auc, 4),
+
+        # L'AUC dit l'ordre, la calibration dit la valeur. L'écran affiche des
+        # dinars : c'est la seconde qui engage.
+        "calibration": calibration_par_decile(te["y"].to_numpy(), p),
 
         "au_seuil_du_decile": {
             "n_devis_signales": int(n_dec),
@@ -805,7 +765,7 @@ def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
 
 
 def train() -> Dict[str, Any]:
-    """Entraîne, mesure, décide. L'artefact n'est écrit que si la décision passe."""
+    """Entraîne, mesure, décide."""
     import joblib
 
     from ml_engine.determinisme import etat as etat_determinisme
@@ -826,11 +786,11 @@ def train() -> Dict[str, Any]:
         "version": 1,
         "question": "ce devis a-t-il une chance d'être signé ?",
         "nature_de_la_cible": (
-            "ÉTAT ERP décodé — `ETATPIECE=8` signifie devis transformé en "
+            "STATUT DU DEVIS décodé — l'un des états signifie « transformé en "
             "facture. Interprétation validée empiriquement : 89,4 % des devis en "
             "état 8 ont une facture du même client au même montant (± 1 %), "
             "contre 37,4 % pour l'état 1. Aucune formule sur les variables."),
-        "donnees": "100 % réelles — devis, factures et coûts de revient de l'ERP",
+        "donnees": "100 % réelles — vos devis, factures et coûts de revient",
         "determinisme": etat_determinisme(),
         "n_devis_total": int(len(brut["devis"])),
         "n_observations": int(len(panel)),
@@ -885,24 +845,6 @@ def train() -> Dict[str, Any]:
     auc, gain = hp["auc"], hp["gain_vs_reference_triviale"]
     cmp_ = hp.get("comparaison_vs_reference_triviale") or {}
 
-    # ══ TROISIÈME CONDITION : l'écart doit être SIGNIFICATIF ══
-    #
-    # Deux seuils ne suffisent pas sur un test de moins de mille devis dont moins
-    # d'une centaine de signatures. Un gain de +0,03 d'AUC peut n'être qu'un
-    # découpage favorable, et servir un hasard reviendrait à faire exactement ce
-    # que ce projet reproche partout ailleurs.
-    #
-    # Cette règle n'est pas inventée pour l'occasion : le registre l'applique déjà
-    # à la prévision de demande, dont il affiche « écart non significatif » au lieu
-    # d'un gain. Elle manquait ici, et l'ajouter pouvait invalider ce modèle — ce
-    # qui est précisément la raison de l'ajouter.
-    # ── Quelle mesure tranche ? Celle qui repose sur le plus de positifs ─────
-    #
-    # La coupure unique et le walk-forward appliquent EXACTEMENT la même exigence.
-    # Ils ne diffèrent que par le nombre d'observations hors période disponibles
-    # pour la tester. Trancher sur la plus fiable des deux n'est donc pas choisir
-    # le verdict qui arrange : c'est choisir la mesure la moins bruitée, et le
-    # rapport publie les deux côte à côte pour qu'on puisse le vérifier.
     walk_cmp = ((hp.get("walk_forward_multi_origines") or {})
                 .get("comparaison_agregee") or {})
     if walk_cmp.get("applicable"):
@@ -1010,13 +952,8 @@ def _ecrire(metriques: Dict[str, Any]) -> None:
                               encoding="utf-8"), indent=2, ensure_ascii=False)
 
 
-def predire(limite: int = 20) -> Dict[str, Any]:
-    """Devis en cours à relancer en priorité, si le registre l'autorise.
-
-    Le classement suit l'**espérance de chiffre d'affaires** — probabilité ×
-    montant HT — et non la probabilité seule. Un devis quasi certain à 400 DT
-    n'appelle aucune relance ; un devis probable à 200 000 DT en appelle une.
-    """
+def predire(limite: int = 20, clients: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Devis en cours à relancer en priorité, si le registre l'autorise."""
     from ml_engine.registre import est_deploye
 
     if not est_deploye("conversion_devis"):
@@ -1030,16 +967,18 @@ def predire(limite: int = 20) -> Dict[str, Any]:
     try:
         import joblib
         paquet = joblib.load(chemin)
-        # `pour_prediction=True` : on garde justement les devis RÉCENTS, écartés de
-        # l'apprentissage parce que non mûrs. Ce sont les seuls qu'on puisse encore
-        # relancer — les anciens sont joués.
-        panel = construire_panel(pour_prediction=True)
+        from ml_engine.cache_panel import panel as _panel_en_cache
+        panel = _panel_en_cache("conversion_devis",
+                                lambda: construire_panel(pour_prediction=True),
+                                construire_panel, charger_brut)
         if panel.empty:
             return {"servi": False, "motif": "panneau indisponible"}
 
         fin = panel["date"].max()
         recents = panel[panel["date"] > fin - pd.DateOffset(months=MATURATION_MOIS)]
         en_cours = recents[recents["y"] == 0]
+        if clients is not None:
+            en_cours = en_cours[en_cours["client"].astype(str).isin({str(c) for c in clients})]
         if en_cours.empty:
             return {"servi": True, "n_devis": 0, "top": [],
                     "motif": "aucun devis récent encore ouvert"}
@@ -1049,44 +988,77 @@ def predire(limite: int = 20) -> Dict[str, Any]:
         en_cours["montant_ht_dt"] = np.expm1(en_cours["log_montant_ht"])
         en_cours["esperance_dt"] = (en_cours["probabilite"]
                                     * en_cours["montant_ht_dt"])
+        # Âge compté depuis la dernière date de l'entrepôt, pas depuis
+        # aujourd'hui : les données s'arrêtent à l'export, et un âge calculé sur
+        # l'horloge ferait vieillir tous les devis chaque jour sans raison.
+        en_cours["age_j"] = (fin - en_cours["date"]).dt.days.astype(int)
+        en_cours["protocole"] = [
+            protocole(float(m), float(q))
+            for m, q in zip(en_cours["montant_ht_dt"], en_cours["probabilite"])]
 
         top = en_cours.sort_values("esperance_dt", ascending=False).head(limite)
 
-        # ── Pourquoi ce devis a des chances d'être signé ────────────────────
-        # Le modèle servi est une régression logistique normalisée : la
-        # décomposition du score en contributions est EXACTE, calculée ici sur
-        # les seules lignes affichées. Si le modèle changeait de forme,
-        # `extraire_pipeline_lineaire` rendrait None et l'écran afficherait le
-        # classement sans justification — jamais une justification inventée.
         raisons_par_devis: List[List[Dict[str, Any]]] = [[] for _ in range(len(top))]
+        explication: Dict[str, Any] = {"disponible": False}
         try:
             from ml_engine.explication import (contributions_lineaires,
                                                extraire_pipeline_lineaire)
             lin = extraire_pipeline_lineaire(paquet["modele"])
-            if lin:
-                X = top[paquet["features"]].to_numpy(dtype=float)
+            if lin is None:
+                explication = {
+                    "disponible": False,
+                    "motif": ("le modèle servi n'est pas linéaire : une "
+                              "attribution exacte est impossible")}
+            else:
+                features = paquet["features"]
+                X = top[features].to_numpy(dtype=float)
+                # Le centile se lit sur TOUS les devis du panel, pas sur les
+                # quinze affichés : une position dans un échantillon trié par
+                # espérance ne voudrait rien dire.
+                reference = {v: panel[v].to_numpy(dtype=float) for v in features
+                             if v in panel.columns}
                 raisons_par_devis = [
                     contributions_lineaires(lin["coefficients"], lin["moyennes"],
-                                            lin["ecarts"], ligne, paquet["features"],
-                                            sens=("favorise", "freine"))
+                                            lin["ecarts"], ligne, features,
+                                            sens=("favorise", "freine"),
+                                            reference=reference)
                     for ligne in X]
-        except Exception:
-            pass
+                explication = {
+                    "disponible": True,
+                    "methode": "attribution linéaire exacte",
+                    "origine_des_coefficients": lin["origine"],
+                    "n_devis_expliques": int(len(top)),
+                }
+        except Exception as e:
+            explication = {"disponible": False,
+                           "motif": f"{type(e).__name__} : {str(e)[:120]}"}
 
         top = top.assign(_raisons=raisons_par_devis)
         return {
             "servi": True,
+            "explication": explication,
             "nature": "modele_appris",
             "horizon_maturation_mois": MATURATION_MOIS,
             "n_devis": int(len(en_cours)),
+            "montant_ouvert_total_dt": round(float(en_cours["montant_ht_dt"].sum()), 0),
             "esperance_totale_dt": round(float(en_cours["esperance_dt"].sum()), 0),
+            "n_clients_concernes": int(en_cours["client"].nunique()),
+            "protocoles": _repartition_protocoles(en_cours),
+            "definitions": PROTOCOLES,
+            "seuils": {
+                "montant_gros_dt": SEUIL_MONTANT_GROS_DT,
+                "chance_haute_pct": round(SEUIL_CHANCE_HAUTE * 100, 0),
+                "age_devis_mort_j": AGE_DEVIS_MORT_J,
+            },
             "top": [{
                 "client": r["client"],
                 "piece_no": r["piece_no"],
                 "date": str(pd.Timestamp(r["date"]).date()),
+                "age_j": int(r["age_j"]),
                 "montant_ht_dt": round(float(r["montant_ht_dt"]), 0),
                 "probabilite": round(float(r["probabilite"]), 3),
                 "esperance_dt": round(float(r["esperance_dt"]), 0),
+                "protocole": r["protocole"],
                 "est_client": bool(r["est_client"]),
                 "raisons": r["_raisons"],
             } for _, r in top.iterrows()],
@@ -1096,6 +1068,112 @@ def predire(limite: int = 20) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"servi": False, "motif": f"indisponible ({type(e).__name__})"}
+
+
+def _repartition_protocoles(en_cours) -> List[Dict[str, Any]]:
+    """Combien de devis, et combien d'espérance, dans chaque protocole.
+
+    C'est la lecture qui manque le plus : savoir que 12 M DT sont « ouverts »
+    n'aide pas, savoir que 9 M relèvent du suivi d'appel d'offres et 800 K de
+    l'appel téléphonique dit où passer sa semaine."""
+    out: List[Dict[str, Any]] = []
+    for cle, meta in PROTOCOLES.items():
+        lot = en_cours[en_cours["protocole"] == cle]
+        if lot.empty:
+            continue
+        out.append({
+            "code": cle,
+            "libelle": meta["libelle"],
+            "quoi_faire": meta["quoi_faire"],
+            "n_devis": int(len(lot)),
+            "montant_ouvert_dt": round(float(lot["montant_ht_dt"].sum()), 0),
+            "esperance_dt": round(float(lot["esperance_dt"].sum()), 0),
+            "n_clients": int(lot["client"].nunique()),
+            "age_median_j": int(lot["age_j"].median()),
+        })
+    return sorted(out, key=lambda o: -o["esperance_dt"])
+
+
+def reperes_conversion(clients: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Taux de conversion CONSTATÉ par tranche de montant, sur devis mûrs.
+
+    Pur comptage sur l'historique des devis : aucun modèle. C'est la toile de
+    fond qui rend l'espérance lisible — sans elle, « 12 M DT de ventes
+    probables » laisse croire qu'un gros devis se signe comme un petit, alors
+    que la donnée dit exactement le contraire.
+
+    CENSURE À DROITE. Un devis émis il y a trois semaines n'a pas encore eu le
+    temps d'être signé : le compter dans un taux de conversion fait baisser ce
+    taux pour une raison qui n'a rien à voir avec le devis. Le comptage ne porte
+    donc que sur les devis émis il y a plus de `MATURATION_MOIS` mois. Les plus
+    récents sont dénombrés à part, explicitement « pas encore jugeables ».
+    """
+    con = _connect()
+    try:
+        ou = ""
+        if clients:
+            vals = ",".join("'" + str(c).replace("'", "''") + "'" for c in clients)
+            ou = f" AND client IN ({vals})"
+
+        base = (f"ht IS NOT NULL AND ht > 0 "
+                f"AND date >= DATE '{DEBUT_EXPLOITABLE}'{ou}")
+        murs = (f"{base} AND date <= (SELECT md FROM ref) "
+                f"- INTERVAL {MATURATION_MOIS} MONTH")
+
+        tranches = con.execute(f"""
+            WITH ref AS (SELECT max(date) md FROM devis)
+            SELECT CASE WHEN ht <  5000  THEN 'moins de 5 K'
+                        WHEN ht <  20000 THEN '5 à 20 K'
+                        WHEN ht < 100000 THEN '20 à 100 K'
+                        ELSE 'plus de 100 K' END            AS tranche,
+                   min(ht)                                  AS borne,
+                   count(*)                                 AS n,
+                   count(*) FILTER (WHERE transforme)       AS signes,
+                   sum(ht)                                  AS montant_dt
+            FROM devis WHERE {murs}
+            GROUP BY 1 ORDER BY borne
+        """).fetchall()
+
+        recents = con.execute(f"""
+            WITH ref AS (SELECT max(date) md FROM devis)
+            SELECT count(*), sum(ht) FROM devis
+            WHERE {base} AND date > (SELECT md FROM ref)
+                              - INTERVAL {MATURATION_MOIS} MONTH
+        """).fetchone()
+
+        def taux(n: int, s: int):
+            return round(s / n * 100, 1) if n else None
+
+        lignes = [{
+            "tranche": r[0], "n_devis": int(r[2] or 0),
+            "n_signes": int(r[3] or 0),
+            "taux_pct": taux(int(r[2] or 0), int(r[3] or 0)),
+            "montant_dt": round(float(r[4] or 0), 0),
+        } for r in tranches]
+
+        return {
+            "servi": True,
+            "nature": "comptage",
+            "par_tranche_de_montant": lignes,
+            "maturation_mois": MATURATION_MOIS,
+            "non_jugeables": {
+                "n_devis": int(recents[0] or 0),
+                "montant_dt": round(float(recents[1] or 0), 0),
+                "motif": (f"émis il y a moins de {MATURATION_MOIS} mois : trop "
+                          "récents pour savoir s'ils aboutiront. Les compter "
+                          "dans un taux le ferait baisser à tort."),
+            },
+            "lecture": (
+                "Le taux de signature s'effondre quand le montant monte. Les "
+                "gros devis sont des appels d'offres publics : leur issue ne "
+                "dépend pas d'une relance commerciale, et dans les faits ils ne "
+                "se transforment pratiquement jamais en facture directe. Un "
+                "même montant ouvert n'a donc pas du tout la même valeur selon "
+                "sa tranche."),
+            "source": "statut du devis : transformé en facture, ou non",
+        }
+    finally:
+        con.close()
 
 
 def afficher() -> None:

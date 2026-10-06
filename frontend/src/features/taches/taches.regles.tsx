@@ -1,7 +1,4 @@
-/**
- * Model — règles métier des tâches : types d'action, suggestions à partir du
- * domaine de l'alerte, délais par gravité, étapes et issues possibles.
- */
+
 import {
   AlarmClock, CheckCircle2, ClipboardList, Inbox, Repeat,
 } from "lucide-react";
@@ -16,26 +13,28 @@ export const TYPES: { id: string; label: string }[] = [
   { id: "autre", label: "Autre action" },
 ];
 
-/** Action la plus probable selon le domaine de l'alerte. */
 export function typeSuggere(categorie?: string): string {
   const c = (categorie || "").toLowerCase();
-  if (c.includes("recouvrement") || c.includes("trésorerie") || c.includes("tresorerie")) return "echeancier";
+  if (c.includes("recouvrement") || c.includes("encaissement") || c.includes("trésorerie") || c.includes("tresorerie")) return "echeancier";
   if (c.includes("commercial") || c.includes("vente")) return "relance_devis";
   if (c.includes("stock") || c.includes("approvisionnement") || c.includes("fournisseur")) return "commande";
-  if (c.includes("risque") || c.includes("rétention") || c.includes("retention")) return "appel";
   return "appel";
 }
 
-/** Poste le plus proche du domaine — simple proposition de tri, jamais un filtre. */
 export function posteSuggere(categorie?: string): string | null {
   const c = (categorie || "").toLowerCase();
-  if (c.includes("recouvrement") || c.includes("trésorerie") || c.includes("tresorerie")) return "recouvrement";
+  if (c.includes("recouvrement") || c.includes("encaissement") || c.includes("trésorerie") || c.includes("tresorerie")) return "recouvrement";
   if (c.includes("stock") || c.includes("approvisionnement") || c.includes("fournisseur")) return "logistique";
-  if (c.includes("commercial") || c.includes("vente") || c.includes("rétention")) return "commercial";
+  if (c.includes("commercial") || c.includes("vente") || c.includes("rétention") || c.includes("retention")
+      || c.includes("fidélité") || c.includes("rentabilité") || c.includes("risque")) return "commercial";
   return null;
 }
 
-/** Échéance proposée selon la gravité de l'alerte (en jours). */
+export const ORIGINE_LABEL: Record<string, string> = {
+  direction: "Confiées par la direction",
+  flotte: "Confiées par la flotte",
+};
+
 export const DELAI: Record<string, number> = { critique: 2, haute: 5, moyenne: 10, faible: 20 };
 
 export const COLONNES = [

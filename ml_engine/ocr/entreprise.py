@@ -1,24 +1,4 @@
-"""
-ml_engine/ocr/entreprise.py
-===========================
-Qui est « nous » ? — et donc : une facture lue est-elle un ACHAT ou une VENTE ?
-
-Pourquoi c'est indispensable
-----------------------------
-Une facture reçue d'un fournisseur et une facture émise à un client se lisent
-exactement de la même façon. Les confondre est grave : un achat compté comme
-une vente gonfle le chiffre d'affaires, fausse l'encours d'un « client » qui
-n'en est pas un, et crée une fausse fiche client. Le seul moyen de trancher est
-de savoir de quel côté de la facture se trouve l'entreprise.
-
-L'identité est lue, dans cet ordre :
-  1. variables d'environnement ENTREPRISE_NOM, ENTREPRISE_ALIAS (séparés par des
-     virgules), ENTREPRISE_MF ;
-  2. le fichier `entreprise.json` à côté de l'entrepôt (écrit par l'API).
-
-La détection ne décide jamais seule : elle PROPOSE un sens avec un motif et un
-niveau de confiance, et l'utilisateur confirme avant l'enregistrement.
-"""
+"""Qui est « nous » ? — et donc : une facture lue est-elle un ACHAT ou une VENTE ?"""
 from __future__ import annotations
 
 import json
@@ -27,7 +7,6 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Même seuil que le rattachement des tiers (importer.SEUIL_RATTACHEMENT).
 SEUIL_IDENTITE = 0.88
 
 
@@ -69,9 +48,7 @@ def enregistrer_identite(nom: str, alias: Optional[List[str]] = None,
 
 
 def noyau_mf(mf: Optional[str]) -> Optional[str]:
-    """Matricule fiscal tunisien → noyau comparable : 7 chiffres + clé.
-
-    « 1234567/A/M/000 », « 1234567 A M 000 », « 1234567AAM000 » → « 1234567A »."""
+    """Matricule fiscal tunisien → noyau comparable : 7 chiffres + clé."""
     m = re.search(r"(\d{7})\s*[/\-. ]?\s*([A-Za-z])", mf or "")
     return (m.group(1) + m.group(2).upper()) if m else None
 
@@ -85,11 +62,7 @@ def _est_nous(nom: Optional[str], ident: Dict[str, Any]) -> float:
 
 def detecter_sens(fournisseur: Optional[str], client: Optional[str],
                   texte: str = "", ident: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Propose le sens d'une facture du point de vue de l'entreprise.
-
-    Retour : {"sens": "achat" | "vente" | "inconnu", "confiance": "haute" |
-    "faible" | None, "motif": str}. « achat » = nous sommes le client.
-    """
+    """Propose le sens d'une facture du point de vue de l'entreprise."""
     ident = ident or identite()
     if not ident["configuree"]:
         return {"sens": "inconnu", "confiance": None,
@@ -107,8 +80,6 @@ def detecter_sens(fournisseur: Optional[str], client: Optional[str],
         return {"sens": "vente", "confiance": "haute",
                 "motif": f"« {fournisseur} » (émetteur de la facture) correspond à {ident['nom']}"}
 
-    # Aucun des noms lus n'est le nôtre. Le matricule fiscal peut dire que nous
-    # figurons sur la facture, mais pas de quel côté : on n'en tire pas de sens.
     mf = noyau_mf(ident.get("mf"))
     present = bool(mf and mf in (noyau_mf(x) for x in re.findall(
         r"\d{7}\s*[/\-. ]?\s*[A-Za-z]", texte or "")))

@@ -1,13 +1,4 @@
-"""
-api/auth/security.py
-====================
-Primitives de sécurité : hachage bcrypt, JWT signés à expiration, politique de
-mot de passe, protection anti-brute-force (rate limiting en mémoire).
-
-Secrets : `JWT_SECRET_KEY` DOIT être fourni en variable d'environnement en
-production (jamais committé). En développement, un secret aléatoire éphémère
-est généré (les sessions ne survivent pas au redémarrage — comportement voulu).
-"""
+"""Primitives de sécurité : hachage bcrypt, JWT signés à expiration, politique de mot de passe,…"""
 
 from __future__ import annotations
 
@@ -21,11 +12,6 @@ from typing import Any, Dict, Optional
 import jwt
 import bcrypt as _bcrypt
 
-# ── Hachage : bcrypt avec sel intégré (jamais réversible) ───────────────────
-# On utilise la librairie `bcrypt` DIRECTEMENT (et non passlib) : passlib fait
-# une détection de version au premier appel qui est lente et incompatible avec
-# bcrypt >= 4.1. Le coût de ~0,2-0,3 s par hachage est VOLONTAIRE (12 rounds,
-# standard OWASP) : il rend le brute-force hors ligne impraticable.
 _BCRYPT_ROUNDS = 12
 
 
@@ -43,7 +29,6 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-# ── Politique de mot de passe ───────────────────────────────────────────────
 PASSWORD_MIN_LENGTH = 10
 
 
@@ -61,35 +46,66 @@ def password_policy_errors(plain: str) -> list[str]:
     return errs
 
 
-# ── JWT ─────────────────────────────────────────────────────────────────────
 _ALGO = "HS256"
-ACCESS_TOKEN_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "480"))  # 8 h
+ACCESS_TOKEN_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "480"))
+
+# RFC 7518 §3.2 : une clé HMAC-SHA256 doit faire au moins 256 bits. En dessous,
+# la résistance de la signature tombe à la taille de la clé, pas à celle du
+# condensat.
+LONGUEUR_MIN_SECRET = 32
+
+_GENERER = 'python -c "import secrets; print(secrets.token_urlsafe(48))"'
+
+_SANS_SECRET = (
+    "JWT_SECRET_KEY n'est pas défini. Aucun secret n'est généré à la volée : un "
+    "secret tiré au démarrage est différent dans chaque processus, donc un jeton "
+    "émis par un worker est rejeté par les autres (401 intermittents, sans "
+    "message), et tout redémarrage invalide les sessions en cours.\n"
+    f"  Générer : {_GENERER}\n"
+    "  Puis renseigner JWT_SECRET_KEY dans .env (voir .env.example)."
+)
+
+_SECRET_TROP_COURT = (
+    "JWT_SECRET_KEY fait {n} octets, en dessous du minimum de "
+    "{minimum} exigé par la RFC 7518 §3.2 pour HS256.\n"
+    f"  Générer un remplacement : {_GENERER}\n"
+    "  La rotation invalide les jetons en circulation : reconnexion nécessaire."
+)
+
+
+class ConfigurationSecuriteInvalide(RuntimeError):
+    """Secret de signature absent ou trop court."""
+
+
+def verifier_secret() -> None:
+    """Valide JWT_SECRET_KEY, ou échoue avec un message actionnable.
+
+    Appelée au démarrage. La vérification vit dans une fonction et non à
+    l'import : importer le module ne doit rien exiger, démarrer doit tout exiger.
+    """
+    s = os.environ.get("JWT_SECRET_KEY", "").strip()
+    if not s:
+        raise ConfigurationSecuriteInvalide(_SANS_SECRET)
+    n = len(s.encode("utf-8"))
+    if n < LONGUEUR_MIN_SECRET:
+        raise ConfigurationSecuriteInvalide(
+            _SECRET_TROP_COURT.format(n=n, minimum=LONGUEUR_MIN_SECRET))
 
 
 def _secret() -> str:
-    s = os.environ.get("JWT_SECRET_KEY", "").strip()
-    if not s:
-        # Dev uniquement : secret éphémère par processus.
-        s = os.environ.setdefault("_JWT_DEV_SECRET", secrets.token_urlsafe(48))
-    return s
+    """Secret de signature. Aucun repli : une clé absente est une erreur."""
+    verifier_secret()
+    return os.environ["JWT_SECRET_KEY"].strip()
 
 
 def create_access_token(*, user_id: int, email: str, role: str,
-                        client_code: Optional[str],
                         token_version: int = 0) -> str:
-    """Émet un JWT signé, à expiration, portant l'identité et le périmètre.
-
-    - `jti` : identifiant unique du jeton → permet la RÉVOCATION unitaire
-      (logout) via la table `revoked_tokens`.
-    - `ver` : version de jeton du compte → un changement de mot de passe
-      incrémente la version et invalide TOUS les jetons antérieurs.
-    """
+    """Émet un JWT signé, à expiration, portant l'identité et le périmètre."""
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
         "email": email,
         "role": role,
-        "client_code": client_code,
         "jti": secrets.token_urlsafe(24),
         "ver": int(token_version),
         "iat": int(now.timestamp()),
@@ -99,21 +115,17 @@ def create_access_token(*, user_id: int, email: str, role: str,
 
 
 def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
-    """Décode et vérifie signature + expiration. None si invalide/expiré."""
+    """Décode et vérifie signature + expiration."""
     try:
         return jwt.decode(token, _secret(), algorithms=[_ALGO])
     except jwt.PyJWTError:
         return None
 
 
-# ── Anti-brute-force : fenêtre glissante PERSISTANTE (table login_attempts) ─
-# En base plutôt qu'en mémoire : le compteur survit aux redémarrages et reste
-# correct en multi-instances (plusieurs workers/serveurs derrière un proxy).
-# Un repli mémoire est conservé si la base est momentanément indisponible.
 LOGIN_MAX_ATTEMPTS = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5"))
-LOGIN_WINDOW_SECONDS = int(os.environ.get("LOGIN_WINDOW_SECONDS", "300"))  # 5 min
+LOGIN_WINDOW_SECONDS = int(os.environ.get("LOGIN_WINDOW_SECONDS", "300"))
 
-_attempts: Dict[str, deque] = defaultdict(deque)   # repli mémoire uniquement
+_attempts: Dict[str, deque] = defaultdict(deque)
 
 
 def _window_start() -> datetime:
@@ -132,7 +144,7 @@ def is_rate_limited(key: str, db=None) -> bool:
             ).scalar_one()
             return int(n) >= LOGIN_MAX_ATTEMPTS
         except Exception:
-            pass  # repli mémoire
+            pass
     now = time.time()
     dq = _attempts[key]
     while dq and now - dq[0] > LOGIN_WINDOW_SECONDS:

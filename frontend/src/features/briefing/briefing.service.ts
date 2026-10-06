@@ -1,6 +1,4 @@
-/**
- * Model — accès à l'analyse de la flotte d'agents.
- */
+
 import { apiEnvoyer } from "@/core/api/client";
 import type { Briefing } from "./briefing.types";
 

@@ -1,15 +1,15 @@
 # Ce que les tests démontrent
 
-*Tableau généré le 28/09/2026 par `python scripts/tableau_tests.py` — les comptages sont relus dans la suite, jamais recopiés.*
+*Tableau généré le 29/09/2026 par `python scripts/tableau_tests.py` — les comptages sont relus dans la suite, jamais recopiés.*
 
-**642 tests** répartis en 12 familles. Le mémoire cite ce tableau, pas la liste des tests.
+**666 tests** répartis en 12 familles. Le mémoire cite ce tableau, pas la liste des tests.
 
 ## Vue d'ensemble
 
 | Famille | Tests | Ce qui est démontré |
 |---|---:|---|
 | **Sécurité et isolation** | 53 | Un client ne peut pas lire les données d'un autre, même en manipulant la requête. |
-| **Boucle d'action** | 19 | De l'alerte au résultat mesuré, avec un cloisonnement strict des rôles. |
+| **Boucle d'action** | 42 | De l'alerte au résultat mesuré, avec un cloisonnement strict des rôles ; la flotte confie l'exécution, jamais la décision. |
 | **Flotte d'agents** | 99 | Cinq spécialistes et un volet fiabilité produisent des constats chiffrés, un agent en panne n'arrête pas le briefing, et le copilote n'affiche aucun montant non sourcé. |
 | **Modèles — absence de fuite** | 100 | Aucun modèle ne regarde l'avenir, et aucun n'est déployé sans gain confirmé sur une référence. |
 | **Entrepôt de données** | 21 | L'entrepôt se construit selon ses règles, et un contrôle en échec annule toute la construction. |
@@ -18,7 +18,7 @@
 | **Documents et OCR** | 165 | Une facture réelle est lue champ par champ, puis rapprochée de l'ERP. |
 | **Comptes** | 10 | Les identifiants dérivés du nom de l'établissement restent uniques et stables. |
 | **Explicabilité** | 10 | Chaque justification affichée tient sa promesse : décomposition exacte, parts cohérentes, aucun jargon. |
-| **Architecture** | 42 | Les règles de l'architecture en couches sont vérifiées sur le code, pas seulement décrites. |
+| **Architecture** | 43 | Les règles de l'architecture en couches sont vérifiées sur le code, pas seulement décrites. |
 | **Robustesse** | 30 | Chaque repli est exercé : le service dégrade au lieu de tomber. |
 
 ## Le détail, fichier par fichier
@@ -34,6 +34,7 @@
 
 | Fichier | Tests | Ce qui est démontré |
 |---|---:|---|
+| `test_delegation.py` | 23 | La flotte confie elle-même le travail d'exécution, jamais une décision de direction ; elle ne confie jamais deux fois la même alerte, ménage la charge de l'équipe et ne fait qu'un passage planifié par jour. |
 | `test_boucle_action.py` | 19 | De l'alerte au résultat mesuré : un employé ne voit que ses tâches, une tâche ne se clôture pas sans résultat, une issue perdue ne compte jamais comme un gain, et les résultats repartent vers les modèles. |
 
 ### Flotte d'agents
@@ -109,7 +110,7 @@
 
 | Fichier | Tests | Ce qui est démontré |
 |---|---:|---|
-| `test_architecture_api.py` | 42 | Les règles de l'architecture en couches sont vérifiées sur le code : une route ne calcule rien, un service ne connaît pas FastAPI, l'API passe par la passerelle des modèles, et toute erreur métier a un code HTTP. |
+| `test_architecture_api.py` | 43 | Les règles de l'architecture en couches sont vérifiées sur le code : une route ne calcule rien, un service ne connaît pas FastAPI, l'API passe par la passerelle des modèles, et toute erreur métier a un code HTTP. |
 
 ### Robustesse
 
@@ -119,7 +120,7 @@
 
 ## Les tests à citer
 
-Ces **20 tests** portent chacun une affirmation forte du mémoire. Ils se rejouent en une commande, en moins de deux minutes :
+Ces **22 tests** portent chacun une affirmation forte du mémoire. Ils se rejouent en une commande, en moins de deux minutes :
 
 ```bash
 python -m pytest -m vitrine -v
@@ -134,6 +135,8 @@ python -m pytest -m vitrine -v
 | Un client perdu ne gonfle jamais le montant récupéré grâce aux actions | `test_boucle_action.py::test_une_issue_perdue_ne_compte_pas_comme_un_gain` |
 | Une alerte déjà confiée est refusée par le serveur : un client n'est jamais relancé deux fois pour la même raison | `test_boucle_action.py::test_une_alerte_deja_confiee_ne_se_confie_pas_une_seconde_fois` |
 | Une réponse du copilote qui cite un montant inventé est écartée, et la source affichée est celle qui a réellement répondu | `test_copilote.py::test_via_dit_d_ou_vient_la_reponse` |
+| La flotte confie l'exécution, jamais la décision : une action qui engage l'entreprise reste au directeur | `test_delegation.py::test_une_decision_de_direction_n_est_jamais_confiee_d_office` |
+| La flotte ne recrée jamais une alerte déjà confiée, par elle-même ou par le directeur | `test_delegation.py::test_la_flotte_ne_confie_jamais_deux_fois_la_meme_alerte` |
 | La prévision par référence ne lit aucun mois postérieur à l'origine : réécrire le futur ne change rien | `test_demande_reference.py::test_aucune_variable_ne_lit_le_futur` |
 | Dans l'entrepôt, un avoir est déduit du chiffre d'affaires et une facture exportée deux fois n'est comptée qu'une fois | `test_entrepot.py::test_un_avoir_est_deduit_et_un_doublon_compte_une_fois` |
 | Aucun fait de l'entrepôt ne pointe vers un client, un produit ou une date inconnus : c'est contrôlé à chaque construction | `test_entrepot.py::test_aucun_fait_orphelin_de_sa_dimension` |

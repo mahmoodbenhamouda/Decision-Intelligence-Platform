@@ -1,8 +1,4 @@
-"""Rapprochement ERP d'une facture lue : achats et ventes.
-
-Entrepôt TEMPORAIRE, construit à la main avec les cas réels rencontrés dans
-l'ERP (facture saisie en deux pièces, référence de contrat partagée…).
-"""
+"""Rapprochement ERP d'une facture lue : achats et ventes."""
 import pytest
 
 duckdb = pytest.importorskip("duckdb")
@@ -10,15 +6,15 @@ duckdb = pytest.importorskip("duckdb")
 from ml_engine.ocr import importer as imp
 from ml_engine.ocr.reconcile import reconcile_invoice
 
-ACHATS = [  # piece_no, fournisseur, code, date, ttc, piece_externe
+ACHATS = [
     ("A1", "BIOMERIEUX", "F1", "2025-06-10", 1190.0, "7901796236"),
-    ("A2", "Diagnostic Grifols SA", "F2", "2023-09-14", 6338.31, "7902508924"),   # une facture…
-    ("A3", "Diagnostic Grifols SA", "F2", "2023-09-14", 2429.69, "7902508924"),   # …en deux pièces
-    ("A4", "LIFOTRONIC", "F3", "2024-11-01", 15223.0, "004802-TN-006"),          # référence de
-    ("A5", "LIFOTRONIC", "F3", "2025-10-06", 183782.0, "004802-TN-006"),         # contrat partagée
-    ("A6", "SUN CHEMICAL", "F4", "2025-03-01", 500.0, "SC-77"),                  # vrai doublon
+    ("A2", "Diagnostic Grifols SA", "F2", "2023-09-14", 6338.31, "7902508924"),
+    ("A3", "Diagnostic Grifols SA", "F2", "2023-09-14", 2429.69, "7902508924"),
+    ("A4", "LIFOTRONIC", "F3", "2024-11-01", 15223.0, "004802-TN-006"),
+    ("A5", "LIFOTRONIC", "F3", "2025-10-06", 183782.0, "004802-TN-006"),
+    ("A6", "SUN CHEMICAL", "F4", "2025-03-01", 500.0, "SC-77"),
     ("A7", "SUN CHEMICAL", "F4", "2025-03-02", 500.0, "SC-77"),
-    ("A8", "ORANGE TUNISIE", "F5", "2025-08-01", 300.0, None),                    # sans numéro
+    ("A8", "ORANGE TUNISIE", "F5", "2025-08-01", 300.0, None),
 ]
 
 
@@ -91,7 +87,7 @@ def test_sans_numero_par_montant(entrepot):
 
 def test_posterieure_a_l_export_ne_prouve_rien(entrepot):
     r = _achat(numero="FV-2026-0142", fournisseur="ATELIER NOVALUX", date_facture="2026-09-14", montant_ttc=2360.65)
-    assert r["statut"] == "hors_periode" and "30/03/2026" not in r["message"]   # fin de CET entrepôt
+    assert r["statut"] == "hors_periode" and "30/03/2026" not in r["message"]
     assert r["erp_jusqu_au"] == "2025-10-06"
 
 
@@ -99,7 +95,6 @@ def test_une_vente_se_cherche_dans_les_ventes(entrepot):
     r = reconcile_invoice({"numero": "V100", "client": "Hopital Militaire de Tunis",
                            "date_facture": "2025-05-05", "montant_ttc": 1190.0}, sens="vente")
     assert r["statut"] == "rapprochee" and r["candidats"][0]["tiers_code"] == "CP001"
-    # le même montant existe chez BIOMERIEUX (achat) : il ne doit pas remonter
     assert all(c["tiers_code"] == "CP001" for c in r["candidats"])
 
 
@@ -119,7 +114,6 @@ def test_rapprochement_conserve_puis_refait_apres_maj_erp(entrepot):
     res = imp.importer_facture(f, sens="achat", rapprochement=r0)
     assert res["ok"] and res["rapprochement_statut"] == "hors_periode"
     assert imp.stats_import()["rapprochements"] == {"achat:hors_periode": 1}
-    # l'ERP est mis à jour : la facture y a été saisie
     con = duckdb.connect(str(entrepot))
     con.execute("""INSERT INTO purchases VALUES (99, 'A99', 'BIOMERIEUX', 'F1', DATE '2025-12-02', NULL,
                    839.5, 999.0, FALSE, NULL, NULL, 'N-9', 2025, NULL)""")

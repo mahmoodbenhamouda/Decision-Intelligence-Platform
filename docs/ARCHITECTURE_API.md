@@ -69,7 +69,7 @@ api/
   donnees/
     entrepot.py          les rares lectures SQL directes de l'entrepôt (lecture seule)
   auth/                  sécurité et comptes
-    database.py  models.py      base relationnelle (PostgreSQL, repli SQLite)
+    database.py  models.py      base relationnelle (PostgreSQL uniquement)
     security.py                 bcrypt, JWT, politique de mot de passe, anti-force brute
     deps.py                     dépendances FastAPI : utilisateur courant, rôles
     journal.py                  journal d'audit

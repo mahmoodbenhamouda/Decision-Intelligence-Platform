@@ -1,25 +1,4 @@
-"""
-scripts/diag_famille_produit.py
-================================
-La famille produit est-elle renseignée ? Mesurer au lieu d'affirmer.
-
-Pourquoi ce script existe
--------------------------
-J'ai affirmé que la colonne `ARTICLE_LIBELLE_FAM_STAT1` portait une nomenclature
-produit exploitable, en me fondant sur le fait qu'elle est **lue** dans
-`kpi_engine` et sur un commentaire annonçant « ~99 % du CA réel ».
-
-La mesure a donné **0 désignation** avec une famille. L'affirmation était fausse,
-et elle l'était pour la raison exacte que ce projet reproche ailleurs : j'ai lu du
-code et un commentaire au lieu d'interroger la donnée.
-
-Ce script existe pour que la question soit tranchée par une mesure, dans un sens
-ou dans l'autre, et qu'elle le reste si l'export change un jour. Il regarde à
-trois endroits, du plus brut au plus transformé — un vide peut apparaître à
-n'importe lequel des trois.
-
-    python scripts/diag_famille_produit.py
-"""
+"""La famille produit est-elle renseignée ?"""
 
 from __future__ import annotations
 
@@ -52,7 +31,6 @@ def main() -> int:
     print(f"  FAMILLE PRODUIT — la colonne {COLONNE} est-elle remplie ?")
     print("=" * 74)
 
-    # ── 1. Le CSV brut : la colonne existe-t-elle, et que contient-elle ? ────
     csv = None
     for nom in ("Facture_vente_mouv_v.csv", "Facture_vente_lig_v.csv",
                 "Facture_vente_ent_v.csv"):
@@ -104,7 +82,6 @@ def main() -> int:
         finally:
             con.close()
 
-    # ── 2 et 3. L'entrepôt : sales_lines, puis product_family ───────────────
     if not STORE_PATH.exists():
         print(f"\n  [!] entrepôt absent : {STORE_PATH}")
         print("=" * 74)

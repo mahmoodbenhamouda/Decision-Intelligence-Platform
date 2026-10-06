@@ -1,28 +1,11 @@
 "use client";
 
-/**
- * TachesPanel — onglet « Suivi des actions ».
- *
- * C'est l'écran qui manquait au projet : le tableau de bord disait ce qui
- * n'allait pas, celui-ci dit QUI s'en occupe et CE QUE ÇA A DONNÉ.
- *
- * Trois niveaux de lecture, du plus court au plus détaillé :
- *   1. quatre chiffres clés (en jeu, récupéré, en retard, réussite) ;
- *   2. « Ce que les actions ont rapporté » — deux graphes : le montant obtenu
- *      mois par mois, et la répartition des issues ;
- *   3. le tableau de travail, une colonne par étape, une carte par tâche.
- *
- * Le même écran sert au directeur et à l'employé : l'API ne renvoie à un
- * employé que ses propres tâches, donc la vue se réduit d'elle-même sans
- * qu'aucun filtre d'affichage n'ait à être « oublié ».
- */
-
 import { useState } from "react";
 import {
   Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import {
-  AlarmClock, CheckCircle2, Coins, RefreshCw, Repeat,
+  AlarmClock, Bot, CheckCircle2, Coins, RefreshCw, Repeat,
   Target, UserPlus, Wallet,
 } from "lucide-react";
 import {
@@ -30,6 +13,7 @@ import {
   RangeeTuiles, TuileChiffre, Vide, fAxe, fMoney,
 } from "@/shared/ui/VisuelKit";
 import { dateCourte as fDate } from "@/shared/format";
+import DelegationPanel from "./DelegationPanel";
 import { COLONNES, RESULTATS } from "./taches.regles";
 import type { Tache } from "./taches.types";
 import { useTaches } from "./useTaches";
@@ -47,7 +31,6 @@ export default function TachesPanel({ role }: { role: string }) {
 
   return (
     <Grille>
-      {/* ── Chiffres clés ──────────────────────────────────────────────── */}
       <RangeeTuiles>
         <TuileChiffre icone={<Wallet size={16} />} label="En jeu, en cours de traitement"
           valeur={fMoney(impact?.en_jeu_dt ?? 0)}
@@ -64,7 +47,6 @@ export default function TachesPanel({ role }: { role: string }) {
             : `traitées en ${impact.delai_moyen_j} jour(s) en moyenne`} />
       </RangeeTuiles>
 
-      {/* ── Ce que les actions ont rapporté ────────────────────────────── */}
       {donneesMois.length > 0 && (
         <Carte span={7} titre="Ce que les actions ont rapporté"
           sousTitre="Montant réellement obtenu, mois par mois">
@@ -106,7 +88,8 @@ export default function TachesPanel({ role }: { role: string }) {
         </Carte>
       )}
 
-      {/* ── Retour vers les modèles ────────────────────────────────────── */}
+      {estDirecteur && <DelegationPanel impact={impact} apresPassage={charger} />}
+
       {estDirecteur && boucle && (
         <div className="chart-card" style={{ gridColumn: "span 12", padding: "12px 16px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: "0.8rem", color: INK.secondary }}>
@@ -114,8 +97,7 @@ export default function TachesPanel({ role }: { role: string }) {
             {boucle.disponible ? (
               <span>
                 <b style={{ color: INK.primary }}>{boucle.taches ?? 0} résultat(s)</b> sont
-                déjà repartis vers les prévisions, dont <b style={{ color: INK.primary }}>{boucle.retours_produits ?? 0}</b> retour(s)
-                sur les produits proposés.
+                déjà repartis vers les prévisions.
                 {boucle.en_attente_de_transfert ? ` ${boucle.en_attente_de_transfert} attendent le prochain transfert.` : ""}
               </span>
             ) : (
@@ -128,7 +110,6 @@ export default function TachesPanel({ role }: { role: string }) {
         </div>
       )}
 
-      {/* ── Tableau de travail ─────────────────────────────────────────── */}
       <Carte
         titre={estDirecteur ? "Qui fait quoi" : "Mes actions"}
         sousTitre={estDirecteur
@@ -150,7 +131,7 @@ export default function TachesPanel({ role }: { role: string }) {
         }>
         {!taches.length ? (
           <Vide texte={estDirecteur
-            ? "Aucune action confiée pour l'instant. Utilisez le bouton « Confier » depuis l'onglet Priorités."
+            ? "Aucune action confiée pour l'instant. Utilisez le bouton « Confier » depuis l'onglet Priorités, ou laissez la flotte confier le travail d'exécution (Délégation autonome)."
             : "Aucune action ne vous est confiée pour le moment."} />
         ) : (
           <div className="vk-tableau">
@@ -182,9 +163,9 @@ export default function TachesPanel({ role }: { role: string }) {
                         <span>{t.assigne_nom || "à affecter"}</span>
                         <span>{t.statut === "terminee" ? fDate(t.closed_at) : `pour le ${fDate(t.echeance)}`}</span>
                       </div>
-                      {t.venue_du_client && (
-                        <span className="vk-chip" style={{ background: "rgba(12,163,12,0.10)" }}>
-                          Demande du client
+                      {t.delegation_auto && (
+                        <span className="vk-chip" title="Confiée d'office par la flotte d'agents, sans clic de la direction">
+                          <Bot size={11} /> Confiée par la flotte
                         </span>
                       )}
 
@@ -248,7 +229,6 @@ export default function TachesPanel({ role }: { role: string }) {
   );
 }
 
-/** Clôture d'une action : c'est ICI que se fabrique la mesure d'impact. */
 function FenetreResultat({ tache, onClose, onValider }: {
   tache: Tache; onClose: () => void;
   onValider: (corps: Record<string, unknown>) => void | Promise<void>;

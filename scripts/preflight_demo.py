@@ -1,15 +1,4 @@
-"""
-scripts/preflight_demo.py
-=========================
-CONTRÔLE PRÉ-DÉMO — à lancer 30 minutes avant la soutenance.
-
-Vérifie, un par un, tous les points qui peuvent faire échouer une démo, et
-affiche pour chaque problème la commande exacte qui le corrige.
-
-    python scripts/preflight_demo.py
-
-Sortie : rapport coloré, code de retour 0 si tout est vert, 1 sinon.
-"""
+"""CONTRÔLE PRÉ-DÉMO — à lancer 30 minutes avant la soutenance."""
 
 from __future__ import annotations
 
@@ -30,7 +19,7 @@ except Exception:
     pass
 
 OK, WARN, KO = "OK", "ATTENTION", "BLOQUANT"
-_RESULTS: list[tuple[str, str, str, str]] = []   # (statut, titre, detail, correctif)
+_RESULTS: list[tuple[str, str, str, str]] = []
 
 
 def check(titre: str, statut: str, detail: str = "", correctif: str = "") -> None:
@@ -43,7 +32,6 @@ def _port_libre(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) != 0
 
 
-# ── 1. Dépendances Python ───────────────────────────────────────────────────
 def check_dependances() -> None:
     essentiels = {
         "fastapi": "API", "uvicorn": "serveur", "duckdb": "entrepôt",
@@ -70,7 +58,6 @@ def check_dependances() -> None:
         check("Dépendances optionnelles", OK, "toutes présentes")
 
 
-# ── 2. Entrepôt analytique ──────────────────────────────────────────────────
 def check_entrepot() -> None:
     store = BASE / "output" / "analytics_store.duckdb"
     if not store.exists():
@@ -97,7 +84,6 @@ def check_entrepot() -> None:
         check("Entrepôt DuckDB", KO, str(e)[:90], "Reconstruire l'entrepôt.")
 
 
-# ── 3. Modèles entraînés ────────────────────────────────────────────────────
 def check_modeles() -> None:
     attendus = {
         "models/credit_risk_model.joblib": "python -m ml_engine.analytics.credit_risk_model",
@@ -109,8 +95,6 @@ def check_modeles() -> None:
         else:
             check(f"Modèle {Path(rel).stem}", KO, "absent ou vide", cmd)
 
-    # Compatibilité de version : un modèle entraîné avec une AUTRE version de
-    # scikit-learn peut produire des résultats invalides (pas qu'un warning).
     try:
         import warnings as _w
         import joblib
@@ -154,29 +138,35 @@ def check_modeles() -> None:
             check("Rapports de métriques", OK, f"{len(rapports)} rapports présents")
 
 
-# ── 4. Base d'authentification & comptes ────────────────────────────────────
 def check_auth() -> None:
     url = os.environ.get("AUTH_DATABASE_URL", "")
-    cible = "PostgreSQL" if url.startswith("postgresql") else "SQLite (démo)"
+    cible = "PostgreSQL"
+    if not url:
+        check("Base auth (PostgreSQL)", KO, "AUTH_DATABASE_URL non défini",
+              "renseignez-la dans .env — il n'existe aucun repli")
+        return
+    if not url.startswith("postgresql"):
+        check("Base auth (PostgreSQL)", KO,
+              f"URL d'un autre moteur : {url[:40]}",
+              "seul PostgreSQL est supporté")
+        return
     try:
         from api.auth.database import get_db, init_db
-        from api.auth.models import ROLE_CLIENT, ROLE_DIRECTEUR, User
+        from api.auth.models import ROLE_DIRECTEUR, ROLE_EMPLOYE, User
         init_db()
         db = next(get_db())
         try:
             dirs = db.query(User).filter(User.role == ROLE_DIRECTEUR,
                                          User.is_active.is_(True)).count()
-            clients = db.query(User).filter(User.role == ROLE_CLIENT,
-                                            User.is_active.is_(True)).all()
-            sans_nom = [c.email for c in clients if not c.full_name]
+            employes = db.query(User).filter(User.role == ROLE_EMPLOYE,
+                                             User.is_active.is_(True)).all()
         finally:
             db.close()
     except Exception as e:
         msg = str(e)[:110]
         if "connection" in msg.lower() or "refused" in msg.lower():
             check(f"Base auth ({cible})", KO, "serveur injoignable",
-                  "docker compose -f docker-compose.postgres.yml up -d "
-                  "(ou commentez AUTH_DATABASE_URL dans .env pour SQLite)")
+                  "docker compose -f docker-compose.postgres.yml up -d")
         else:
             check(f"Base auth ({cible})", KO, msg, "python -m api.auth.seed")
         return
@@ -184,20 +174,15 @@ def check_auth() -> None:
     if dirs == 0:
         check(f"Base auth ({cible})", KO, "aucun directeur actif",
               "python -m api.auth.seed")
-    elif not clients:
-        check(f"Base auth ({cible})", KO, "aucun compte client",
+    elif not employes:
+        check(f"Base auth ({cible})", KO, "aucun compte employé",
               "python -m api.auth.seed")
     else:
-        detail = f"{dirs} directeur · {len(clients)} client(s) : " + ", ".join(
-            c.email.split("@")[0] for c in clients[:3])
+        detail = f"{dirs} directeur · {len(employes)} employé(s) : " + ", ".join(
+            e.email.split("@")[0] for e in employes[:3])
         check(f"Base auth ({cible})", OK, detail)
-        if sans_nom:
-            check("Noms d'établissement", WARN,
-                  f"{len(sans_nom)} compte(s) sans nom affiché",
-                  "python -m api.auth.seed  (enrichit les noms depuis l'ERP)")
 
 
-# ── 5. Secrets & configuration ──────────────────────────────────────────────
 def check_config() -> None:
     if not (BASE / ".env").exists():
         check("Fichier .env", WARN, "absent — valeurs par défaut utilisées",
@@ -205,13 +190,17 @@ def check_config() -> None:
     else:
         check("Fichier .env", OK, "présent")
 
-    if not os.environ.get("JWT_SECRET_KEY"):
-        check("Secret JWT", WARN, "non défini → secret éphémère (sessions perdues "
-              "à chaque redémarrage de l'API)",
+    # Même règle que le démarrage de l'API, et par le même code : un préflight qui
+    # jugerait selon ses propres critères pourrait annoncer « prêt » devant une
+    # configuration que l'API refuse.
+    try:
+        from api.auth.security import LONGUEUR_MIN_SECRET, verifier_secret
+        verifier_secret()
+        check("Secret JWT", OK, f"défini, ≥ {LONGUEUR_MIN_SECRET} octets")
+    except Exception as e:
+        check("Secret JWT", KO, str(e).splitlines()[0],
               'python -c "import secrets;print(secrets.token_urlsafe(48))" '
               "puis JWT_SECRET_KEY=... dans .env")
-    else:
-        check("Secret JWT", OK, "défini")
 
     if os.environ.get("GROQ_API_KEY"):
         check("Clé LLM (Groq)", OK, "présente → réponses en langage naturel")
@@ -220,7 +209,6 @@ def check_config() -> None:
               "C'est défendable en soutenance : montrez que tout marche sans LLM.")
 
 
-# ── 6. Frontend ─────────────────────────────────────────────────────────────
 def check_frontend() -> None:
     fe = BASE / "frontend"
     if not (fe / "node_modules").exists():
@@ -248,7 +236,6 @@ def check_frontend() -> None:
               "En cas d'erreur Turbopack : supprimez frontend\\.next et relancez.")
 
 
-# ── 7. OCR ──────────────────────────────────────────────────────────────────
 def check_ocr() -> None:
     try:
         from ml_engine.ocr.engine import ocr_available
@@ -269,7 +256,6 @@ def check_ocr() -> None:
         check("OCR Tesseract", WARN, str(e)[:80], "Voir docs/OCR.md")
 
 
-# ── 8. Ports & tests ────────────────────────────────────────────────────────
 def check_ports() -> None:
     for port, usage in ((8000, "API"), (4000, "frontend")):
         if _port_libre(port):
@@ -292,7 +278,6 @@ def check_tests() -> None:
           "Lancez `python -m pytest tests/ -q` devant le jury si on vous le demande.")
 
 
-# ── Rapport ─────────────────────────────────────────────────────────────────
 def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -307,7 +292,7 @@ def main() -> int:
                check_config, check_frontend, check_ocr, check_ports, check_tests):
         try:
             fn()
-        except Exception as e:                      # un contrôle ne doit jamais tout casser
+        except Exception as e:
             check(fn.__name__, WARN, f"contrôle impossible : {e}", "")
 
     icons = {OK: "[ OK ]", WARN: "[ ~~ ]", KO: "[ !! ]"}

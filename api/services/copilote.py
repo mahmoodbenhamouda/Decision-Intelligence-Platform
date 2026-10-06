@@ -1,14 +1,4 @@
-"""
-api/services/copilote.py
-========================
-Copilote conversationnel FinBot : questions en langage naturel et fichiers
-joints (CSV, PDF textuel).
-
-Les réponses sont THÉMATIQUES et ancrées sur les indicateurs du périmètre
-filtré : LLM (Groq) si une clé est disponible, sinon repli déterministe selon
-le thème de la question. Le périmètre est FORCÉ pour un compte client, y
-compris sur les filtres envoyés avec un fichier.
-"""
+"""Copilote conversationnel FinBot : questions en langage naturel et fichiers joints (CSV, PDF…"""
 
 from __future__ import annotations
 
@@ -21,7 +11,6 @@ from api.core import moteurs
 from api.schemas.filtres import CopilotRequest
 from api.services.fichiers import extract_from_csv, extract_from_pdf
 from api.services.filtres import filtres_moteur, resume_filtres
-from api.services.perimetre import restreindre_filtres
 
 logger = logging.getLogger("api")
 
@@ -36,8 +25,6 @@ def repondre(req: CopilotRequest) -> Dict[str, Any]:
     try:
         res = moteurs.copilote.repondre(filtres_moteur(req), question=q,
                                         historique=req.history or [])
-        # Anti-repli : si l'agent retourne vide (rare), ne pas afficher le
-        # rapport générique.
         return {
             "answer": res["text"] or "Je n'ai pas pu générer une réponse.",
             "via": res["via"],
@@ -50,30 +37,25 @@ def repondre(req: CopilotRequest) -> Dict[str, Any]:
 
 def analyser_document(nom: str, extension: str, contenu: bytes, question: str,
                       filtres_json: str, user: User) -> Dict[str, Any]:
-    """Analyse un CSV ou un PDF textuel et répond à la question posée, en
-    croisant avec les indicateurs de la plateforme.
-
-    `extension` est déjà contrôlée (`fichiers.EXTENSIONS`) par la route."""
+    """Analyse un CSV ou un PDF textuel et répond à la question posée, en croisant avec les indicateurs…"""
     try:
         filtres: Dict[str, Any] = json.loads(filtres_json) if filtres_json.strip() else {}
     except json.JSONDecodeError:
         filtres = {}
     if not isinstance(filtres, dict):
         filtres = {}
-    filtres = restreindre_filtres(filtres, user)
 
     extraction = (extract_from_csv(contenu, nom) if extension == ".csv"
                   else extract_from_pdf(contenu, nom))
 
-    # PDF scanné → aiguillage explicite vers le service OCR
     if extraction.get("scanned"):
         return {
             "answer": (
                 f"## PDF scanné détecté : `{nom}`\n\n"
                 "Ce document ne contient pas de texte : c'est une image scannée.\n\n"
-                "**Utilisez l'onglet « Documents & OCR »** — il extrait le texte, "
+                "**Utilisez l'onglet « Documents »** — il extrait le texte, "
                 "reconnaît les champs d'une facture (n°, dates, HT/TVA/TTC) et la "
-                "rapproche automatiquement de vos données ERP."),
+                "rapproche automatiquement de vos écritures."),
             "via": "regles", "file_type": "pdf", "filename": nom,
             "extracted_text": "", "radar": [],
         }
@@ -81,7 +63,6 @@ def analyser_document(nom: str, extension: str, contenu: bytes, question: str,
     texte = extraction.get("extracted_text", "")
     resume_fichier = extraction.get("summary", "")
 
-    # Contexte KPI de la plateforme
     kpis: Dict[str, Any] = {}
     radar: List[Any] = []
     try:
@@ -90,7 +71,6 @@ def analyser_document(nom: str, extension: str, contenu: bytes, question: str,
     except Exception:
         pass
 
-    # Réponse du copilote ancrée sur le document et les indicateurs
     answer, via = "", "regles"
     try:
         from agents.copilote import analyser_fichier
@@ -100,7 +80,6 @@ def analyser_document(nom: str, extension: str, contenu: bytes, question: str,
     except Exception as e:
         logger.warning("[upload] copilote indisponible : %s", e)
 
-    # Repli déterministe (jamais d'écran vide)
     if not answer:
         via = "regles"
         if extension == ".csv":

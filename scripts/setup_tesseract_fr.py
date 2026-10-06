@@ -1,23 +1,4 @@
-"""
-scripts/setup_tesseract_fr.py
-=============================
-Installe le PACK DE LANGUE FRANÇAIS de Tesseract — SANS droits administrateur.
-
-    python scripts/setup_tesseract_fr.py
-
-Principe : plutôt que d'écrire dans « C:\\Program Files\\Tesseract-OCR\\tessdata »
-(qui exige les droits admin), le fichier `fra.traineddata` est installé dans le
-projet (`models/tessdata/`). Le moteur OCR de la plateforme cherche
-automatiquement ce dossier — aucune configuration supplémentaire n'est requise.
-
-Pourquoi c'est important : sur une facture française, l'OCR sans le pack `fra`
-confond les accents et les mots courants (« Échéance », « Société », « Payé »),
-ce qui dégrade l'extraction des champs.
-
-Sans réseau : téléchargez `fra.traineddata` depuis
-https://github.com/tesseract-ocr/tessdata_fast (branche main) puis
-    python scripts/setup_tesseract_fr.py --file chemin\\vers\\fra.traineddata
-"""
+"""Installe le PACK DE LANGUE FRANÇAIS de Tesseract — SANS droits administrateur."""
 
 from __future__ import annotations
 
@@ -31,7 +12,6 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parents[1]
 TESSDATA = BASE / "models" / "tessdata"
 
-# tessdata_fast : bon compromis vitesse/qualité (~1,1 Mo), recommandé par Tesseract
 SOURCES = [
     "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/fra.traineddata",
     "https://github.com/tesseract-ocr/tessdata_fast/raw/main/fra.traineddata",
@@ -118,7 +98,6 @@ def main() -> int:
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
-    # 1. Le binaire Tesseract est-il présent ? (le pack de langue seul ne suffit pas)
     if not _tesseract_present():
         print("[!] Tesseract n'est pas installé sur cette machine.")
         print("    Le pack de langue seul ne suffit pas : installez d'abord le moteur.")
@@ -141,7 +120,6 @@ def main() -> int:
         if code != 0:
             return code
 
-    # 2. Vérification effective via le moteur de la plateforme
     print("\n[..] vérification par le moteur OCR de la plateforme…")
     sys.path.insert(0, str(BASE))
     try:

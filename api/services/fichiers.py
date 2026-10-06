@@ -1,13 +1,4 @@
-"""
-api/services/fichiers.py
-========================
-Lecture des fichiers TEXTUELS joints au copilote : CSV et PDF natifs.
-
-Les documents scannés (images, PDF images, factures papier) ne sont pas lus
-ici : ils relèvent du service OCR (`ml_engine/ocr`, exposé par
-`api/routers/ocr.py`). Un PDF sans texte est signalé (`scanned`) pour que le
-copilote oriente l'utilisateur vers l'onglet « Documents & OCR ».
-"""
+"""Lecture des fichiers TEXTUELS joints au copilote : CSV et PDF natifs."""
 
 from __future__ import annotations
 
@@ -19,15 +10,11 @@ import pandas as pd
 
 from api.services.erreurs import DonneesInvalides, ErreurInterne
 
-#: Extensions acceptées par le copilote.
 EXTENSIONS = {".csv", ".pdf"}
-#: Taille maximale d'un fichier (20 Mo).
 TAILLE_MAX = 20 * 1024 * 1024
-#: Texte transmis au LLM au plus.
 MAX_CHARS = 3000
 
 
-# ── Nettoyage du texte extrait ──────────────────────────────────────────────
 def _clean_text(raw: str) -> str:
     """Supprime les artefacts de conversion en conservant accents et montants."""
     if not raw:
@@ -50,7 +37,6 @@ def _clean_text(raw: str) -> str:
     return "\n".join(out).strip()
 
 
-# ── Extracteurs ─────────────────────────────────────────────────────────────
 def extract_from_csv(content: bytes, filename: str) -> Dict[str, Any]:
     """Charge un CSV et calcule des statistiques financières de base."""
     df = None
@@ -95,11 +81,7 @@ def extract_from_csv(content: bytes, filename: str) -> Dict[str, Any]:
 
 
 def extract_from_pdf(content: bytes, filename: str) -> Dict[str, Any]:
-    """Extrait le texte d'un PDF natif (PyPDF2, repli pdfminer).
-
-    Si le PDF est un SCAN (aucun texte extractible), on ne tente pas l'OCR ici :
-    on oriente explicitement l'utilisateur vers le service OCR dédié.
-    """
+    """Extrait le texte d'un PDF natif (PyPDF2, repli pdfminer)."""
     raw = ""
     try:
         import PyPDF2

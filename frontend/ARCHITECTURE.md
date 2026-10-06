@@ -41,7 +41,7 @@ src/
     tableau-de-bord/      cockpit : filtres, indicateurs, graphes, onglets
     auth/                 connexion, déconnexion
     briefing/             « Priorités » (flotte d'agents)
-    taches/               « Suivi des actions », fenêtre « Confier »
+    taches/               « Suivi des actions », fenêtre « Confier », délégation autonome
     churn/                « Rétention »
     commercial/           « Devis & marge »
     stock/                « Stock », approvisionnement, volumes à prévoir

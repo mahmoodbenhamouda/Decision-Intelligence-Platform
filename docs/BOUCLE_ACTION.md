@@ -17,7 +17,8 @@ La boucle d'action ferme le circuit :
 ```
 alerte (flotte d'agents)
       │
-      ├─► le directeur CONFIE une tâche à un employé ──┐
+      ├─► la flotte CONFIE d'office l'exécution ───────┐   (délégation autonome)
+      ├─► le directeur CONFIE une tâche à un employé ──┤
       │                                                │
    le client AGIT depuis son espace ───► tâche ────────┤
                                                        ▼
@@ -38,7 +39,7 @@ alerte (flotte d'agents)
 
 | Rôle | Ce qu'il voit | Ce qu'il peut faire |
 |---|---|---|
-| `directeur` | tout | confier une tâche, réaffecter, déplacer une échéance, lire l'impact |
+| `directeur` | tout | confier une tâche, réaffecter, déplacer une échéance, lire l'impact, régler et lancer la délégation autonome |
 | `employe` | **seulement ses tâches** | prendre en charge, bloquer, clôturer avec un résultat |
 | `client` | ses données à lui | agir sur ce qu'il consulte, suivre ses demandes |
 
@@ -52,8 +53,7 @@ parce qu'un 403 confirmerait que cette tâche existe.
 
 ## Le schéma de données
 
-Trois tables s'ajoutent dans la base applicative (SQLite en démo, PostgreSQL en
-production — le même code SQLAlchemy, une URL différente) :
+Trois tables s'ajoutent dans la base applicative PostgreSQL :
 
 | Table | Rôle |
 |---|---|
@@ -182,7 +182,116 @@ moment de la confier. Le verrou porte sur les tâches **en cours** : une fois la
 tâche terminée, la même alerte redevient confiable — si le problème revient, il
 doit pouvoir repartir en action.
 
+## La délégation autonome — la flotte confie elle-même l'exécution
+
+Jusqu'ici, rien ne bougeait tant que le directeur n'avait pas ouvert l'onglet
+Priorités et cliqué « Confier » sur chaque carte. La délégation autonome fait
+ce tri à sa place, chaque jour, **pour le travail d'exécution seulement**.
+
+### La frontière entre exécuter et décider
+
+C'est l'agent qui émet un constat qui sait ce que son action demande. Il le
+**déclare** dans le constat (clé `execution`) :
+
+| Constat | Agent | `execution` | Pourquoi |
+|---|---|---|---|
+| Créances à relancer en priorité | Recouvrement | recouvrement · appel | relancer des comptes nommés |
+| Clients qui ont fortement réduit leurs achats | Risque client | commercial · appel | rappeler des comptes nommés |
+| Clients susceptibles de partir dans les 90 jours | Risque client | commercial · appel | idem, avant qu'ils partent |
+| Devis à relancer en priorité | Commercial | commercial · relance du devis | des devis nommés |
+| Clients dont la rentabilité va baisser | Commercial | commercial · visite | préparer la négociation compte par compte |
+| Produits à proposer | Commercial | commercial · visite | présenter des produits à des clients nommés |
+| Stock : ruptures et argent immobilisé | Stock & Appro. | logistique · commande | commander des références nommées |
+| Client signalé par plusieurs domaines | Arbitre | le métier du premier domaine (créance d'abord) · appel | un seul interlocuteur pour ce compte |
+| Trésorerie : encaissements et stock dormant | Trésorerie | **décision de direction** | renégocier les délais fournisseurs, décider un déstockage |
+| Dépendance à un fournisseur | Stock & Appro. | **décision de direction** | choisir un second fournisseur engage l'entreprise |
+| Types de clients les plus exposés au départ | Risque client | **décision de direction** | une politique pour tout un segment |
+
+Un constat qui ne déclare rien n'est **jamais** délégué : l'autonomie ne se
+suppose pas. Sur l'écran Priorités, les décisions de direction portent la
+mention « Décision de direction » ; le bouton « Confier » reste disponible, le
+directeur peut toujours les confier lui-même.
+
+### Ce que fait un passage
+
+```
+flotte (périmètre complet) ──► arbitre ──► planifier()          agents/fleet/delegation.py (pur)
+                                             │  1. clients multi-signaux
+                                             │  2. constats dans l'ordre de l'arbitre,
+                                             │     gravité haute ou urgente, exécution déclarée
+                                             │  décisions de direction → mises de côté
+                                             ▼
+                        pour chaque proposition           api/services/delegation.py
+                          déjà confiée (même alerte ouverte) ──► rien
+                          traitée il y a < 14 jours          ──► rien
+                          personne de ce métier / saturé     ──► « à affecter » (le directeur tranche)
+                          sinon ──► confiée à l'employé du métier le moins chargé
+                                             ▼
+                        journal du passage (delegations_auto) + audit
+```
+
+| Règle | Valeur | Raison |
+|---|---|---|
+| Sans classement de l'arbitre | rien n'est confié | la gravité déclarée par chaque agent n'est pas une échelle commune |
+| Gravités confiées d'office | haute, urgente | une alerte « à suivre » reste au jugement du directeur |
+| Plafond par passage | 8 tâches | un défaut ne doit pas noyer l'équipe un matin |
+| Charge maximale | 10 tâches ouvertes | au-delà, la tâche attend le directeur au lieu de surcharger quelqu'un |
+| Carence après clôture | 14 jours | les données viennent d'exports : une créance payée hier y figure encore |
+| Anti-doublon | même clé que le bouton « Confier » (`origine_titre`) | ni la flotte ni le directeur ne confient deux fois la même alerte |
+| Passage planifié | un par jour, réservé en base (`jour_planifie` unique) | deux processus réveillés en même temps ne confient pas deux fois |
+
+La clé d'un client multi-signaux, « Faire le point avec … », est fabriquée des
+deux côtés (serveur et tableau de bord) : un test relit le fichier du tableau
+de bord pour vérifier que les deux formulations n'ont pas divergé.
+
+Une tâche confiée par la flotte s'écrit par le même chemin qu'une tâche
+confiée par le directeur (`inserer_tache`) : même échéance selon la gravité,
+même histoire (« Confiée d'office par la flotte d'agents — rang 1 du
+classement… », « Confiée par la flotte à Sami — métier recouvrement, 2 tâches
+déjà en cours »), même mesure. Seuls changent `delegation_auto = vrai` et
+l'absence d'auteur humain.
+
+### Qui décide de l'activer
+
+Le **directeur**, depuis l'onglet « Suivi des actions » (carte « Délégation
+autonome ») : activer ou couper, choisir l'heure (07:30 par défaut), lancer un
+passage maintenant, relire le dernier passage — ce qui a été confié et à qui,
+ce qui ne l'a pas été et pourquoi, et les décisions qui lui ont été laissées.
+**Désactivée par défaut** : confier du travail à l'équipe n'est pas un
+paramètre de déploiement.
+
+Le réveil est une tâche de fond de l'API (`api/core/planificateur.py`), qui
+demande chaque minute si le passage du jour est dû. Un serveur éteint à
+l'heure prévue rattrape le passage à son redémarrage. Sans API démarrée en
+permanence, le Planificateur de tâches Windows (ou cron) peut lancer
+`python scripts/delegation_auto.py --si-du`, qui respecte le même réglage et
+la même réservation du jour. `PLANIFICATEUR=0` coupe le réveil d'une instance.
+
+Un passage planifié qui échoue (flotte indisponible) garde la réservation du
+jour : il n'est pas relancé chaque minute. Le directeur voit l'échec et son
+motif, et peut relancer à la main.
+
+### Mesurer si elle mérite de rester active
+
+`GET /api/taches/impact` renvoie `par_origine` : tâches, taux d'aboutissement
+et montant obtenu, séparément pour la direction, la flotte et les clients.
+L'export vers l'entrepôt porte la colonne `delegation_auto` : au
+réentraînement, on sait ce que chaque voie a donné.
+
+### API
+
+| Méthode | Route | Qui | Rôle |
+|---|---|---|---|
+| GET | `/api/taches/delegation` | directeur | réglages, prochain passage, dernier passage (avec le briefing), historique |
+| PUT | `/api/taches/delegation` | directeur | `{active, heure}` |
+| POST | `/api/taches/delegation/lancer` | directeur | un passage maintenant (409 si un passage est déjà en cours) |
+
 ## Tests
+
+`tests/test_delegation.py` (23 tests) démontre la frontière exécution /
+décision, l'ordre de l'arbitre, l'absence de doublon avec les tâches confiées à
+la main, la carence, la charge, la réservation du passage quotidien, le
+cloisonnement des réglages et la mesure par origine.
 
 `tests/test_boucle_action.py` (19 tests) démontre, dans l'ordre : le
 cloisonnement des trois rôles, le fait qu'une tâche ne se clôture pas sans

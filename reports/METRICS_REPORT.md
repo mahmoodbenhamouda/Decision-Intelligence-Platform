@@ -2170,3 +2170,104 @@ C'est la même décision que pour le décrochage, où la régression logistique 
 préférée au gradient boosting (0,9243) : un modèle plus complexe doit prouver qu'il fait mieux,
 pas seulement l'afficher.
 
+
+---
+
+## §8 bis. Calibration — ce que l'AUC ne mesure pas
+
+Toutes les sections précédentes mesurent des **classements**. Pour le modèle de
+conversion des devis, cela ne suffit pas : l'écran n'affiche pas un classement,
+il affiche des **dinars**. « Ventes probables » est un montant multiplié par une
+probabilité, et l'AUC ne dit rien de la valeur de cette probabilité.
+
+Un modèle qui annoncerait 3 % partout où le taux réel est 30 % aurait **exactement
+la même AUC** de 0,7165. Son classement serait identique, et l'espérance affichée
+dix fois trop basse. Aucune métrique publiée dans ce rapport ne l'aurait vu.
+
+La calibration comble ce trou. Les devis du test hors période sont rangés par
+probabilité prédite croissante, découpés en dix groupes d'effectifs égaux, et
+pour chacun on compare la probabilité **annoncée** au taux de signature
+**observé**.
+
+| Mesure | Ce qu'elle dit | Ce qu'un écart signifie à l'écran |
+|---|---|---|
+| **ECE** (écart absolu moyen, pondéré par l'effectif) | de combien la probabilité annoncée s'écarte du taux réel | un ECE de 5 pt sur un taux de base de 9,4 % est un écart relatif considérable |
+| **Biais** (écart signé) | dans quel sens le modèle se trompe | positif → modèle optimiste → **espérance surestimée** ; négatif → l'inverse |
+
+Deux précautions de méthode :
+
+1. **Mesurée hors période, jamais sur l'entraînement.** Un modèle est toujours
+   bien calibré sur les données qui ont servi à l'ajuster. Le calcul vit donc
+   dans la fonction d'évaluation, à côté du découpage train/test, et non dans le
+   service de prédiction — qui ne pourrait pas la produire honnêtement.
+2. **Groupes par rangs, pas par quantiles de valeur.** Les positifs étant rares
+   (9,4 % du test), le modèle produit une masse de probabilités basses très
+   proches : des bornes de quantiles se confondraient et donneraient des groupes
+   vides. Le découpage par `argsort` ne peut pas en produire.
+
+Où la lire : `reports/conversion_devis_metrics.json` →
+`hors_periode.calibration`, et à l'écran dans l'onglet **Devis**, troisième vue
+de la carte « Montant et chance de signature ». La courbe y est tracée contre la
+diagonale : plus les points y collent, plus l'espérance en dinars est fiable.
+
+Garanties vérifiées par `tests/test_calibration_devis.py` (12 tests) : un modèle
+calibré est reconnu (ECE < 3 pt), un modèle deux fois trop optimiste est dénoncé
+comme optimiste, le signe du biais ne s'inverse pas, les groupes couvrent tous
+les devis sans doublon ni groupe vide, et un échantillon trop petit est **refusé**
+au lieu de produire une courbe illisible.
+
+> La calibration n'était pas mesurée avant cette version. Le modèle était servi
+> depuis le début avec une espérance en dinars affichée à l'écran : c'était un
+> montant publié sans la métrique qui l'autorise. Relancer
+> `python -m ml_engine.analytics.conversion_devis` la renseigne.
+
+---
+
+## §9. De l'AUC au dinar
+
+Les huit sections précédentes mesurent des **classements**. Aucune ne dit ce
+qu'ils valent. Une AUC de 0,9224 sur le décrochage est un bon classement ; elle
+ne dit pas si les clients signalés pèsent dix mille dinars ou cinq millions.
+
+La traduction est faite par un module distinct, `ml_engine/analytics/impact.py`,
+et elle est **séparée exprès** : une métrique se mesure, un montant récupérable
+se suppose. Les mélanger aurait donné au second la crédibilité du premier.
+
+| Poste | Métrique d'appui | Identifié | Taux **supposé** | Récupérable |
+|---|---|---:|---:|---:|
+| Créances à terme long | aucune — comptage | 10 948 315 DT | 15 % | 1 642 247 DT |
+| Décrochage client | AUC 0,9224 | 4 895 100 DT | 20 % | 979 020 DT |
+| Surstock | aucune — comptage | 5 943 821 DT | 10 % | 594 382 DT |
+| Érosion de marge | AUC 0,7969 | 2 875 835 DT | 25 % | 718 959 DT |
+| Conversion des devis | AUC 0,7165 · **lift 2,49** | §5 de `docs/IMPACT_FINANCIER.md` | 10 % | — |
+| Péremption | aucune — rotation | 212 117 DT | 40 % | 84 847 DT |
+| **Total** | | **24 875 188 DT** | — | **4 019 455 DT** |
+
+Trois remarques qui portent sur la méthode, et non sur les chiffres :
+
+1. **Un seul de ces taux est mesuré.** Celui des devis : le lift de 2,49 sur le
+   décile supérieur est une observation hors période, pas une estimation. Les
+   cinq autres sont des hypothèses déclarées, chacune justifiée au §2 de
+   `docs/IMPACT_FINANCIER.md`, et modifiables en une ligne dans `HYPOTHESES`.
+2. **Les deux plus gros postes ne reposent sur aucun modèle.** Créances et
+   surstock sont du comptage sur l'entrepôt. Autrement dit, la plus grande part
+   de l'enjeu financier identifié vient de la **qualité des données**, pas de
+   l'apprentissage — ce qui est cohérent avec le reste de ce rapport, où trois
+   modules sur onze ont été écartés au profit d'une règle ou d'une statistique.
+3. **Le plus gros montant du projet n'est pas dans ce tableau.** Les 15 800 000 DT
+   de chiffre d'affaires surévalué de 5,44 % sont exclus du total : rien n'est à
+   encaisser. Mais c'est le seul montant qui ne dépende d'aucune hypothèse, et il
+   a été trouvé en vérifiant le signe d'une colonne — pas en entraînant un modèle.
+
+Comme ailleurs dans ce rapport, le décompte à citer est celui que produit la
+commande, jamais celui de ce document :
+
+```bash
+python -m ml_engine.analytics.impact
+```
+
+Méthode complète, réserve par poste, détail par client et limites :
+`docs/IMPACT_FINANCIER.md`. Garanties vérifiées par `tests/test_impact.py`
+(20 tests) : le total est exactement la somme de ses postes, les 15,8 M DT n'y
+entrent jamais, chaque taux est justifié, et une phrase ne survit pas au poste
+qui la fonde.

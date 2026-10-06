@@ -1,21 +1,8 @@
-"""
-api/routers/admin.py
-====================
-Administration — toutes les routes exigent `require_directeur` (403 sinon).
-
-GET    /api/admin/users              comptes (avec « présent dans l'ERP »)
-POST   /api/admin/users              créer un compte
-PATCH  /api/admin/users/{id}         modifier un compte
-DELETE /api/admin/users/{id}         désactiver (défaut) ou supprimer (`permanent=true`)
-GET    /api/admin/erp-clients        codes clients réels de l'entrepôt
-GET    /api/admin/requests           demandes clients (filtre `status`)
-PATCH  /api/admin/requests/{id}      traiter une demande
-GET    /api/admin/audit              journal d'audit
-"""
+"""Administration — toutes les routes exigent `require_directeur` (403 sinon)."""
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -23,7 +10,7 @@ from sqlalchemy.orm import Session
 from api.auth.database import get_db
 from api.auth.deps import require_directeur
 from api.auth.models import User
-from api.schemas.admin import RequestUpdate, UserCreate, UserOut, UserUpdate
+from api.schemas.admin import UserCreate, UserOut, UserUpdate
 from api.services import admin as service
 
 router = APIRouter(prefix="/api/admin", tags=["admin"],
@@ -31,9 +18,24 @@ router = APIRouter(prefix="/api/admin", tags=["admin"],
 
 
 @router.get("/users", response_model=List[UserOut])
-def list_users(db: Session = Depends(get_db),
+def list_users(inclure_retires: bool = False, db: Session = Depends(get_db),
                admin: User = Depends(require_directeur)):
-    return service.lister_comptes(db)
+    """Comptes de l'équipe. `inclure_retires` n'existe que pour l'inspection."""
+    return service.lister_comptes(db, inclure_retires=inclure_retires)
+
+
+@router.get("/roles-retires")
+def compter_roles_retires(db: Session = Depends(get_db),
+                          admin: User = Depends(require_directeur)):
+    """Combien de comptes d'un rôle que la plateforme ne sert plus subsistent en base."""
+    return {"n": service.compter_roles_retires(db)}
+
+
+@router.post("/purger-roles-retires")
+def purger_roles_retires(db: Session = Depends(get_db),
+                         admin: User = Depends(require_directeur)):
+    """Efface définitivement ces comptes. Journal d'audit préservé (anonymisé)."""
+    return service.purger_roles_retires(db, admin)
 
 
 @router.post("/users", response_model=UserOut, status_code=201)
@@ -53,23 +55,6 @@ def delete_user(user_id: int, permanent: bool = False,
                 db: Session = Depends(get_db),
                 admin: User = Depends(require_directeur)):
     return service.supprimer_compte(db, admin, user_id, definitif=permanent)
-
-
-@router.get("/erp-clients")
-def erp_clients(admin: User = Depends(require_directeur)):
-    return service.clients_erp()
-
-
-@router.get("/requests")
-def list_requests(status: Optional[str] = None, db: Session = Depends(get_db),
-                  admin: User = Depends(require_directeur)):
-    return service.lister_demandes(db, status)
-
-
-@router.patch("/requests/{req_id}")
-def update_request(req_id: int, body: RequestUpdate, db: Session = Depends(get_db),
-                   admin: User = Depends(require_directeur)):
-    return service.traiter_demande(db, admin, req_id, body)
 
 
 @router.get("/audit")

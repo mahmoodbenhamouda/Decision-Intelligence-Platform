@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * StockForecastPanel — volumes à prévoir par produit.
- *
- * Refonte complète. La version précédente affichait trois cartes « Horizon /
- * LightGBM / WAPE / MAE », puis huit lignes justifiant qu'aucun modèle appris
- * n'était déployé. C'était une page d'analyste : le directeur qui l'ouvrait ne
- * trouvait nulle part la réponse à sa seule question — combien commander.
- *
- * La page répond maintenant à cette question, et à elle seule : pour chaque
- * produit, les volumes attendus à 30, 60 et 90 jours, et l'écart avec le rythme
- * actuel. La méthode reste documentée dans le mémoire, pas à l'écran.
- */
-
 import { useMemo, useState } from "react";
 import {
   Area, CartesianGrid, ComposedChart, Line,
@@ -29,9 +16,6 @@ const TT = {
 
 const fNum = (v: number) => Math.round(v).toLocaleString("fr-FR");
 
-/** Évolution attendue par rapport au rythme des trois derniers mois. C'est la
- *  seule comparaison qui intéresse un acheteur : dois-je commander plus, autant
- *  ou moins que d'habitude ? */
 function evolution(prevu30: number, moyenne3m: number) {
   if (!moyenne3m) return { pct: 0, label: "Stable", color: "#64748B", icone: <ArrowRight size={14} /> };
   const pct = ((prevu30 - moyenne3m) / moyenne3m) * 100;
@@ -67,7 +51,6 @@ export default function StockForecastPanel() {
 
   const ev = courant ? evolution(courant.prevision_30j, courant.moyenne_3m) : null;
 
-  // Trajectoire cumulée : ce qu'il faudra avoir livré à chaque échéance.
   const trajectoire = courant ? [
     { h: "Aujourd'hui", cumul: 0, rythme: 0 },
     { h: "Dans 1 mois", cumul: courant.prevision_30j, rythme: courant.moyenne_3m },
@@ -78,7 +61,6 @@ export default function StockForecastPanel() {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 14 }}>
 
-      {/* ── Produit sélectionné : les trois volumes ─────────────────────── */}
       <div className="chart-card" style={{ gridColumn: "span 12" }}>
         <div className="card-header">
           <span className="card-label">{courant?.produit}</span>
@@ -101,7 +83,6 @@ export default function StockForecastPanel() {
         </div>
       </div>
 
-      {/* ── Courbe cumulée ──────────────────────────────────────────────── */}
       <div className="chart-card" style={{ gridColumn: "span 7" }}>
         <div className="card-header">
           <span className="card-label">Volumes à couvrir</span>
@@ -133,7 +114,6 @@ export default function StockForecastPanel() {
         </ResponsiveContainer>
       </div>
 
-      {/* ── Choix du produit ────────────────────────────────────────────── */}
       <div className="chart-card" style={{ gridColumn: "span 5" }}>
         <div className="card-header">
           <span className="card-label">Vos références</span>

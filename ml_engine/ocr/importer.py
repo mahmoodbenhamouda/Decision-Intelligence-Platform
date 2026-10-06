@@ -1,37 +1,4 @@
-"""
-ml_engine/ocr/importer.py
-=========================
-Enregistrement d'une facture océrisée dans l'entrepôt, et rattachement client.
-
-Pourquoi un module séparé
--------------------------
-Jusqu'ici l'OCR *lisait* une facture et la rapprochait de l'ERP, mais ne la
-**conservait** pas : fermer l'onglet effaçait le travail, et les montants lus
-n'entraient dans aucun indicateur. Ce module referme la boucle.
-
-Principe directeur : ne jamais mélanger le lu et le déclaré
------------------------------------------------------------
-Les factures importées sont écrites dans une table **distincte**
-(`factures_importees`), jamais dans `sales`. Deux raisons :
-
-* `sales` est l'export ERP, la référence. Y injecter des montants issus d'un OCR
-  à 70 % de confiance corromprait la seule source vérifiable du projet.
-* Les indicateurs doivent pouvoir être calculés avec ou sans les imports, et
-  l'écart doit rester visible. La vue `sales_augmentee` réunit les deux avec une
-  colonne `source` (`erp` / `ocr`).
-
-Rattachement client
--------------------
-Le tiers lu est rapproché des clients connus (normalisation + similarité). Trois
-issues, toutes explicites dans la réponse :
-
-* `existant`  — un client connu correspond, la facture rejoint son tableau de bord ;
-* `nouveau`   — aucun ne correspond : une fiche est créée avec un code `OCR-xxxx` ;
-* `ambigu`    — plusieurs candidats proches : rien n'est décidé, l'utilisateur tranche.
-
-Le cas `ambigu` existe pour éviter le rattachement silencieux d'une facture au
-mauvais client — une erreur qui fausserait durablement son encours.
-"""
+"""Enregistrement d'une facture océrisée dans l'entrepôt, et rattachement client."""
 
 from __future__ import annotations
 
@@ -42,9 +9,7 @@ from datetime import date, datetime
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
-# Au-dessus : on considère que c'est le même client.
 SEUIL_RATTACHEMENT = 0.88
-# Entre les deux : on demande confirmation plutôt que de trancher seul.
 SEUIL_AMBIGUITE = 0.72
 
 
@@ -55,11 +20,7 @@ def _connect(read_only: bool = False):
 
 
 def _norm(s: str) -> str:
-    """Normalise une raison sociale pour la comparaison.
-
-    « Ling & Consulting S.A.R.L. » et « LING AND CONSULTING SARL » doivent se
-    ressembler : on retire les accents, la ponctuation, les formes juridiques et
-    les mots vides."""
+    """Normalise une raison sociale pour la comparaison."""
     s = unicodedata.normalize("NFKD", (s or "").lower())
     s = "".join(c for c in s if not unicodedata.combining(c))
     s = re.sub(r"\b(s\.?a\.?r\.?l|s\.?a|suarl|sarl|ste|societe|company|co|ltd|inc|group|groupe)\b",
@@ -74,43 +35,35 @@ def _similarite(a: str, b: str) -> float:
         return 0.0
     if na == nb:
         return 1.0
-    # Un nom entièrement contenu dans l'autre est un très fort indice
-    # (« ling and consulting » vs « ling and consulting tunisie »).
     if na in nb or nb in na:
         return 0.95
     return SequenceMatcher(None, na, nb).ratio()
 
 
-# Colonnes ajoutées après coup : la migration est additive (ADD COLUMN IF NOT
-# EXISTS), aucune ligne existante n'est réécrite. Une ligne ancienne a un `sens`
-# NULL, lu comme « vente » : c'était la seule possibilité avant.
 _NOUVELLES_COLONNES = [
-    ("sens", "VARCHAR"),                 # 'achat' | 'vente' (point de vue de l'entreprise)
-    ("fournisseur", "VARCHAR"),          # rattachement (achats)
+    ("sens", "VARCHAR"),
+    ("fournisseur", "VARCHAR"),
     ("fournisseur_code", "VARCHAR"),
-    ("fournisseur_lu", "VARCHAR"),       # tels que lus sur la facture
+    ("fournisseur_lu", "VARCHAR"),
     ("client_lu", "VARCHAR"),
     ("taux_tva", "DOUBLE"),
-    ("retenue_source", "DOUBLE"),        # TTC - net à payer, quand le net est inférieur
-    ("moteur", "VARCHAR"),               # 'layoutlmv3+regles' | 'regles'
-    ("statut_validation", "VARCHAR"),    # 'validee_telle_quelle' | 'corrigee' | 'sans_relecture'
-    ("corrections", "VARCHAR"),          # JSON {champ: {lu, valide}} — la matière de l'apprentissage
-    ("lecture_origine", "VARCHAR"),      # JSON des champs tels que lus, avant correction
-    ("champs_confiance", "VARCHAR"),     # JSON
-    ("avertissements", "VARCHAR"),       # JSON
-    ("fichier_sha256", "VARCHAR"),       # empreinte du document : doublon exact, retrouver le fichier
+    ("retenue_source", "DOUBLE"),
+    ("moteur", "VARCHAR"),
+    ("statut_validation", "VARCHAR"),
+    ("corrections", "VARCHAR"),
+    ("lecture_origine", "VARCHAR"),
+    ("champs_confiance", "VARCHAR"),
+    ("avertissements", "VARCHAR"),
+    ("fichier_sha256", "VARCHAR"),
     ("fichier_chemin", "VARCHAR"),
-    # Rapprochement avec l'ERP au moment de l'import (voir reconcile.py), puis
-    # recalculable après une mise à jour de l'ERP (`rerapprocher_imports`).
-    ("rapprochement_statut", "VARCHAR"),   # rapprochee | ecart_detecte | introuvable | hors_periode…
+    ("rapprochement_statut", "VARCHAR"),
     ("rapprochement_message", "VARCHAR"),
-    ("rapprochement_piece", "VARCHAR"),    # pièce ERP retenue
+    ("rapprochement_piece", "VARCHAR"),
     ("rapprochement_ecart", "DOUBLE"),
     ("rapproche_le", "TIMESTAMP"),
-    ("reglee_le", "DATE"),                 # sortie de l'échéancier (echeancier.py)
+    ("reglee_le", "DATE"),
 ]
 
-# Champs qu'un utilisateur peut corriger avant validation, et leur type.
 CHAMPS_VALIDABLES = {
     "numero": "texte", "date_facture": "date", "date_echeance": "date",
     "montant_ht": "montant", "montant_tva": "montant", "montant_ttc": "montant",
@@ -152,8 +105,6 @@ def _assurer_schema(con) -> None:
     for col, typ in _NOUVELLES_COLONNES:
         con.execute(f"ALTER TABLE factures_importees ADD COLUMN IF NOT EXISTS {col} {typ}")
 
-    # Ventes : l'ERP fait foi, les VENTES importées s'y ajoutent sans s'y confondre.
-    # Les achats n'y entrent jamais : ils gonfleraient le chiffre d'affaires.
     if _table_existe(con, "sales"):
         con.execute("""
             CREATE OR REPLACE VIEW sales_augmentee AS
@@ -171,7 +122,6 @@ def _assurer_schema(con) -> None:
                   FROM factures_importees
                  WHERE coalesce(sens, 'vente') = 'vente'
         """)
-    # Achats : même principe, symétrique.
     ocr_achats = """
         SELECT fournisseur, fournisseur_code, date, echeance, ht, ttc,
                FALSE AS est_avoir, NULL AS mode_regl,
@@ -228,7 +178,6 @@ def _rapprocher(tiers: str, connus: List[Dict[str, str]], genre: str) -> Dict[st
         key=lambda c: (-c["score"], c["nom"]))
     meilleurs = [c for c in scores if c["score"] >= SEUIL_AMBIGUITE][:5]
     if meilleurs and meilleurs[0]["score"] >= SEUIL_RATTACHEMENT:
-        # Deux candidats aussi bons l'un que l'autre : on ne tranche pas.
         ex_aequo = [c for c in meilleurs if abs(c["score"] - meilleurs[0]["score"]) < 0.02]
         if len(ex_aequo) > 1:
             return {"statut": "ambigu", "candidats": ex_aequo,
@@ -310,16 +259,12 @@ def _valeur(type_: str, v: Any) -> Any:
 
 
 def nettoyer_saisie(facture: Dict[str, Any]) -> Dict[str, Any]:
-    """Ne garde que les champs validables, typés. Une saisie ne peut pas injecter
-    de colonne arbitraire."""
+    """Ne garde que les champs validables, typés."""
     return {k: _valeur(t, facture.get(k)) for k, t in CHAMPS_VALIDABLES.items() if k in facture}
 
 
 def comparer(lu: Dict[str, Any], valide: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """Champs modifiés par l'utilisateur : {champ: {"lu": …, "valide": …}}.
-
-    C'est la matière première de la boucle d'apprentissage : chaque correction
-    est une annotation gratuite, faite sur une facture réelle."""
+    """Champs modifiés par l'utilisateur : {champ: {"lu": …, "valide": …}}."""
     diff = {}
     for k, t in CHAMPS_VALIDABLES.items():
         if k not in valide:
@@ -346,14 +291,7 @@ def _colonnes_rapprochement(r: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def rerapprocher_imports(seulement: Optional[List[str]] = None) -> Dict[str, Any]:
-    """Refait le rapprochement des factures déjà importées — après une mise à
-    jour de l'ERP, une facture « hors période » ou « introuvable » peut avoir
-    été saisie entre-temps.
-
-    `seulement` : limite aux statuts donnés (ex. ["hors_periode", "introuvable"]).
-    Le rapprochement lit l'entrepôt en lecture seule : les lectures se font
-    connexion d'écriture FERMÉE, puis les mises à jour en une fois.
-    """
+    """Refait le rapprochement des factures déjà importées — après une mise à jour des écritures, une…"""
     from .reconcile import reconcile_invoice
     con = _connect()
     try:
@@ -404,28 +342,7 @@ def importer_facture(facture: Dict[str, Any],
                      fichier_sha256: Optional[str] = None,
                      fichier_chemin: Optional[str] = None,
                      rapprochement: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Enregistre une facture océrisée, du bon côté (achat ou vente), et la
-    rattache à son tiers.
-
-    Args:
-        facture: champs VALIDÉS (éventuellement corrigés par l'utilisateur).
-        ocr: métadonnées de lecture (confiance, qualité).
-        fichier: nom du fichier d'origine.
-        utilisateur: auteur de l'import.
-        client_code / tiers_code: rattachement imposé par l'utilisateur (sortie
-            du cas `ambigu`). `client_code` pour une vente, `tiers_code` pour
-            les deux.
-        creer_client: autorise la création d'une fiche pour un tiers inconnu.
-        sens: 'vente' (nous sommes l'émetteur) ou 'achat' (nous sommes le client).
-        lecture: champs tels que lus AVANT correction. S'il est fourni, les
-            écarts avec `facture` sont enregistrés comme corrections.
-        moteur, fichier_sha256, fichier_chemin: traçabilité.
-        rapprochement: résultat de `reconcile_invoice` sur les valeurs validées,
-            calculé AVANT l'appel (il lit l'entrepôt en lecture seule).
-
-    Refus explicites plutôt qu'import silencieux : sans TTC ni numéro, pas
-    d'enregistrement ; un doublon n'est jamais réécrit.
-    """
+    """Enregistre une facture océrisée, du bon côté (achat ou vente), et la rattache à son tiers."""
     ocr = ocr or {}
     sens = sens or "vente"
     if sens not in ("achat", "vente"):
@@ -447,7 +364,6 @@ def importer_facture(facture: Dict[str, Any],
     try:
         _assurer_schema(con)
 
-        # ── Doublon exact : le même document, octet pour octet ──
         if fichier_sha256:
             deja = con.execute("""SELECT numero, coalesce(client_name, fournisseur), importe_le
                                   FROM factures_importees WHERE fichier_sha256 = ?""",
@@ -457,7 +373,6 @@ def importer_facture(facture: Dict[str, Any],
                         "erreur": f"Ce document a déjà été importé (facture {deja[0]}, "
                                   f"{deja[1]}, le {deja[2]:%d/%m/%Y})"}
 
-        # ── Rattachement ──
         if impose:
             connus = _clients_connus(con) if sens == "vente" else _fournisseurs_connus(con)
             trouve = next((c for c in connus if c["code"] == impose), None)
@@ -484,17 +399,12 @@ def importer_facture(facture: Dict[str, Any],
             nom = tiers or f"{genre.capitalize()} sans nom ({numero})"
             if sens == "vente":
                 code = impose or _code_nouveau_client(con, nom)
-                # Colonnes nommées : dim_client porte aussi `origine`, que la
-                # table renseigne par défaut (« application ») ; l'ETL le
-                # recalcule à la construction suivante (« ocr »).
                 con.execute("INSERT INTO dim_client (client_code, client_name) VALUES (?, ?)",
                             [code, nom])
             else:
                 code = impose or _code_nouveau_fournisseur(con)
             nouveau = True
 
-        # ── Doublon : même numéro, même tiers, même sens ──
-        # (le numéro seul ne suffit pas : deux fournisseurs numérotent tous deux « 000975 »)
         col_code = "client_code" if sens == "vente" else "fournisseur_code"
         deja = con.execute(f"""
             SELECT coalesce(client_name, fournisseur), ttc, importe_le FROM factures_importees
@@ -554,7 +464,7 @@ def importer_facture(facture: Dict[str, Any],
             "ok": True, "id": prochain_id, "numero": numero, "sens": sens,
             "tiers_code": code, "tiers_nom": nom, "genre_tiers": genre,
             "statut_tiers": "nouveau" if nouveau else "existant",
-            "statut_client": "nouveau" if nouveau else "existant",     # compatibilité
+            "statut_client": "nouveau" if nouveau else "existant",
             "motif_rattachement": rappro["motif"],
             "montant_ttc": float(ttc), "net_a_payer": net,
             "statut_validation": statut, "n_corrections": len(corrections),
@@ -567,7 +477,7 @@ def importer_facture(facture: Dict[str, Any],
                         + (f" {len(corrections)} correction(s) enregistrée(s)."
                            if corrections else "")),
         }
-        if sens == "vente":        # clés historiques, encore lues par l'interface
+        if sens == "vente":
             res.update({"client_code": code, "client_name": nom,
                         "n_factures_client": n_tiers, "total_importe_client_dt": total_tiers})
         return res
@@ -643,7 +553,7 @@ def stats_import() -> Dict[str, Any]:
             FROM factures_importees GROUP BY 1, 2""").fetchall()}
         return {
             "n_factures": int(r[0] or 0),
-            "n_clients": int(r[1] or 0),           # tiers distincts (compatibilité)
+            "n_clients": int(r[1] or 0),
             "total_ttc_dt": round(float(r[2] or 0), 3),
             "confiance_moyenne": round(float(r[3]), 1) if r[3] is not None else None,
             "n_clients_crees": int(n_nouveaux or 0),
@@ -652,7 +562,6 @@ def stats_import() -> Dict[str, Any]:
             "total_achats_ttc_dt": round(float(r[7] or 0), 3),
             "n_relues": relues, "n_corrigees": corrigees,
             "part_corrigees": round(100 * corrigees / relues, 1) if relues else None,
-            # ex. {"achat:introuvable": 3} : achats absents de l'ERP, à instruire
             "rapprochements": par_statut,
         }
     finally:

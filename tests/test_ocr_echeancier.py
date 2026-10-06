@@ -21,13 +21,13 @@ def entrepot(tmp_path, monkeypatch):
     con.execute("""CREATE TABLE sales (ent_id INT, piece_no VARCHAR, client VARCHAR, date DATE,
                    echeance DATE, ht DOUBLE, ttc DOUBLE, est_avoir BOOLEAN, mode_regl VARCHAR,
                    nbr_article INT, year INT, payment_delay_days INT, client_name VARCHAR)""")
-    for d in (60, 60, 90):                                 # client CP001 : 60 j habituels
+    for d in (60, 60, 90):
         con.execute("INSERT INTO sales VALUES (1,'V','CP001',DATE '2025-01-01',NULL,1,1,FALSE,NULL,1,2025,?,'HOPITAL MILITAIRE')", [d])
     con.execute("""CREATE TABLE purchases (ent_id INT, piece_no VARCHAR, fournisseur VARCHAR,
                    fournisseur_code VARCHAR, date DATE, echeance DATE, ht DOUBLE, ttc DOUBLE,
                    est_avoir BOOLEAN, mode_regl VARCHAR, tva DOUBLE, piece_externe VARCHAR,
                    year INT, payment_delay_days INT)""")
-    for d in (45, 45, -300):                               # BIOMERIEUX : 45 j (le -300 est écarté)
+    for d in (45, 45, -300):
         con.execute("INSERT INTO purchases VALUES (1,'A','BIOMERIEUX','F1',DATE '2025-01-01',NULL,1,1,FALSE,NULL,NULL,NULL,2025,?)", [d])
     con.execute("INSERT INTO purchases VALUES (2,'A','AUTRE','F9',DATE '2025-01-01',NULL,1,1,FALSE,NULL,NULL,NULL,2025,20)")
     con.close()
@@ -46,7 +46,7 @@ def _achat(numero, **k):
 def test_echeance_deduite_du_delai_du_fournisseur(entrepot):
     _achat("A1")
     l = echeancier(AUJ)["factures"][0]
-    assert l["echeance"] == "2026-10-16" and l["source_echeance"] == "delai_tiers"   # 1/9 + 45 j
+    assert l["echeance"] == "2026-10-16" and l["source_echeance"] == "delai_tiers"
     assert l["statut"] == "a_venir"
 
 
@@ -59,7 +59,7 @@ def test_echeance_lue_prime(entrepot):
 def test_fournisseur_inconnu_delai_moyen(entrepot):
     _achat("A1", fournisseur="NOUVEAU FOURNISSEUR")
     l = echeancier(AUJ)["factures"][0]
-    assert l["source_echeance"] == "delai_moyen" and l["delai_jours"] == 45   # médiane 20,45,45 → 45
+    assert l["source_echeance"] == "delai_moyen" and l["delai_jours"] == 45
 
 
 def test_net_a_payer_et_pas_le_ttc(entrepot):
@@ -80,12 +80,12 @@ def test_vente_avec_delai_client(entrepot):
                           "montant_ttc": 500.0}, sens="vente")
     e = echeancier(AUJ)
     l = e["factures"][0]
-    assert l["echeance"] == "2026-09-30" and l["sens"] == "vente"            # 1/8 + 60 j
+    assert l["echeance"] == "2026-09-30" and l["sens"] == "vente"
     assert e["a_encaisser_dt"] == 500.0 and e["a_payer_dt"] == 0
 
 
 def test_regroupement_par_mois_et_retard(entrepot):
-    _achat("A1", date_echeance="2026-09-01")                      # en retard
+    _achat("A1", date_echeance="2026-09-01")
     _achat("A2", date_echeance="2026-10-15")
     _achat("A3", date_echeance="2026-10-20", montant_ttc=500.0)
     imp.importer_facture({"numero": "V1", "client": "Hopital Militaire", "date_facture": "2026-09-01",

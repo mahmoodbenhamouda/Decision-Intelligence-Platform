@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * ViewModel — écran de connexion.
- *
- * Interroge vraiment `/api/health` avant la saisie (si le serveur est arrêté,
- * l'utilisateur le sait AVANT de taper son mot de passe), fait tourner le point
- * mis en avant, suit le pointeur pour les halos et soumet les identifiants.
- * Un utilisateur déjà connecté est renvoyé au tableau de bord.
- */
 import { useEffect, useRef, useState } from "react";
 import { saveSession } from "@/core/auth/session";
 import { useSession } from "@/core/auth/useSession";
@@ -27,18 +19,15 @@ export function useConnexion(nPoints: number) {
   const marque = useRef<HTMLElement | null>(null);
   const dejaConnecte = useSession()?.loggedIn === true;
 
-  // Déjà connecté → retour au tableau de bord.
   useEffect(() => {
     if (dejaConnecte) window.location.href = "/";
   }, [dejaConnecte]);
 
-  // ── Le point mis en avant tourne lentement ────────────────────────────────
   useEffect(() => {
     const t = setInterval(() => setActif(i => (i + 1) % nPoints), 3400);
     return () => clearInterval(t);
   }, [nPoints]);
 
-  // ── Le serveur répond-il ? La réponse vaut mieux avant la saisie ──────────
   useEffect(() => {
     const stop = new AbortController();
     const delai = setTimeout(() => stop.abort(), 6000);
@@ -49,7 +38,6 @@ export function useConnexion(nPoints: number) {
     return () => { clearTimeout(delai); stop.abort(); };
   }, []);
 
-  // ── Les halos suivent le pointeur : deux variables CSS, rien de plus ──────
   const suivre = (e: React.MouseEvent<HTMLElement>) => {
     const el = marque.current;
     if (!el) return;
@@ -74,8 +62,7 @@ export function useConnexion(nPoints: number) {
       saveSession(res.data as { role: string; email: string });
       window.location.href = "/";
     } catch {
-      // Le port exact vient de la configuration : l'écrire en dur ici a déjà
-      // envoyé un utilisateur chercher un serveur sur le mauvais port.
+
       setError("Service injoignable. Vérifiez que le serveur de l'application est démarré.");
       setEtat("hors_ligne");
     } finally {

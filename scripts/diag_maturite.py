@@ -1,26 +1,4 @@
-"""
-scripts/diag_maturite.py
-=========================
-Y a-t-il quelque chose à apprendre dans le taux de maturité du carnet ?
-
-La question posée
------------------
-À l'horizon h, la prévision d'encaissement vaut `acquis / taux_maturité`. Ce taux
-est aujourd'hui la MÉDIANE de tous les taux passés — une constante. À h=2 il vaut
-environ 0,53, et c'est la seule grandeur estimée de la formule : tout le reste
-est lu dans les factures déjà émises.
-
-Si ce taux varie systématiquement — selon le mois, le niveau d'activité, la
-tendance — alors une médiane constante laisse du signal sur la table, et un
-modèle peut faire mieux. S'il ne varie que par bruit, aucun modèle n'y changera
-rien et il faut s'arrêter là.
-
-Ce script tranche AVANT de modéliser. C'est l'étape qui a manqué sur la prévision
-de demande, où plusieurs modèles ont été entraînés avant de découvrir que la
-période de test changeait de régime.
-
-    .venv\\Scripts\\python.exe scripts\\diag_maturite.py
-"""
+"""Y a-t-il quelque chose à apprendre dans le taux de maturité du carnet ?"""
 
 from __future__ import annotations
 
@@ -37,7 +15,7 @@ from ml_engine.forecasting.carnet_echeances import (  # noqa: E402
     _acquis, _libelle, _total, charger_factures)
 
 H = 2
-DEBUT = 2021 * 12          # cf. trou d'ERP 2018-2020
+DEBUT = 2021 * 12
 
 
 def main() -> int:
@@ -46,7 +24,6 @@ def main() -> int:
     emissions = sorted({em for em, _, _ in factures})
     fin = max(emissions) - 1
 
-    # ── Panel : une ligne par origine exploitable ───────────────────────────
     lignes = []
     for t in range(DEBUT, fin - H + 1):
         cible = t + H
@@ -54,8 +31,6 @@ def main() -> int:
         if tot <= 0:
             continue
         acq = _acquis(factures, t, cible)
-        # Niveau d'activité connu à l'origine : total des 3 derniers mois dont
-        # l'échéance est entièrement passée. Aucune information future.
         recents = [_total(factures, k) for k in range(t - 2, t + 1)]
         recents = [v for v in recents if v > 0]
         if not recents:
@@ -90,7 +65,6 @@ def main() -> int:
     print("\n  Si l'écart-type est faible devant la médiane, le taux est une "
           "constante\n  et il n'y a rien à apprendre.")
 
-    # ── 2. Le taux dépend-il du mois calendaire ? ───────────────────────────
     print(f"\n=== 2. LE TAUX DEPEND-IL DU MOIS ? ===")
     par_mois = {}
     for l in lignes:
@@ -106,7 +80,6 @@ def main() -> int:
         print("  -> Si l'étendue dépasse nettement l'écart-type, le mois porte "
               "un signal.")
 
-    # ── 3. Corrélations avec le contexte ────────────────────────────────────
     print(f"\n=== 3. CORRELATIONS (Spearman, robuste aux valeurs extremes) ===")
     try:
         from scipy.stats import spearmanr
@@ -120,11 +93,6 @@ def main() -> int:
             x = np.array([l[nom] for l in lignes])
             print(f"  {nom:<18} corr={np.corrcoef(x, taux)[0, 1]:+.3f}")
 
-    # ── 4. Ce qu'une estimation contextuelle rapporterait ───────────────────
-    #
-    # Comparaison honnête : à chaque origine, on n'utilise que les origines
-    # STRICTEMENT antérieures pour estimer le taux. Trois estimateurs sont mis
-    # en concurrence sur exactement les mêmes cibles.
     print(f"\n=== 4. ERREUR D'ESTIMATION DU TAUX (walk-forward) ===")
     err_med, err_mois, err_recent = [], [], []
     for i in range(12, len(lignes)):

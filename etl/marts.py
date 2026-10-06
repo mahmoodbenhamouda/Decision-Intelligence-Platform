@@ -11,15 +11,39 @@ partir des faits, pour les écrans et les modèles qui les relisent souvent.
 | mart_demande_client_produit   | client × produit               | segmentation, stock simulé  |
 | mart_marge_client_mois        | client × mois                  | tableau de bord, qualité    |
 | mart_qualite_marge            | une ligne : diagnostic global  | tableau de bord             |
+| mart_marge_categorie_mois     | client × catégorie × mois      | onglet Marge                |
+| mart_marge_produit            | produit × client × année       | onglet Marge                |
 
 Tous les montants sont SIGNÉS : une ligne de retour vient en déduction. Le
 montant brut des lignes est toujours positif ; l'utiliser comptait les retours
 comme des ventes, exactement comme les avoirs gonflaient le chiffre d'affaires.
+
+Les deux marts de marge DÉCOMPOSÉE portent le code client et l'année : sans eux,
+un filtre du tableau de bord ne pourrait pas s'appliquer et la décomposition
+contredirait le total affiché juste au-dessus.
 """
 
 from __future__ import annotations
 
 from etl.regles import FAMILLES_HORS_ACTIVITE
+
+#: Catégorie d'activité, regroupée sur les préfixes réels de la famille ERP.
+#: Même expression que `ml_engine.analytics.marge_client` : les deux doivent
+#: classer une ligne à l'identique, sinon la décomposition ne somme plus au
+#: total. `autre` recueille la pollution « fournitures d'art », jamais devinée.
+CATEGORIE_SQL = """
+    CASE
+        WHEN upper(trim(famille)) LIKE 'REACTIF%'    THEN 'reactif'
+        WHEN upper(trim(famille)) LIKE 'EQUIPEMENT%' THEN 'equipement'
+        WHEN upper(trim(famille)) LIKE 'SERVICE%'    THEN 'service'
+        WHEN upper(trim(famille)) LIKE 'PRESTATION%' THEN 'service'
+        ELSE 'autre'
+    END
+"""
+
+#: Règle de nettoyage du coût de revient, identique à `mart_marge_client_mois`.
+#: Un coût supérieur à 5 fois le prix de vente est une erreur de saisie ERP.
+COUT_EXPLOITABLE = "cout IS NOT NULL AND abs(cout) <= 5 * abs(ca)"
 
 
 def construire(con) -> None:
@@ -93,6 +117,74 @@ def construire(con) -> None:
           count(*) FILTER (WHERE ca = 0 AND cout > 0)            AS lignes_offertes,
           coalesce(sum(cout) FILTER (WHERE ca = 0 AND cout > 0), 0)    AS cout_offert
         FROM (SELECT montant AS ca, cout FROM fait_ligne_vente)
+    """)
+
+    # MARGE PAR CATÉGORIE. Overlyne distribue du diagnostic in vitro : les
+    # réactifs sont des consommables récurrents, l'équipement est l'automate qui
+    # les consomme. Les deux n'ont pas du tout le même taux de marge, et un total
+    # unique le cachait. Même règle de coût que le mart client × mois, donc la
+    # somme des catégories redonne exactement la marge brute affichée.
+    con.execute(f"""
+        CREATE OR REPLACE TABLE mart_marge_categorie_mois AS
+        WITH lignes AS (
+            SELECT client_code                 AS client,
+                   date,
+                   {CATEGORIE_SQL}             AS categorie,
+                   montant                     AS ca,
+                   cout
+            FROM fait_ligne_vente
+            WHERE client_code IS NOT NULL AND client_code <> ''
+        )
+        SELECT client,
+               categorie,
+               year(date)                      AS year,
+               strftime(date, '%Y-%m')         AS period,
+               sum(ca)                         AS ca_ligne,
+               sum(cout)                       AS cout_revient,
+               sum(ca) - sum(cout)             AS marge,
+               count(*) FILTER (WHERE ca >= 0) AS n_lignes
+        FROM lignes
+        WHERE ca IS NOT NULL AND ca <> 0 AND {COUT_EXPLOITABLE}
+        GROUP BY client, categorie, year(date), strftime(date, '%Y-%m')
+    """)
+
+    # MARGE PAR PRODUIT. Le grain porte le client ET le mois pour que TOUS les
+    # filtres du tableau de bord s'appliquent — période comprise. Sans le mois,
+    # la liste des produits aurait porté sur tout l'historique pendant que le
+    # total affiché juste au-dessus portait sur douze mois : les deux se
+    # seraient contredits, ce qui est précisément le défaut qu'on corrige ici.
+    #
+    # `designation` est l'attribut dégénéré de la facture : une même référence
+    # en porte parfois plusieurs, on garde la plus fréquente pour l'affichage
+    # et on agrège sur la RÉFÉRENCE.
+    con.execute(f"""
+        CREATE OR REPLACE TABLE mart_marge_produit AS
+        WITH lignes AS (
+            SELECT client_code                 AS client,
+                   reference,
+                   designation,
+                   date,
+                   {CATEGORIE_SQL}             AS categorie,
+                   montant                     AS ca,
+                   cout, qte
+            FROM fait_ligne_vente
+            WHERE reference IS NOT NULL AND reference <> ''
+              AND client_code IS NOT NULL AND client_code <> ''
+        )
+        SELECT reference,
+               mode(designation)               AS designation,
+               mode(categorie)                 AS categorie,
+               client,
+               year(date)                      AS year,
+               strftime(date, '%Y-%m')         AS period,
+               sum(ca)                         AS ca_ligne,
+               sum(cout)                       AS cout_revient,
+               sum(ca) - sum(cout)             AS marge,
+               sum(qte)                        AS qte,
+               count(*) FILTER (WHERE ca >= 0) AS n_lignes
+        FROM lignes
+        WHERE ca IS NOT NULL AND ca <> 0 AND {COUT_EXPLOITABLE}
+        GROUP BY reference, client, year(date), strftime(date, '%Y-%m')
     """)
 
     # Familles de produits (REACTIF, EQUIPEMENT, SERVICE… ~99 % du CA), hors

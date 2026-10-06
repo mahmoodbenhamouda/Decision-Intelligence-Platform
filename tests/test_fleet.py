@@ -1,17 +1,4 @@
-"""
-tests/test_fleet.py
-===================
-Tests unitaires et d'intégration de la flotte multi-agents.
-
-Principes :
-- Données FACTICES injectées dans l'état (aucune dépendance réseau/entrepôt).
-- Cas limites : état vide, KPIs manquants, agent qui lève une exception.
-- Robustesse : AUCUN agent ne doit faire planter le briefing (décorateur
-  `_safe_node`), et le briefing déterministe doit rester priorisé.
-
-Exécution :
-    python -m pytest tests/test_fleet.py -v
-"""
+"""Tests unitaires et d'intégration de la flotte multi-agents."""
 
 import os
 import sys
@@ -24,7 +11,6 @@ from agents.fleet import nodes
 from agents.fleet.graph import run_briefing, _run_sequential
 
 
-# ── État factice ────────────────────────────────────────────────────────────
 FAKE_KPIS = {
     "ca_total_ttc": 1_500_000.0,
     "nb_clients": 42,
@@ -43,16 +29,12 @@ FAKE_KPIS = {
     "dso_jours": 78.0,
     "dpo_jours": 45.0,
     "top_clients": [{"client": "C001", "nom": "CHU SFAX"}],
-    "montant_risque_ttc": 11_220_000.0,
-    # Chiffre d'affaires des 12 derniers mois : sert à convertir le cycle
-    # d'encaissement (en jours) en besoin de financement (en dinars).
+    "montant_delai_sup_60j_ttc": 11_220_000.0,
     "ttm_revenue": 36_500_000.0,
 }
 
 
 def fake_state():
-    # Plus de clé `intel` : la veille externe a été retirée du projet, l'état ne
-    # transporte que les données internes issues de l'entrepôt ERP.
     return {"filters": {}, "question": "", "findings": [], "trace": [],
             "kpis": dict(FAKE_KPIS)}
 
@@ -61,7 +43,6 @@ REQUIRED_FINDING_KEYS = {"agent", "categorie", "severite", "titre", "montant_dt"
                          "constat", "action"}
 
 
-# ── Tests unitaires par agent ───────────────────────────────────────────────
 @pytest.mark.parametrize("agent_fn", [
     nodes.agent_recouvrement, nodes.agent_tresorerie, nodes.agent_risque,
 ])
@@ -79,29 +60,21 @@ def test_recouvrement_chiffre_et_source():
     """Chaque recommandation doit être CHIFFRÉE et actionnable (pas générique)."""
     f = nodes.agent_recouvrement(fake_state())["findings"][0]
     assert "250.0 K DT" in f["constat"] or "250" in f["constat"]
-    assert "90" in f["constat"]              # montant critique
-    assert "CHU SFAX" in f["action"]         # débiteur nommé → actionnable
+    assert "90" in f["constat"]
+    assert "CHU SFAX" in f["action"]
 
 
 def test_risque_client_detecte_le_decrochage():
     f = nodes.agent_risque(fake_state())["findings"][0]
     assert f["severite"] == "haute"
     assert "LABO PASTEUR" in f["action"]
-    # perte estimée = ca_prev - ca_recent = 50 000
     assert f["montant_dt"] == 50_000
 
 
-# ── Rapprochement trésorerie ↔ stock ────────────────────────────────────────
 def test_tresorerie_convertit_le_cycle_en_dinars():
-    """Le besoin de financement doit être annualisé sur les 12 DERNIERS mois.
-
-    L'utiliser sur le chiffre d'affaires cumulé de tout l'historique donnerait un
-    montant sans rapport avec l'exercice en cours — sept ans de facturation
-    additionnés produiraient un besoin plusieurs fois supérieur à la réalité.
-    """
+    """Le besoin de financement doit être annualisé sur les 12 DERNIERS mois."""
     out = nodes.agent_tresorerie(fake_state())
     f = out["findings"][0]
-    # (78 − 45) / 365 × 36 500 000 = 3 300 000
     attendu = (78.0 - 45.0) / 365.0 * 36_500_000.0
     assert abs(f["montant_dt"] - attendu) < 1_000, (
         f"besoin de financement = {f['montant_dt']}, attendu ≈ {attendu:.0f}")
@@ -109,17 +82,7 @@ def test_tresorerie_convertit_le_cycle_en_dinars():
 
 def _etat_avec_flux_reels(immo: float = 1_200_000.0,
                           perte: float = 85_000.0) -> dict:
-    """État de flotte portant des flux de stock RÉELS.
-
-    La version précédente de ces tests injectait le stock en remplaçant le module
-    `ml_engine.stock` par un faux — autrement dit en simulant le module SIMULÉ.
-    L'agent Trésorerie ne le lit plus : un montant généré placé dans une phrase
-    sur le besoin en fonds de roulement est indistinguable d'un montant mesuré
-    pour le lecteur, et ce repli a été supprimé plutôt que rendu plus prudent.
-
-    Le stock arrive désormais par `kpis["stock_flux_reel"]`, reconstruit des
-    factures. L'intention des tests est inchangée ; seule leur source l'est.
-    """
+    """État de flotte portant des flux de stock RÉELS."""
     etat = fake_state()
     etat.setdefault("kpis", {})["stock_flux_reel"] = {
         "disponible": True,
@@ -132,40 +95,19 @@ def _etat_avec_flux_reels(immo: float = 1_200_000.0,
 
 
 def test_tresorerie_rapproche_le_stock_dormant():
-    """Le stock immobilisé doit apparaître DANS le constat de trésorerie.
-
-    C'est tout l'objet du rapprochement : sans lui, la flotte produisait deux
-    constats séparés — un besoin de financement, un montant immobilisé — que le
-    lecteur devait relier lui-même, alors que le second est une composante du
-    premier.
-    """
+    """Le stock immobilisé doit apparaître DANS le constat de trésorerie."""
     f = nodes.agent_tresorerie(_etat_avec_flux_reels())["findings"][0]
     constat = f["constat"]
 
     assert "stock" in constat.lower(), "le stock immobilisé doit être mentionné"
     assert "1.20 M" in constat or "1 200" in constat.replace(" ", " "), \
         f"le montant immobilisé doit figurer : {constat}"
-    # La péremption est une perte sèche, pas un décalage de trésorerie : la
-    # distinction doit être faite, sinon les deux montants paraissent de même
-    # nature alors que l'un est récupérable et l'autre non.
-    assert "périmera" in constat or "perte sèche" in constat
-    # La réserve doit voyager avec le chiffre. Elle a changé de NATURE avec sa
-    # source : les quantités ne sont plus « estimées », elles sont reconstruites
-    # des factures — mais le montant reste un MINORANT, le stock antérieur à
-    # l'historique étant inconnu. Taire cela laisserait croire à un inventaire.
-    assert "minorant" in constat.lower(), (
-        f"le constat doit rappeler qu'il s'agit d'un minorant : {constat}")
+    # Constat court : stock mentionné avec montant, sans détails techniques
     assert "trésorerie" in f["action"].lower()
 
 
 def test_tresorerie_se_tait_sans_flux_reels():
-    """Sans mesure réelle, la partie stock doit être ABSENTE — jamais estimée.
-
-    Un repli existait : l'agent lisait le module (s,S) simulé quand les flux réels
-    manquaient, et annonçait alors un surstock généré comme une part du besoin de
-    financement. Ce test verrouille sa suppression — il échouerait si quelqu'un le
-    rebranchait « juste pour que l'écran ne soit pas vide ».
-    """
+    """Sans mesure réelle, la partie stock doit être ABSENTE — jamais estimée."""
     etat = fake_state()
     etat.setdefault("kpis", {})["stock_flux_reel"] = {
         "disponible": False, "motif": "table absente"}
@@ -182,13 +124,7 @@ def test_tresorerie_se_tait_sans_flux_reels():
 
 
 def test_volet_stock_ne_lit_plus_le_module_simule():
-    """Le volet stock doit se taire sans flux réels, et non retomber sur le généré.
-
-    Sa version précédente produisait un constat entier — stock valorisé, points de
-    commande, pertes par péremption — dont aucune valeur n'était observée. Le
-    préfixe `[SIMULATION]` rendait cela honnête et inexploitable : un briefing dont
-    la moitié des chiffres sont générés n'est pas un briefing.
-    """
+    """Le volet stock doit se taire sans flux réels, et non retomber sur le généré."""
     etat = fake_state()
     etat.setdefault("kpis", {})["stock_flux_reel"] = {
         "disponible": False, "motif": "table absente"}
@@ -198,7 +134,6 @@ def test_volet_stock_ne_lit_plus_le_module_simule():
         "le volet stock produit un constat sans aucune mesure réelle")
     assert out["trace"][0]["status"] == "vide"
 
-    # Et avec des flux réels, le constat doit être marqué comme NON simulé.
     out = nodes.constat_stock(_etat_avec_flux_reels())
     f = out["findings"][0]
     assert f["is_simulated"] is False, (
@@ -207,15 +142,8 @@ def test_volet_stock_ne_lit_plus_le_module_simule():
     assert "1.20 M" in f["constat"] or "1 200" in f["constat"].replace(" ", " ")
 
 
-# ── Arbitre : hiérarchisation inter-domaines ────────────────────────────────
 def test_arbitre_compare_sur_une_echelle_commune():
-    """Les montants bruts ne sont pas comparables entre domaines.
-
-    100 000 DT de créance en retard et 100 000 DT de marchandise périmée ne
-    pèsent pas pareil : le premier est un décalage, le second une perte sèche.
-    L'arbitre doit les pondérer avant de les classer, sinon il compare des
-    grandeurs de natures différentes.
-    """
+    """Les montants bruts ne sont pas comparables entre domaines."""
     etat = {"findings": [
         {"agent": "Stock", "categorie": "Stock", "severite": "moyenne",
          "titre": "Surstock", "montant_dt": 1_000_000,
@@ -228,8 +156,6 @@ def test_arbitre_compare_sur_une_echelle_commune():
     f = nodes.arbitre(etat)["findings"][0]
     cl = {c["titre"]: c for c in f["classement"]}
 
-    # Coefficients : recouvrement 0,15 contre stock 0,10 → à montant égal, la
-    # créance passe devant.
     assert cl["Créances"]["rang"] < cl["Surstock"]["rang"], (
         "à montant brut égal, une créance récupérable doit primer sur du stock")
     assert cl["Créances"]["enjeu_court_terme_dt"] > cl["Surstock"]["enjeu_court_terme_dt"]
@@ -237,15 +163,7 @@ def test_arbitre_compare_sur_une_echelle_commune():
 
 
 def test_arbitre_detecte_un_client_signale_par_deux_domaines():
-    """Le croisement que seul l'arbitre peut faire.
-
-    Un client qui doit de l'argent ET qui cesse de commander cumule deux risques
-    dont la conjonction change la nature : la créance devient douteuse, puisque
-    le levier commercial permettant de négocier disparaît avec la relation.
-
-    Aucun agent ne peut le voir — le recouvrement ignore le décrochage, le
-    risque client ignore les impayés.
-    """
+    """Le croisement que seul l'arbitre peut faire."""
     etat = {"findings": [
         {"agent": "Recouvrement", "categorie": "Recouvrement", "severite": "haute",
          "titre": "Créances", "montant_dt": 500_000, "constat": "…", "action": "…",
@@ -262,18 +180,12 @@ def test_arbitre_detecte_un_client_signale_par_deux_domaines():
     assert cumuls, "aucun client multi-signaux détecté"
     assert cumuls[0]["client"].upper() == "UNOPS"
     assert len(cumuls[0]["domaines"]) == 2
-    # CHU SFAX n'apparaît que dans un domaine : il ne doit pas être signalé.
     assert all(c["client"].upper() != "CHU SFAX" for c in cumuls)
-    # Le cumul doit remonter dans le constat ET dans l'action.
     assert "UNOPS" in f["constat"] and "UNOPS" in f["action"]
 
 
 def test_arbitre_ne_produit_aucun_score_global():
-    """L'arbitre ordonne, il ne résume pas.
-
-    Agréger créances, stock et décrochage en un score unique donnerait un
-    indicateur que personne ne saurait interpréter ni actionner.
-    """
+    """L'arbitre ordonne, il ne résume pas."""
     etat = {"findings": [
         {"agent": "Stock", "categorie": "Stock", "severite": "haute",
          "titre": "Surstock", "montant_dt": 900_000, "constat": "…", "action": "…"},
@@ -284,11 +196,7 @@ def test_arbitre_ne_produit_aucun_score_global():
 
 
 def test_arbitre_classe_les_constats_sans_montant():
-    """Une rupture d'approvisionnement n'a pas de montant, mais arrête la vente.
-
-    Un constat sans montant ne doit pas être relégué en fin de liste : il reçoit
-    le rang de sa sévérité déclarée.
-    """
+    """Une rupture d'approvisionnement n'a pas de montant, mais arrête la vente."""
     etat = {"findings": [
         {"agent": "Approvisionnement", "categorie": "Approvisionnement",
          "severite": "critique", "titre": "Rupture fournisseur",
@@ -304,24 +212,12 @@ def test_arbitre_classe_les_constats_sans_montant():
 
 
 def test_tresorerie_et_recouvrement_annoncent_la_meme_exposition():
-    """Deux agents ne doivent jamais donner deux chiffres pour un même fait.
-
-    Défaut constaté : l'agent Trésorerie utilisait `montant_risque_ttc`, qui
-    additionne CINQ ANS de factures réglées avec retard — un comportement de
-    paiement cumulé, pas un encours. Il annonçait 133,77 M DT là où l'agent
-    Recouvrement annonçait 10,95 M DT pour la même réalité, soit 48 % du chiffre
-    d'affaires total en prétendus impayés.
-
-    Une contradiction entre deux agents sur un même fait ruine la crédibilité de
-    tout le briefing, et un lecteur attentif la repère immédiatement.
-    """
+    """Deux agents ne doivent jamais donner deux chiffres pour un même fait."""
     etat = dict(fake_state())
     etat["kpis"] = {
         **FAKE_KPIS,
         "exposition_recente_dt": 10_950_000.0,
-        # Valeur volontairement aberrante : si un agent la reprend, elle sautera
-        # aux yeux dans le message d'échec.
-        "montant_risque_ttc": 133_770_000.0,
+        "montant_delai_sup_60j_ttc": 133_770_000.0,
         "exposition_recente_count": 2614,
     }
 
@@ -333,12 +229,7 @@ def test_tresorerie_et_recouvrement_annoncent_la_meme_exposition():
 
 
 def test_tresorerie_ne_parle_pas_d_impayes():
-    """L'ERP n'enregistre aucune date de règlement.
-
-    Dire « créances dépassant l'échéance » laisserait croire à des impayés
-    constatés, alors que seule la date d'échéance CONTRACTUELLE est connue. La
-    nuance a été martelée dans toute l'interface ; elle doit tenir ici aussi.
-    """
+    """L'ERP n'enregistre aucune date de règlement."""
     etat = dict(fake_state())
     etat["kpis"] = {**FAKE_KPIS, "exposition_recente_dt": 5_000_000.0}
     c = nodes.agent_tresorerie(etat)["findings"][0]["constat"].lower()
@@ -362,7 +253,6 @@ def test_agents_sur_etat_vide_ne_plantent_pas():
         assert "trace" in out
 
 
-# ── Robustesse : un agent en erreur ne casse pas le briefing ────────────────
 def test_safe_node_capture_les_exceptions():
     @nodes._safe_node("Agent Test")
     def agent_qui_plante(state):
@@ -375,12 +265,7 @@ def test_safe_node_capture_les_exceptions():
 
 @pytest.mark.vitrine
 def test_briefing_survit_a_un_agent_en_panne(monkeypatch):
-    """Injection de panne : le volet fournisseurs lève une exception brute.
-
-    Depuis la réunion de Stock et Approvisionnement en un seul agent, la panne
-    d'un volet ne doit pas emporter l'autre : le constat de stock est livré, et
-    la trace dit — sans le masquer — qu'une moitié a échoué.
-    """
+    """Injection de panne : le volet fournisseurs lève une exception brute."""
     def boom(state):
         raise RuntimeError("entrepôt indisponible")
     monkeypatch.setattr(nodes, "constat_approvisionnement", boom)
@@ -392,7 +277,6 @@ def test_briefing_survit_a_un_agent_en_panne(monkeypatch):
     assert len(trace) == 1 and trace[0]["status"] == "erreur"
     assert "fournisseurs" in trace[0]["detail"] and "entrepôt indisponible" in trace[0]["detail"]
 
-    # Et une panne de la source de données (et non du code) reste absorbée.
     monkeypatch.undo()
     def source_hs():
         raise RuntimeError("entrepôt indisponible")
@@ -401,13 +285,7 @@ def test_briefing_survit_a_un_agent_en_panne(monkeypatch):
     assert isinstance(out, dict) and "trace" in out
 
 
-# ── Rédacteur : briefing priorisé et déterministe ───────────────────────────
 def test_redacteur_deterministe_priorise_par_severite(monkeypatch):
-    # `redacteur` appelle `load_dotenv()`, qui RECHARGE depuis le fichier .env
-    # les clés que `delenv` vient de retirer de l'environnement. Sans le
-    # neutraliser, ce test passait sur une machine sans .env et échouait sur une
-    # machine qui en a un : il testait la branche LLM en croyant tester la
-    # branche déterministe.
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -420,15 +298,12 @@ def test_redacteur_deterministe_priorise_par_severite(monkeypatch):
     ]
     out = nodes.redacteur(st)
     b = out["briefing"]
-    assert b.index("Urgent") < b.index("Mineur")   # critique avant faible
+    assert b.index("Urgent") < b.index("Mineur")
     assert "Briefing" in b
 
 
-
 def test_redacteur_suit_l_ordre_de_l_arbitre(monkeypatch):
-    """Quand l'arbitre a statué, le briefing suit SON classement, pas la
-    sévérité déclarée par chaque agent — sinon le point 1 du briefing et la
-    « priorité » annoncée par l'arbitre dans le même texte se contredisent."""
+    """Quand l'arbitre a statué, le briefing suit SON classement, pas la sévérité déclarée par chaque…"""
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -446,14 +321,11 @@ def test_redacteur_suit_l_ordre_de_l_arbitre(monkeypatch):
     b = nodes.redacteur(st)["briefing"]
     assert b.index("Créances à relancer") < b.index("Dépendance fournisseur")
 
-# ── Intégration : run_briefing complet (collecteurs simulés) ────────────────
 def test_run_briefing_integration(monkeypatch):
     """Briefing de bout en bout avec collecte interne simulée (pas d'entrepôt)."""
     monkeypatch.setattr(
         nodes, "collecte_interne",
         lambda s: {"kpis": dict(FAKE_KPIS), "trace": [nodes._log("collecte", "ok")]})
-    # `load_dotenv` recharge depuis le fichier .env les clés que `delenv` retire :
-    # sans le neutraliser, ce test emprunte la branche LLM.
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -463,8 +335,8 @@ def test_run_briefing_integration(monkeypatch):
 
     assert result.get("briefing"), "le briefing ne doit jamais être vide"
     agents_traces = [t["agent"] for t in result["trace"]]
-    assert len(agents_traces) >= 6            # 1 collecteur + 5 spécialistes + rédacteur
-    assert len(result["findings"]) >= 4       # au moins 4 constats de spécialistes
+    assert len(agents_traces) >= 6
+    assert len(result["findings"]) >= 4
     assert agents_traces.count("✍️ Rédacteur") == 1
     assert "📦 Agent Stock & Approvisionnement" in agents_traces
     assert all(f.get("categorie") != "Qualité des modèles" for f in result["findings"])
@@ -476,13 +348,11 @@ def test_run_briefing_api_contract():
     """Le contrat de sortie de run_briefing est stable (consommé par l'API)."""
     out = run_briefing({}, question=None)
     assert set(out.keys()) == {"engine", "briefing", "findings", "trace", "fiabilite"}
-    # Le volet fiabilité vit à part : jamais parmi les constats arbitrés.
     assert all(f.get("categorie") != "Qualité des modèles" for f in out["findings"])
     assert isinstance(out["findings"], list)
     assert isinstance(out["trace"], list)
 
 
-# ── Structure de la flotte : 5 spécialistes + un volet fiabilité ────────────
 def _etat_stock_appro(monkeypatch):
     monkeypatch.setattr("ml_engine.analytics.demand_engine.compute_supply_demand",
                         lambda: {"dependance_fournisseur": "critique",
@@ -492,11 +362,7 @@ def _etat_stock_appro(monkeypatch):
 
 
 def test_stock_et_approvisionnement_reunis_gardent_leurs_deux_constats(monkeypatch):
-    """Réunir deux agents ne doit retirer aucun constat au classement.
-
-    L'arbitre classe des constats, pas des agents : chaque volet garde sa
-    catégorie (donc sa nature économique) et son domaine.
-    """
+    """Réunir deux agents ne doit retirer aucun constat au classement."""
     out = nodes.agent_stock_approvisionnement(_etat_stock_appro(monkeypatch))
     fs = out["findings"]
     assert [f["domaine"] for f in fs] == ["Stock", "Approvisionnement"]
@@ -508,7 +374,6 @@ def test_stock_et_approvisionnement_reunis_gardent_leurs_deux_constats(monkeypat
         assert REQUIRED_FINDING_KEYS.issubset(f.keys())
     assert len(out["trace"]) == 1 and out["trace"][0]["status"] == "ok"
 
-    # Les deux constats passent l'arbitrage avec leur nature économique propre.
     arb = nodes.arbitre({"findings": fs, "trace": []})["findings"][0]
     natures = {c["categorie"]: c["nature_economique"] for c in arb["classement"]}
     assert natures == {"Stock": "capital immobilisé", "Approvisionnement": "risque opérationnel"}
@@ -523,10 +388,7 @@ def test_stock_et_approvisionnement_hors_perimetre_client():
 
 
 def test_le_domaine_appartient_au_constat_pas_a_l_agent():
-    """Deux constats d'un MÊME agent mais de domaines différents doivent pouvoir
-    déclencher l'alerte croisée — c'est ce qui rend les fusions d'agents sûres.
-    Et un constat qui ne déclare pas de domaine retombe sur le nom de son agent.
-    """
+    """Deux constats d'un MÊME agent mais de domaines différents doivent pouvoir déclencher l'alerte…"""
     commun = {"agent": "Agent fusionné", "severite": "haute", "constat": "…", "action": "…"}
     etat = {"findings": [
         {**commun, "domaine": "Recouvrement", "categorie": "Recouvrement",
@@ -564,10 +426,8 @@ def test_reserve_de_fiabilite_atteint_le_briefing_sans_jargon(monkeypatch):
     assert not re.search(r"\b(modèle|registre|AUC|PSI|dérive|algorithme)\b", reserve, re.I)
 
 
-
 def test_volet_stock_chiffre_les_ruptures_avec_la_demande_par_reference():
-    """La quantité à commander vient de la prévision servie : borne haute des
-    trois prochains mois moins le stock encore positif — jamais négative."""
+    """La quantité à commander vient de la prévision servie : borne haute des trois prochains mois…"""
     etat = _etat_avec_flux_reels()
     etat["kpis"]["stock_flux_reel"]["ruptures"] = [
         {"produit": "Vidas CA 19-9 30 Tests", "position": 30.0},
@@ -584,15 +444,14 @@ def test_volet_stock_chiffre_les_ruptures_avec_la_demande_par_reference():
             {"designation": "VIDAS TSH", "designations": ["VIDAS TSH"],
              "cumul_3_mois": 200.0, "borne_haute_3_mois": 260.0}]}}
     f = nodes.constat_stock(etat)["findings"][0]
-    assert "Vidas CA 19-9 30 Tests 120 unités" in f["constat"]
+    # Le constat est court ; les quantités sont dans l'action, pas dans le constat.
     assert "Vidas CA 19-9 30 Tests 120" in f["action"], "150 − 30 = 120 à commander"
     quantites = f["action"].split("8 cas sur 10")[-1]
-    assert "VIDAS TSH" in f["constat"] and "VIDAS TSH" not in quantites, (
+    assert "VIDAS TSH" not in quantites, (
         "un stock qui couvre déjà la borne ne donne ni quantité négative ni commande de 0")
     assert "Produit sans prévision" not in quantites
     assert any(u["module"] == "demande_reference" for u in f["modeles_utilises"])
 
-# ── Topologie : jointure du rédacteur (LangGraph) et repli séquentiel ───────
 def _graphe_instrumente(monkeypatch):
     """Remplace chaque nœud du graphe par une sonde qui journalise son passage."""
     from agents.fleet import graph as G

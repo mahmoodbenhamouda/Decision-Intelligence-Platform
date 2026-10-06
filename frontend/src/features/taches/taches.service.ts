@@ -1,11 +1,9 @@
-/**
- * Model — accès à l'API des tâches (/api/taches).
- */
-import { api, apiEnvoyer } from "@/core/api/client";
-import type { Confiee, DonneesSuivi, EmployeAssignable, NouvelleTache } from "./taches.types";
 
-/** Alertes déjà confiées, indexées par l'intitulé de l'alerte d'origine.
- *  `null` si le compte n'y a pas accès (compte client) : jamais bloquant. */
+import { api, apiEnvoyer } from "@/core/api/client";
+import type {
+  Confiee, DonneesSuivi, EmployeAssignable, EtatDelegation, NouvelleTache, PassageDelegation,
+} from "./taches.types";
+
 export async function chargerConfiees(): Promise<Record<string, Confiee> | null> {
   try {
     const r = await api("/api/taches/confiees");
@@ -26,7 +24,6 @@ export async function chargerEmployesAssignables(): Promise<EmployeAssignable[]>
   }
 }
 
-/** Crée la tâche ; lève une erreur portant le message de l'API en cas de refus. */
 export async function creerTache(t: NouvelleTache): Promise<void> {
   const r = await apiEnvoyer("/api/taches", t);
   if (!r.ok) {
@@ -35,8 +32,6 @@ export async function creerTache(t: NouvelleTache): Promise<void> {
   }
 }
 
-/** Tâches (éventuellement d'un seul employé), impact et, pour le directeur,
- *  la charge de chaque employé et l'état de la boucle de retour. */
 export async function chargerSuivi(filtreEmploye: number | "", estDirecteur: boolean): Promise<DonneesSuivi> {
   try {
     const url = "/api/taches" + (filtreEmploye === "" ? "" : `?assigne_id=${filtreEmploye}`);
@@ -53,8 +48,33 @@ export async function chargerSuivi(filtreEmploye: number | "", estDirecteur: boo
   }
 }
 
-/** Modifie une tâche (statut, affectation, résultat). Renvoie vrai si accepté. */
 export async function modifierTache(id: number, corps: Record<string, unknown>): Promise<boolean> {
   const r = await apiEnvoyer(`/api/taches/${id}`, corps, "PATCH");
   return r.ok;
+}
+
+export async function chargerDelegation(): Promise<EtatDelegation | null> {
+  try {
+    const r = await api("/api/taches/delegation");
+    return r.ok ? await r.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function lireErreur(r: Response, defaut: string): Promise<never> {
+  const d = await r.json().catch(() => ({}));
+  throw new Error(typeof d.detail === "string" ? d.detail : defaut);
+}
+
+export async function reglerDelegation(corps: { active?: boolean; heure?: string }): Promise<EtatDelegation> {
+  const r = await apiEnvoyer("/api/taches/delegation", corps, "PUT");
+  if (!r.ok) return lireErreur(r, "Le réglage n'a pas pu être enregistré.");
+  return r.json();
+}
+
+export async function lancerDelegation(): Promise<PassageDelegation> {
+  const r = await apiEnvoyer("/api/taches/delegation/lancer", {});
+  if (!r.ok) return lireErreur(r, "Le passage n'a pas pu être lancé.");
+  return r.json();
 }

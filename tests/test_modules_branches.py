@@ -1,27 +1,4 @@
-"""
-tests/test_modules_branches.py
-===============================
-Vérifie que les modules décisionnels atteignent réellement l'application.
-
-Pourquoi ces tests existent
----------------------------
-Deux modules ont été construits, mesurés, validés — puis n'ont **jamais été
-appelés** par l'interface. L'échéancier de trésorerie affichait 1,3 % d'erreur
-dans son rapport pendant que le tableau de bord servait une projection LSTM à six
-mois, un modèle jamais validé sur un horizon que les données ne soutiennent pas.
-Le module de demande hybride, lui, n'était appelé nulle part.
-
-Aucun test ne l'a vu. Les 293 tests existants vérifiaient que chaque module
-fonctionne **isolément** — ce qui était vrai, et sans rapport avec la question de
-savoir s'il est branché. Un module correct mais débranché est un module qui
-n'existe pas pour l'utilisateur, et cette panne-là est silencieuse : rien ne
-casse, l'ancienne valeur continue simplement de s'afficher.
-
-Ces tests vérifient donc le CÂBLAGE, pas la qualité. Ils sont volontairement
-tolérants sur les valeurs et stricts sur la provenance.
-
-    python -m pytest tests/test_modules_branches.py -v
-"""
+"""Vérifie que les modules décisionnels atteignent réellement l'application."""
 
 from __future__ import annotations
 
@@ -44,15 +21,9 @@ besoin_entrepot = pytest.mark.skipif(
     not _entrepot_present(), reason="entrepôt DuckDB absent")
 
 
-# ── Échéancier de trésorerie ────────────────────────────────────────────────
 @besoin_entrepot
 def test_le_radar_ne_sert_plus_la_projection_lstm():
-    """Le radar financier ne doit plus contenir de carte issue du LSTM.
-
-    Le LSTM n'a jamais confirmé de gain sur une référence triviale. Rien
-    n'empêchait pourtant sa sortie d'être affichée : la décision de refus vivait
-    dans un rapport que le code ne consultait pas.
-    """
+    """Le radar financier ne doit plus contenir de carte issue du LSTM."""
     from ml_engine.analytics.kpi_engine import finance_radar
 
     cartes = finance_radar({}, {})
@@ -83,20 +54,12 @@ def test_le_radar_sert_l_echeancier_quand_le_registre_l_autorise():
 
     c = ech[0]
     assert float(c.get("montant_dt") or 0) > 0, "montant d'échéance vide"
-    # La réserve sur l'absence de dates de règlement doit survivre au câblage :
-    # ce sont des créances exigibles, pas des encaissements garantis.
     assert "exigible" in (c.get("titre", "") + c.get("action", "")).lower()
 
 
-# ── Demande ─────────────────────────────────────────────────────────────────
 @besoin_entrepot
 def test_la_demande_passe_par_le_module_hybride():
-    """`compute_supply_demand` doit servir le module hybride, pas le repli local.
-
-    Le repli choisit sa méthode en regardant TOUTE la série, y compris les points
-    qu'il prétend prédire. La MAPE qui en sort est donc optimiste. Le module
-    hybride élit sa méthode sur le seul jeu d'entraînement.
-    """
+    """`compute_supply_demand` doit servir le module hybride, pas le repli local."""
     from ml_engine.analytics.demand_engine import compute_supply_demand
 
     d = compute_supply_demand()
@@ -106,8 +69,6 @@ def test_la_demande_passe_par_le_module_hybride():
 
     prev = d.get("demande_prevision") or []
     assert prev, "aucune prévision produite"
-    # L'intervalle est la raison d'être du module : un chiffre unique laisserait
-    # croire à une précision que la série ne permet pas.
     premier = prev[0]
     assert premier.get("bas") is not None and premier.get("haut") is not None, (
         "les prévisions doivent porter leur fourchette")
@@ -118,12 +79,7 @@ def test_la_demande_passe_par_le_module_hybride():
 
 @besoin_entrepot
 def test_l_intervalle_de_demande_s_elargit_avec_l_horizon():
-    """L'incertitude doit croître avec l'horizon, jamais se rétrécir.
-
-    Les pas au-delà du premier se nourrissent de leur propre prévision : leurs
-    erreurs se cumulent. Un intervalle constant — ou décroissant — signalerait
-    que le cumul n'est pas modélisé.
-    """
+    """L'incertitude doit croître avec l'horizon, jamais se rétrécir."""
     from ml_engine.analytics.demand_engine import compute_supply_demand
 
     d = compute_supply_demand()
@@ -142,7 +98,6 @@ def test_l_intervalle_de_demande_s_elargit_avec_l_horizon():
             f"que celui du pas {i} ({largeurs[i - 1]:.0f})")
 
 
-# ── Décrochage client ───────────────────────────────────────────────────────
 @besoin_entrepot
 def test_le_decrochage_remonte_jusqu_aux_kpis():
     """Le modèle de décrochage doit alimenter le tableau de bord."""
@@ -159,24 +114,15 @@ def test_le_decrochage_remonte_jusqu_aux_kpis():
     assert ch.get("servi") is True, "modèle servi par le registre mais absent des KPI"
     top = ch.get("top") or []
     assert top, "aucun client classé"
-    # Le nom d'établissement doit accompagner le code : un tableau de bord qui
-    # affiche « CE000229 » oblige son lecteur à ouvrir l'ERP.
     assert "nom" in top[0], "le nom du client doit être joint au code"
-    # Le classement se fait sur l'enjeu financier, pas sur la probabilité seule.
     enjeux = [float(c.get("enjeu_dt") or 0) for c in top]
     assert enjeux == sorted(enjeux, reverse=True), (
         "le classement doit suivre l'enjeu décroissant")
 
 
-# ── Typologie de clientèle ──────────────────────────────────────────────────
 @besoin_entrepot
 def test_la_segmentation_remonte_jusqu_aux_kpis():
-    """La typologie doit atteindre le tableau de bord, pas rester dans un JSON.
-
-    Deux modules validés — l'échéancier et la demande hybride — sont déjà restés
-    des semaines sans être appelés par l'application. Ce test ferme la même porte
-    pour la segmentation.
-    """
+    """La typologie doit atteindre le tableau de bord, pas rester dans un JSON."""
     from ml_engine.analytics.kpi_engine import _charger_segmentation_si_servie
     from ml_engine.registre import est_deploye
 
@@ -191,7 +137,6 @@ def test_la_segmentation_remonte_jusqu_aux_kpis():
     segments = s.get("segments") or []
     assert segments, "aucun segment remonté"
 
-    # Les noms doivent être exploitables tels quels dans l'interface.
     noms = [x["nom"] for x in segments]
     assert len(set(noms)) == len(noms), f"noms de segments en double : {noms}"
     for n in noms:
@@ -217,12 +162,7 @@ def test_la_segmentation_couvre_toute_la_clientele():
 
 @besoin_entrepot
 def test_le_croisement_avec_le_decrochage_est_present():
-    """Le croisement est ce qui justifie le module : il doit atteindre l'interface.
-
-    Segmentation et décrochage se répondent — le premier dit qui sont les
-    clients, le second lesquels partent. Sans le croisement, le tableau de bord
-    afficherait deux informations juxtaposées au lieu d'une lecture.
-    """
+    """Le croisement est ce qui justifie le module : il doit atteindre l'interface."""
     from ml_engine.analytics.kpi_engine import _charger_segmentation_si_servie
     from ml_engine.registre import est_deploye
 
@@ -240,12 +180,7 @@ def test_le_croisement_avec_le_decrochage_est_present():
 
 @besoin_entrepot
 def test_le_tableau_de_bord_expose_la_segmentation():
-    """Vérification de bout en bout : `compute_dashboard` porte-t-il la clé ?
-
-    C'est le seul test qui emprunte exactement le chemin de l'application. Les
-    précédents interrogent la fonction de chargement ; celui-ci vérifie qu'elle
-    est bien appelée par le calcul que le frontend consomme.
-    """
+    """Vérification de bout en bout : `compute_dashboard` porte-t-il la clé ?"""
     from ml_engine.analytics.kpi_engine import compute_dashboard
 
     k = compute_dashboard({})
@@ -256,14 +191,9 @@ def test_le_tableau_de_bord_expose_la_segmentation():
     assert "servi" in k["segmentation"]
 
 
-# ── Cohérence d'ensemble ────────────────────────────────────────────────────
 @besoin_entrepot
 def test_aucun_module_refuse_n_est_servi():
-    """Un module que le registre refuse ne doit alimenter aucune sortie.
-
-    C'est la garantie centrale : la décision de déploiement doit être
-    EXÉCUTOIRE, pas seulement consignée dans un rapport.
-    """
+    """Un module que le registre refuse ne doit alimenter aucune sortie."""
     from ml_engine.registre import etat_complet
 
     etat = etat_complet()
@@ -285,13 +215,6 @@ def test_aucun_module_refuse_n_est_servi():
                 "la segmentation est refusée mais alimente encore les KPI")
 
 
-# ── Stock reconstruit des flux réels ────────────────────────────────────────
-#
-# Le module de stock (s,S) SIMULÉ reste présent dans le code, en repli et pour
-# alimenter les variables de position des deux modèles de risque produit. Rien
-# n'empêche donc mécaniquement un montant simulé de ressortir dans un chiffre
-# servi : c'est exactement le type de régression silencieuse que ces tests
-# verrouillent.
 @besoin_entrepot
 def test_le_stock_reconstruit_atteint_le_tableau_de_bord():
     """`compute_dashboard` doit porter la clé `stock_flux_reel`."""
@@ -307,19 +230,12 @@ def test_le_stock_reconstruit_atteint_le_tableau_de_bord():
         pytest.skip(f"table non matérialisée ({flux.get('motif')})")
 
     assert float(flux["valeur_immobilisee_dt"]) > 0, "capital immobilisé vide"
-    # La réserve doit voyager avec le chiffre : une variation cumulée n'est pas
-    # un inventaire, et ce montant est un minorant.
     assert "minorant" in (flux.get("nature") or "").lower()
 
 
 @besoin_entrepot
 def test_l_impact_financier_prefere_le_reel_au_simule():
-    """Les postes de stock doivent citer les factures, jamais la simulation.
-
-    Deux postes sur quatre du rapport d'impact viennent du domaine stock. Tant
-    que le module simulé existe, un `elif` mal ordonné suffirait à ramener un
-    montant estimé dans le chiffre présenté à la direction.
-    """
+    """Les postes de stock doivent citer les factures, jamais la simulation."""
     from ml_engine.analytics.impact import calculer
     from ml_engine.analytics.kpi_engine import _charger_flux_reels, _connect
 
@@ -354,12 +270,7 @@ def test_l_impact_financier_prefere_le_reel_au_simule():
 
 @besoin_entrepot
 def test_l_obsolescence_epargne_equipements_et_pieces():
-    """Un automate ne périme pas, une pièce de rechange non plus.
-
-    90 711 DT de faux positifs avaient été annoncés sur trois kits de
-    maintenance. Le raisonnement par rotation était bon, son périmètre ne
-    l'était pas.
-    """
+    """Un automate ne périme pas, une pièce de rechange non plus."""
     from ml_engine.stock.flux_reels import _est_perissable
 
     for non_perissable in ("Seals kit vidas range", "VIDAS NSH UPGRADE KIT",
@@ -377,12 +288,7 @@ def test_l_obsolescence_epargne_equipements_et_pieces():
 
 @besoin_entrepot
 def test_l_encours_ne_signale_pas_tout_le_portefeuille():
-    """Une alerte universelle est sa propre réfutation.
-
-    La première version comptait le silence commercial depuis la dernière
-    ÉCHÉANCE connue, postérieure de 135 jours à la dernière facture émise : tous
-    les clients paraissaient inactifs, et 100 % étaient signalés.
-    """
+    """Une alerte universelle est sa propre réfutation."""
     import json
     import os
 
@@ -396,35 +302,24 @@ def test_l_encours_ne_signale_pas_tout_le_portefeuille():
         f"{part} % du montant échu est signalé à vérifier — une alerte qui "
         "désigne la majorité du portefeuille ne hiérarchise rien")
 
-    # Les deux dates de référence doivent rester distinctes et ordonnées.
     assert m["date_reference_echeances"] > m["date_reference_activite"], (
         "les deux dates de référence ont été confondues : c'est la cause exacte "
         "du défaut d'origine")
 
 
-# ── Réapprovisionnement appris sur positions réelles ────────────────────────
 @besoin_entrepot
 def test_le_panneau_de_reappro_ne_regarde_pas_le_futur():
-    """Aucune variable ne doit contenir d'information postérieure au mois observé.
-
-    Vérification MÉCANIQUE plutôt que par relecture : on décale la cible d'un
-    mois supplémentaire et l'on vérifie que les variables, elles, n'ont pas
-    bougé. Une variable qui utiliserait `shift(-k)` changerait de valeur.
-    """
+    """Aucune variable ne doit contenir d'information postérieure au mois observé."""
     from ml_engine.stock.reappro_model import FEATURES, construire_panel
 
     panel = construire_panel()
     if panel.empty:
         pytest.skip("positions mensuelles non matérialisées")
 
-    # 1) La cible est binaire et observée.
     assert set(panel["y"].unique()) <= {0, 1}
     assert 0 < panel["y"].mean() < 1, (
         "cible dégénérée : toutes les observations ont la même classe")
 
-    # 2) Aucune variable ne doit être la cible déguisée. Une corrélation
-    #    parfaite signalerait une fuite du type de celle qui donnait AUC = 1,0000
-    #    au premier modèle de risque de stock.
     for f in FEATURES:
         if panel[f].nunique() < 2:
             continue
@@ -433,9 +328,6 @@ def test_le_panneau_de_reappro_ne_regarde_pas_le_futur():
             f"la variable `{f}` est corrélée à {rho:.4f} avec la cible — "
             "fuite probable")
 
-    # 3) Les trois derniers mois de l'historique doivent avoir été retirés :
-    #    leur horizon n'est pas observable, et garder un « pas d'achat » qu'on
-    #    n'a pas pu constater apprendrait une absence fictive.
     from ml_engine.stock.positions_historiques import charger_panel
     brut = charger_panel()
     if not brut.empty:
@@ -460,8 +352,6 @@ def test_le_reappro_respecte_la_decision_du_registre():
         assert r.get("servi") is True, (
             "le registre déclare le modèle servi mais les KPI ne le portent pas")
         assert (r.get("top") or []), "aucune référence classée"
-        # Le classement doit suivre le BUDGET, pas la probabilité : une
-        # référence quasi certaine à 40 DT n'appelle aucune décision.
         budgets = [float(x.get("budget_dt") or 0) for x in r["top"]]
         assert budgets == sorted(budgets, reverse=True), (
             "le classement ne suit pas le budget décroissant")
@@ -482,15 +372,8 @@ def test_le_tableau_de_bord_expose_le_reappro():
     assert "servi" in k["reappro"]
 
 
-# ── Maintenance : tout artefact doit être couvert ───────────────────────────
 def test_tout_artefact_serialise_est_couvert_par_le_reentrainement():
-    """Un modèle absent de `retrain_all.py` reste sur une version périmée.
-
-    La première version du script ne ré-entraînait que le crédit, alors que cinq
-    artefacts vivaient dans `models/` — et affichait « Terminé ». Un script de
-    maintenance qui certifie un état qu'il n'a pas vérifié est pire que pas de
-    script du tout.
-    """
+    """Un modèle absent de `retrain_all.py` reste sur une version périmée."""
     import importlib.util
     import os
 
@@ -509,7 +392,6 @@ def test_tout_artefact_serialise_est_couvert_par_le_reentrainement():
     assert not manquants, (
         f"artefact(s) jamais ré-entraîné(s) par retrain_all.py : {manquants}")
 
-    # Et réciproquement : chaque entrée doit désigner une fonction qui existe.
     for a in mod.ARTEFACTS:
         module = importlib.import_module(a["module"])
         nom_fn = a.get("fonction", "train")
@@ -519,18 +401,7 @@ def test_tout_artefact_serialise_est_couvert_par_le_reentrainement():
 
 
 def test_aucun_artefact_serialise_n_echappe_au_reentrainement():
-    """Le test précédent ne regardait que `models/` — et laissait passer un cas.
-
-    `rag/index/tfidf.pkl` sérialise un `TfidfVectorizer`. Ce n'est pas un
-    `.joblib` de `models/`, donc rien ne le couvrait : c'était le dernier
-    avertissement de version encore émis par la suite de tests, pendant que le
-    script de maintenance annonçait « Terminé ».
-
-    Un index de recherche désaligné est d'ailleurs le plus sournois des cas : il
-    ne lève aucune erreur, il renvoie simplement de mauvais passages.
-
-    Ce test balaie tout le dépôt, et non un dossier choisi d'avance.
-    """
+    """Le test précédent ne regardait que `models/` — et laissait passer un cas."""
     import importlib.util
     import os
 
@@ -542,8 +413,6 @@ def test_aucun_artefact_serialise_n_echappe_au_reentrainement():
     couverts = {a["fichier"] for a in mod.ARTEFACTS}
     couverts.add(os.path.basename(str(mod.INDEX_RAG)))
 
-    # `chunks.pkl` accompagne l'index mais ne contient aucun objet scikit-learn :
-    # ce sont des chaînes de texte, insensibles à la version de la bibliothèque.
     tolere = {"chunks.pkl"}
     ignores = {".venv", "node_modules", ".git", "__pycache__", ".pytest_cache"}
 
@@ -562,13 +431,8 @@ def test_aucun_artefact_serialise_n_echappe_au_reentrainement():
         f"réaligne : {orphelins}")
 
 
-# ── Nomenclature : l'autorité doit être unique ──────────────────────────────
 def test_la_nomenclature_est_la_seule_autorite_de_classement():
-    """`flux_reels` ne doit plus porter ses propres motifs.
-
-    Deux jeux de motifs en parallèle divergent toujours : l'un est corrigé, pas
-    l'autre, et la perte annoncée dépend alors du chemin d'appel.
-    """
+    """`flux_reels` ne doit plus porter ses propres motifs."""
     from ml_engine.stock import flux_reels, nomenclature
 
     assert not hasattr(flux_reels, "_MOTIFS_PIECE"), (
@@ -576,23 +440,14 @@ def test_la_nomenclature_est_la_seule_autorite_de_classement():
     assert not hasattr(flux_reels, "_MOTIFS_EQUIPEMENT"), (
         "flux_reels porte encore ses propres motifs d'équipement")
 
-    # Les deux chemins doivent donner le même verdict sur les cas qui ont
-    # réellement produit des faux positifs.
     for p in ("Seals kit vidas range", "VIDAS NSH UPGRADE KIT",
               "VIDAS QCV CONTRÔLE QUALITE", "Hb NEXT Analyzer"):
         assert flux_reels._est_perissable(p) == nomenclature.est_perissable(p)
 
 
-# ── Cycle commercial : conversion des devis et érosion de marge ─────────────
 @besoin_entrepot
 def test_la_conversion_devis_atteint_le_tableau_de_bord():
-    """Un modèle servi qui n'atteint pas l'écran n'existe pas pour l'utilisateur.
-
-    Deux modules validés — l'échéancier à 1,27 % et la demande hybride — sont
-    restés des semaines sans être appelés par l'application, et 293 tests ne
-    l'avaient pas vu : ils vérifiaient que chaque module fonctionne isolément, ce
-    qui est vrai et sans rapport avec la question de savoir s'il est branché.
-    """
+    """Un modèle servi qui n'atteint pas l'écran n'existe pas pour l'utilisateur."""
     from ml_engine.analytics.kpi_engine import compute_dashboard
     from ml_engine.registre import est_deploye
 
@@ -607,8 +462,6 @@ def test_la_conversion_devis_atteint_le_tableau_de_bord():
             "le registre déclare le modèle servi mais les KPI ne le portent pas")
         top = d.get("top") or []
         if top:
-            # Le classement doit suivre l'ESPÉRANCE, pas la probabilité : un devis
-            # presque sûr à 400 DT n'appelle aucune relance.
             esp = [float(x.get("esperance_dt") or 0) for x in top]
             assert esp == sorted(esp, reverse=True), (
                 "le classement ne suit pas l'espérance de chiffre d'affaires")
@@ -643,12 +496,7 @@ def test_la_marge_client_atteint_le_tableau_de_bord():
 
 @besoin_entrepot
 def test_le_devis_ne_regarde_pas_le_futur():
-    """Aucune variable ne doit contenir d'information postérieure au devis.
-
-    Vérification MÉCANIQUE, et non par relecture : une corrélation quasi parfaite
-    avec la cible signalerait la fuite du type de celle qui donnait AUC = 1,0000
-    au premier modèle de risque de stock.
-    """
+    """Aucune variable ne doit contenir d'information postérieure au devis."""
     from ml_engine.analytics.conversion_devis import FEATURES, construire_panel
 
     panel = construire_panel()
@@ -669,13 +517,7 @@ def test_le_devis_ne_regarde_pas_le_futur():
 
 @besoin_entrepot
 def test_le_censurage_des_devis_recents_est_applique():
-    """Les devis trop récents pour être jugés doivent être ÉCARTÉS.
-
-    `ETATPIECE` est un état lu aujourd'hui, pas un événement observé sur une
-    fenêtre. Un devis émis la semaine dernière porte l'étiquette « non
-    transformé » alors que rien n'est joué : l'inclure enseignerait « récent donc
-    perdu », artefact de la date d'observation et non du comportement commercial.
-    """
+    """Les devis trop récents pour être jugés doivent être ÉCARTÉS."""
     import pandas as pd
 
     from ml_engine.analytics.conversion_devis import (MATURATION_MOIS,
@@ -692,9 +534,6 @@ def test_le_censurage_des_devis_recents_est_applique():
         f"le panneau d'apprentissage va jusqu'à {apprentissage['date'].max()} "
         f"alors que la limite de maturation est {limite}")
 
-    # Et le panneau de PRÉDICTION doit, lui, les conserver : ce sont les seuls
-    # devis encore relançables. Les écarter des deux côtés rendrait le modèle
-    # inutilisable tout en restant correct.
     assert complet["date"].max() > limite, (
         "le panneau de prédiction écarte les devis récents — or ce sont les "
         "seuls sur lesquels une relance change quelque chose")
@@ -702,13 +541,7 @@ def test_le_censurage_des_devis_recents_est_applique():
 
 @besoin_entrepot
 def test_le_seuil_de_marge_est_calcule_sur_le_train_seul():
-    """Un seuil déduit de l'ensemble des données ferait fuiter le test.
-
-    La cible « marge basse » est définie par un quantile. Le calculer sur toutes
-    les observations ferait entrer dans l'entraînement une information sur la
-    distribution du test — fuite discrète, invisible dans toute matrice de
-    confusion.
-    """
+    """Un seuil déduit de l'ensemble des données ferait fuiter le test."""
     from ml_engine.analytics.marge_client import (construire_panel,
                                                   seuil_marge_basse)
 
@@ -724,26 +557,12 @@ def test_le_seuil_de_marge_est_calcule_sur_le_train_seul():
     seuil_train = seuil_marge_basse(train)
     seuil_global = seuil_marge_basse(panel)
 
-    # Les deux seuils doivent différer : s'ils coïncidaient exactement, rien ne
-    # distinguerait un calcul sur le train d'un calcul sur tout, et le test ne
-    # protégerait de rien.
     assert seuil_train == seuil_train, "seuil non calculable"
     assert isinstance(seuil_global, float)
 
 
 def test_aucun_module_servi_ne_depend_de_donnees_simulees():
-    """La règle qui fait tenir tout le domaine stock, rendue exécutoire.
-
-    `stock_risque` atteignait 0,8562 d'AUC hors période groupée par produit — ses
-    seuils étaient donc passés. Il est pourtant retiré, pour une raison
-    qu'**aucune métrique ne peut voir** : 11 576 de ses 18 071 cibles positives
-    reposent sur des dates de péremption GÉNÉRÉES, l'ERP n'en portant aucune.
-
-    Une AUC honnête sur une cible inventée reste une AUC sur une cible inventée.
-    Ce test empêche qu'un module dans ce cas redevienne servi par inadvertance —
-    en déclarant ici, une fois, la liste de ceux dont la cible ou les variables
-    dépendent du module (s,S) simulé.
-    """
+    """La règle qui fait tenir tout le domaine stock, rendue exécutoire."""
     from ml_engine.registre import MODELES, etat_complet
 
     DEPENDANTS_DU_SIMULE = {"stock_risque"}
@@ -761,7 +580,6 @@ def test_aucun_module_servi_ne_depend_de_donnees_simulees():
             f"le motif de retrait de {nom} ne cite pas la simulation : "
             f"« {m.get('motif')} »")
 
-    # Réciproquement : tout module SERVI doit être hors de cette liste.
     for nom in etat["deployes"]:
         assert nom not in DEPENDANTS_DU_SIMULE, (
             f"{nom} est servi alors qu'il figure parmi les modules dépendant du "
@@ -770,13 +588,7 @@ def test_aucun_module_servi_ne_depend_de_donnees_simulees():
 
 @besoin_entrepot
 def test_la_famille_erp_prime_sur_les_mots_cles():
-    """La donnée ERP doit gouverner le classement, pas le libellé.
-
-    Ce module a d'abord été écrit en affirmant qu'aucune famille produit
-    n'existait. C'était faux : `ARTICLE_LIBELLE_FAM_STAT1` en porte une, et
-    alimentait déjà `product_family`. Deuxième fois qu'une « donnée manquante »
-    se révèle présente, après les quantités d'achat.
-    """
+    """La donnée ERP doit gouverner le classement, pas le libellé."""
     from ml_engine.stock.flux_reels import _connect
     from ml_engine.stock.nomenclature import charger_familles_erp, mesurer
 
@@ -801,31 +613,15 @@ def test_la_famille_erp_prime_sur_les_mots_cles():
     val_erp = origines["erp"]["valeur_dt"] + origines["erp_precise"]["valeur_dt"]
     val_totale = m["valeur_totale_dt"]
 
-    # La majorité de la VALEUR doit être classée par l'ERP, pas par un mot-clé.
-    # C'est le seul critère qui compte : bien classer mille références à 12 DT
-    # tout en se trompant sur un automate à 356 000 DT serait sans intérêt.
     assert val_erp > val_totale * 0.5, (
         f"seulement {val_erp:.0f} DT sur {val_totale:.0f} classés par l'ERP — "
         "la famille ERP ne gouverne pas le classement")
 
 
 def test_le_mot_cle_piece_precise_l_erp_sans_le_contredire():
-    """La famille ERP n'a aucune valeur « pièce détachée » — d'où cette exception.
-
-    L'ERP n'offre que REACTIF / EQUIPEMENT / SERVICE. Un kit de joints saisi en
-    REACTIF n'affirme donc pas qu'il périme : il constate qu'aucune case ne lui
-    convient. Le mot-clé de pièce est ici PLUS SPÉCIFIQUE, et ne s'applique que
-    dans ce sens.
-
-    Sans cette règle, les 90 711 DT de faux positifs corrigés plus tôt — kit de
-    joints, kit d'upgrade, kit de maintenance préventive — reviendraient dans la
-    perte annoncée.
-    """
+    """La famille ERP n'a aucune valeur « pièce détachée » — d'où cette exception."""
     from ml_engine.stock import nomenclature as nm
 
-    # On simule une famille ERP « REACTIF » pour des libellés de pièces, sans
-    # toucher à l'entrepôt : c'est le comportement de la règle qu'on teste, pas
-    # le contenu des données.
     cache_origine = nm._familles_erp
     try:
         nm._familles_erp = {
@@ -836,19 +632,15 @@ def test_le_mot_cle_piece_precise_l_erp_sans_le_contredire():
             "CONTRAT DE MAINTENANCE VIDAS": "SERVICE",
         }
 
-        # Précisé : l'ERP dit consommable, le libellé dit pièce -> pièce.
         assert nm.classer("Seals kit vidas range") == nm.PIECE
         assert nm.classer("VIDAS NSH UPGRADE KIT") == nm.PIECE
         assert not nm.est_perissable("Seals kit vidas range")
         assert nm.origine_du_classement("Seals kit vidas range") == "erp_precise"
 
-        # Respecté : un vrai réactif reste périssable.
         assert nm.classer("VIDAS QCV CONTROLE QUALITE") == nm.CONSOMMABLE
         assert nm.est_perissable("VIDAS QCV CONTROLE QUALITE")
         assert nm.origine_du_classement("VIDAS QCV CONTROLE QUALITE") == "erp"
 
-        # Jamais contredit dans l'autre sens : équipement et prestation déclarés
-        # dans l'ERP sont respectés sans discussion.
         assert nm.classer("AUTOMATE VC FILMARRAY TORCH SYSTEM") == nm.EQUIPEMENT
         assert nm.classer("CONTRAT DE MAINTENANCE VIDAS") == nm.PRESTATION
     finally:
@@ -864,25 +656,16 @@ def test_la_classification_est_deterministe_et_exhaustive():
               "VIDAS PROCALCITONINE  60 TESTS", None):
         cat = classer(p)
         assert cat in CATEGORIES, f"catégorie inconnue « {cat} » pour « {p} »"
-        # Deux appels doivent donner le même résultat : aucune part d'aléa.
         assert classer(p) == cat
 
-    # Une désignation vide ne doit JAMAIS être classée consommable : ce serait
-    # faire entrer une absence de donnée dans la seule classe qui périme.
     from ml_engine.stock.nomenclature import CONSOMMABLE
     assert classer("") != CONSOMMABLE
     assert classer(None) != CONSOMMABLE
 
 
-# ── Sensibilité des seuils déclarés ─────────────────────────────────────────
 @besoin_entrepot
 def test_la_perte_decroit_quand_le_seuil_augmente():
-    """Vérification de sens : la perte porte sur l'EXCÉDENT au-delà du seuil.
-
-    Un seuil plus haut doit donner une perte plus basse. L'inverse signalerait
-    une erreur de calcul, et ce test la détecterait avant qu'un chiffre faux
-    n'atteigne une présentation.
-    """
+    """Vérification de sens : la perte porte sur l'EXCÉDENT au-delà du seuil."""
     from ml_engine.stock.flux_reels import SEUIL_OBSOLESCENCE_CERTAINE, sensibilite_seuils
 
     s = sensibilite_seuils(seuils=(18, 24, 30))
@@ -896,6 +679,4 @@ def test_la_perte_decroit_quand_le_seuil_augmente():
             f"la perte augmente avec le seuil ({pertes}) — l'excédent n'est pas "
             "calculé au-delà du seuil")
 
-    # Le seuil du module doit être restauré : une fonction d'analyse qui laisse
-    # un paramètre global modifié rendrait tous les appels suivants faux.
     assert SEUIL_OBSOLESCENCE_CERTAINE == s["seuil_servi_mois"]

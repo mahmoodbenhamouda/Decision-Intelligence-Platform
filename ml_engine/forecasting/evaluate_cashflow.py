@@ -1,24 +1,4 @@
-"""
-ml_engine/forecasting/evaluate_cashflow.py
-==========================================
-Évaluation RIGOUREUSE de la prévision d'encaissements (trésorerie).
-
-Pourquoi ce module : la MAPE affichée par `forecast_cashflow` est un résidu
-d'ajustement 1-pas (in-sample), donc optimiste. Ici, on mesure la performance
-en conditions réelles :
-
-  - BACKTEST WALK-FORWARD out-of-sample : pour chacun des `n_test` derniers
-    mois, chaque modèle est ré-entraîné uniquement sur le passé, puis prédit
-    le mois suivant (h=1) et l'horizon h=3. AUCUNE fuite du futur.
-  - MODÈLES COMPARÉS : LSTM (PyTorch, si disponible), Holt-Winters léger
-    (repli NumPy), et trois baselines qu'un candidat honnête doit battre —
-    naïf (dernier mois), naïf saisonnier (m-12), moyenne mobile 3 mois.
-  - MÉTRIQUES : MAPE, MAE, RMSE (h=1 et h=3) + COUVERTURE EMPIRIQUE de la
-    bande de confiance à 95 % du modèle retenu.
-  - Reproductible : seed 42, `python -m ml_engine.forecasting.evaluate_cashflow`.
-
-Sortie : reports/cashflow_forecast_metrics.json + tableau console.
-"""
+"""Évaluation RIGOUREUSE de la prévision d'encaissements (trésorerie)."""
 
 from __future__ import annotations
 
@@ -32,11 +12,10 @@ from .lstm_cashflow import _TORCH, _forecast_fallback, _load_series
 
 REPORTS = Path(__file__).resolve().parents[2] / "reports"
 SEED = 42
-N_TEST_DEFAULT = 12          # mois évalués en walk-forward
+N_TEST_DEFAULT = 12
 HORIZONS = (1, 3)
 
 
-# ── Modèles candidats : signature f(z_train, horizon) -> np.ndarray ─────────
 def _naif(z: np.ndarray, h: int) -> np.ndarray:
     return np.repeat(z[-1], h)
 
@@ -76,7 +55,6 @@ def _candidats() -> Dict[str, Callable[[np.ndarray, int], np.ndarray]]:
     return c
 
 
-# ── Backtest walk-forward ───────────────────────────────────────────────────
 def _metrics(actual: np.ndarray, pred: np.ndarray) -> Dict[str, float]:
     err = actual - pred
     mask = actual > 0
@@ -97,8 +75,6 @@ def evaluate(n_test: int = N_TEST_DEFAULT, save: bool = True) -> Optional[dict]:
         print("Série trop courte pour un backtest honnête.")
         return None
 
-    # Même pré-traitement que la production : log1p + standardisation,
-    # recalculés à CHAQUE pas uniquement sur le train (aucune fuite).
     results: Dict[str, Dict[str, Dict[str, float]]] = {}
     preds_store: Dict[str, Dict[int, List[Tuple[float, float]]]] = {}
 
@@ -113,7 +89,7 @@ def evaluate(n_test: int = N_TEST_DEFAULT, save: bool = True) -> Optional[dict]:
                 pz = fn(z, max(HORIZONS))
             except Exception:
                 continue
-            back = np.expm1(pz * sd + mu)          # retour en dinars
+            back = np.expm1(pz * sd + mu)
             for h in HORIZONS:
                 if t + h - 1 < len(raw):
                     preds_store[name][h].append((float(raw[t + h - 1]), float(back[h - 1])))
@@ -125,12 +101,10 @@ def evaluate(n_test: int = N_TEST_DEFAULT, save: bool = True) -> Optional[dict]:
                 p_ = np.array([p[1] for p in pairs])
                 results[name][f"h{h}"] = {**_metrics(a, p_), "n_points": len(pairs)}
 
-    # Modèle retenu = meilleure MAPE h=1 (hors baselines si un modèle les bat)
     classement = sorted(results.items(),
                         key=lambda kv: kv[1].get("h1", {}).get("mape_pct") or 1e9)
     retenu = classement[0][0]
 
-    # Couverture empirique de la bande ±1.96σ du modèle retenu (h=1)
     couverture = None
     try:
         fn = _candidats()[retenu]
@@ -187,7 +161,6 @@ def evaluate(n_test: int = N_TEST_DEFAULT, save: bool = True) -> Optional[dict]:
         (REPORTS / "cashflow_forecast_metrics.json").write_text(
             json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Tableau console
     print(f"\n=== Backtest walk-forward encaissements ({n_test} mois, seed {SEED}) ===")
     print(f"{'modèle':<24} {'MAPE h1':>9} {'RMSE h1':>12} {'MAPE h3':>9} {'RMSE h3':>12}")
     for name, r in classement:

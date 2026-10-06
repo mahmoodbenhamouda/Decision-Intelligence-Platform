@@ -1,25 +1,4 @@
-"""
-api/services/stock.py
-=====================
-Stock, approvisionnement et volumes à prévoir.
-
-Une seule source, et elle est réelle
-------------------------------------
-Les indicateurs de stock servaient deux volets : les flux reconstruits des
-factures, et un module (s,S) SIMULÉ pour la couverture, les points de commande
-et les dates de péremption. Le second est retiré : un directeur ne distingue
-pas, dans un tableau de bord, un chiffre mesuré d'un chiffre généré — même
-marqué `is_simulated`. Ce qui reste :
-
-  * capital immobilisé  = quantités achetées − vendues, au coût d'achat réel ;
-  * ruptures            = référence encore vendue, approvisionnement arrêté ;
-  * stock non écoulable = plus de deux ans de consommation constatée.
-
-Ce qui est perdu, et assumé : les **dates de péremption à la référence**. Elles
-n'existent nulle part dans l'ERP, et les simuler produisait une liste précise
-mais inventée. Le raisonnement par rotation donne une certitude équivalente
-sans inventer de date (cf. reports/METRICS_REPORT.md, §3 quater).
-"""
+"""Stock, approvisionnement et volumes à prévoir."""
 
 from __future__ import annotations
 
@@ -27,9 +6,20 @@ from typing import Any, Dict, Optional
 
 from api.services.erreurs import Conflit
 from ml_engine import passerelle as pw
+from ml_engine import portee as po
 
 
-def indicateurs_stock() -> Dict[str, Any]:
+def _masque_global(filtres: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Stock, demande et fournisseurs sont des analyses de l'entreprise entière :
+    masquées dès qu'un filtre restreint le périmètre."""
+    cache = po.pour_analyse_globale(po.portee(filtres))
+    return {**cache, "error": cache["motif"]} if cache else None
+
+
+def indicateurs_stock(filtres: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    cache = _masque_global(filtres)
+    if cache:
+        return cache
     reponse: Dict[str, Any] = {"is_simulated": False,
                                "origine": ("factures d'achat et de vente — aucune "
                                            "simulation, aucune date inventée")}
@@ -39,19 +29,12 @@ def indicateurs_stock() -> Dict[str, Any]:
         reponse["flux_reel"] = {"disponible": False,
                                 "motif": f"indisponible ({type(e).__name__})"}
 
-    # Réapprovisionnement appris : c'est le registre qui répond, jamais ce
-    # service — sans quoi la décision de déploiement redeviendrait une
-    # recommandation.
     try:
         reponse["reappro"] = pw.reapprovisionnement_servi()
     except Exception as e:
         reponse["reappro"] = {"servi": False,
                               "motif": f"indisponible ({type(e).__name__})"}
 
-    # Fin de commercialisation. Le modèle appris a été refusé — une règle d'une
-    # variable le battait — et c'est donc la RÈGLE qui est servie, mesurée. Le
-    # champ `nature` de la réponse dit laquelle des deux répond, pour qu'aucune
-    # lecture ne prenne un ordre de priorité pour une probabilité.
     try:
         reponse["fin_de_vie"] = pw.fin_de_vie_servie()
     except Exception as e:
@@ -61,19 +44,7 @@ def indicateurs_stock() -> Dict[str, Any]:
 
 
 def risque_produit(client: Optional[str], limite: int) -> Dict[str, Any]:
-    """Scoring du risque produit — **RETIRÉ DU SERVICE**.
-
-    Ce modèle atteignait 0,8562 d'AUC en hold-out groupé par produit, et passait
-    donc ses seuils. Il est retiré pour une raison qu'aucune métrique ne peut
-    voir : **11 576 de ses 18 071 cibles positives** reposent sur des dates de
-    péremption GÉNÉRÉES, l'ERP n'en portant aucune, et ses variables de position
-    viennent du module (s,S) simulé. Une AUC honnête sur une cible inventée
-    reste une AUC sur une cible inventée.
-
-    Le point d'entrée est conservé et répond 409 (`Conflit`) : le supprimer
-    laisserait un appelant recevoir un 404 sans explication, alors que la raison
-    du retrait est précisément ce qu'il faut transmettre.
-    """
+    """Scoring du risque produit — **RETIRÉ DU SERVICE**."""
     etat = pw.etat_du_modele("stock_risque")
     if not etat["deploye"]:
         raise Conflit({
@@ -88,25 +59,18 @@ def risque_produit(client: Optional[str], limite: int) -> Dict[str, Any]:
             ],
         })
 
-    # Chemin conservé pour le cas où le modèle serait un jour réentraîné sur des
-    # positions réelles et réadmis par le registre.
     try:
         return pw.risque_stock_par_produit(client=client, limite=max(1, min(200, limite)))
     except Exception as e:
         return {"error": str(e), "is_simulated": True, "produits": []}
 
 
-def prevision_demande(produit: Optional[str], limite: int) -> Dict[str, Any]:
-    """Volumes CUMULÉS à 30, 60 et 90 jours, par produit.
-
-    Source : la prévision par référence servie par le registre
-    (`demande_reference` — voir docs/CRISP_DM_DEMANDE_REFERENCE.md). Mesurée sur
-    18 mois de test, sa règle servie (médiane des 12 derniers mois) fait 38,3 %
-    de WAPE à un mois, contre 49,4 % pour le naïf saisonnier que cette route
-    servait auparavant. S'y ajoutent la borne haute à 90 jours et la méthode.
-    Si le registre ne sert pas la prévision par référence, l'ancien chemin
-    reprend la main.
-    """
+def prevision_demande(produit: Optional[str], limite: int,
+                      filtres: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Volumes CUMULÉS à 30, 60 et 90 jours, par produit."""
+    cache = _masque_global(filtres)
+    if cache:
+        return {**cache, "previsions": []}
     n = max(1, min(200, limite))
     try:
         dem = pw.demande_par_reference()
@@ -134,7 +98,7 @@ def prevision_demande(produit: Optional[str], limite: int) -> Dict[str, Any]:
                     "note": ("Prévisions issues des ventes RÉELLES, par référence ; borne haute "
                              "à 90 jours dépassée dans 2 cas sur 10.")}
     except Exception:
-        pass   # repli sur l'ancien chemin ci-dessous
+        pass
     try:
         res = pw.demande_par_produit_historique(produit)
         res = sorted(res, key=lambda r: -r["prevision_90j"])[:n]
@@ -149,10 +113,15 @@ def prevision_demande(produit: Optional[str], limite: int) -> Dict[str, Any]:
         return {"error": str(e), "previsions": []}
 
 
-def demande_et_approvisionnement() -> Dict[str, Any]:
-    """Prévision de demande (MAPE) + concentration/dépendance fournisseur."""
+def demande_et_approvisionnement(filtres: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Prévision de demande + concentration et dépendance fournisseur.
+
+    N'est plus masquée sous un filtre client : la demande d'un établissement se
+    prévoit, elle aussi. Le moteur restreint la série au périmètre et refuse
+    lui-même quand l'historique devient trop court — un refus motivé vaut mieux
+    qu'un écran vide."""
     try:
         from ml_engine.analytics.demand_engine import compute_supply_demand
-        return compute_supply_demand()
+        return compute_supply_demand(filtres)
     except Exception as e:
         return {"error": str(e)}

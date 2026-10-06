@@ -1,72 +1,4 @@
-"""
-ml_engine/analytics/churn_model.py
-===================================
-Modèle de **décrochage client** (attrition) — le seul modèle de ce projet dont la
-cible soit à la fois observable, non triviale et utile.
-
-Pourquoi ce modèle existe
--------------------------
-Le modèle de conditions de crédit (`credit_risk_model.py`) a été refusé deux fois,
-et son diagnostic explique pourquoi aucune optimisation ne pouvait le sauver : le
-délai de paiement accordé est une **clause contractuelle**, pas un comportement.
-Son écart-type À L'INTÉRIEUR d'un client vaut 1,0 jour contre 20,7 jours au
-global. La cible était donc :
-
-  * **triviale** pour un client connu — il suffit de lire son contrat passé
-    (la règle historique atteint AUC 0,99 sans aucun apprentissage) ;
-  * **impossible** pour un client nouveau — AUC 0,597 hors période, sous la
-    référence triviale de 0,665.
-
-Un modèle ne crée pas d'information. Changer d'algorithme, ajouter des variables
-ou régler des hyperparamètres ne pouvait rien y faire : l'information n'était pas
-dans les données. Il fallait changer de question.
-
-La question posée ici
---------------------
-« Ce client actif va-t-il **cesser de commander** dans les 90 prochains jours ? »
-
-Elle est meilleure sur les trois critères qui font échouer la précédente :
-
-  * **Observable** — la cible se lit dans les factures futures, sans
-    interprétation : le client a commandé, ou il n'a pas commandé. Aucune colonne
-    manquante, aucune hypothèse.
-  * **Non triviale** — contrairement au délai, le comportement d'achat varie
-    fortement à l'intérieur d'un même client. Il y a donc quelque chose à
-    apprendre.
-  * **Utile** — retenir un client coûte moins cher que d'en acquérir un. Un
-    directeur commercial agit sur cette information dès qu'il la reçoit.
-
-Protocole d'évaluation
-----------------------
-**Hors période stricte**, le seul protocole qui reproduise l'usage : on
-n'entraîne que sur des observations dont la fenêtre cible est ENTIÈREMENT
-antérieure à la coupure, et on teste sur des observations postérieures. Un
-GroupKFold par client est aussi calculé, mais il est reporté à titre indicatif :
-il brasse les périodes et flatte systématiquement le résultat — c'est précisément
-l'écart entre les deux qui avait révélé la fuite du modèle de crédit.
-
-La référence à battre est **la récence seule** (« il n'a rien commandé depuis
-N jours »). C'est une référence exigeante, et c'est le point important : sur une
-tâche d'attrition, la récence explique déjà l'essentiel. Un modèle qui ne la bat
-pas n'apporte rien, quelle que soit son AUC absolue.
-
-Absence de fuite — par construction
------------------------------------
-Toutes les variables sont calculées sur la fenêtre `]-inf, T]` où T est la date
-d'observation ; la cible se lit sur `]T, T+90j]`. Les deux fenêtres sont
-disjointes, donc aucune variable ne peut contenir d'information sur la cible.
-`tests/test_ml_churn.py` vérifie cette disjonction sur des données synthétiques
-où toute fuite serait détectable.
-
-Sortie
-------
-- `models/churn_model.joblib`        : modèle + seuil + métadonnées
-- `reports/churn_metrics.json`       : métriques, baselines, décision
-- `output/client_churn.json`         : probabilité de décrochage par client actif
-
-Lancement :
-    python -m ml_engine.analytics.churn_model
-"""
+"""Modèle de **décrochage client** (attrition) — le seul modèle de ce projet dont la cible soit à…"""
 
 from __future__ import annotations
 
@@ -92,21 +24,13 @@ except Exception:  # pragma: no cover
 MODELS_DIR = BASE / "models"
 REPORTS_DIR = BASE / "reports"
 OUTPUT_DIR = BASE / "output"
-# Jeu d'apprentissage construit sur la source brute, avec ses propres règles
-# (voir docs/DATA_WAREHOUSE.md, « Ce qui lit encore les CSV ») ; le chemin vient
-# du catalogue de l'ETL, seul endroit qui nomme un fichier source.
 SALES_CSV = chemin_source("ventes_entetes", DATA_DIR)
 
-# ── Paramètres métier ───────────────────────────────────────────────────────
-HORIZON_JOURS = 90        # fenêtre d'observation de la cible
-MIN_FACTURES_ACTIF = 2    # un client doit avoir commandé au moins 2 fois sur 12 mois
-FENETRE_ACTIVITE_J = 365  # pour être jugé « actif » à la date d'observation
+HORIZON_JOURS = 90
+MIN_FACTURES_ACTIF = 2
+FENETRE_ACTIVITE_J = 365
 SEED = 42
 
-# Le trou de 27 mois (2018-08 → 2020-10) est une bascule d'ERP, pas un défaut
-# d'export : il est absent de TOUTES les sources (cf. scripts/audit_trou_temporel.py).
-# Le faire traverser par une fenêtre de récence produirait des variables
-# aberrantes — un client « absent depuis 800 jours » qui commandait normalement.
 DEBUT_EXPLOITABLE = "2021-01-01"
 
 FEATURES = [
@@ -120,15 +44,8 @@ FEATURES = [
 ]
 
 
-# ── Chargement ──────────────────────────────────────────────────────────────
 def charger_factures(csv: Optional[Path] = None) -> pd.DataFrame:
-    """Factures nettoyées, agrégées par (client, jour).
-
-    Même nettoyage que partout ailleurs dans le projet : les avoirs sont exclus
-    (un avoir n'est pas une commande — le compter comme telle ferait passer une
-    annulation pour un signe de vitalité), et les factures sont dédupliquées sur
-    PIECENOFULL, la vraie clé métier.
-    """
+    """Factures nettoyées, agrégées par (client, jour)."""
     import duckdb
 
     csv = csv or SALES_CSV
@@ -169,13 +86,8 @@ def charger_factures(csv: Optional[Path] = None) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-# ── Construction du panel (client × date d'observation) ─────────────────────
 def _features_client(hist: pd.DataFrame, t: pd.Timestamp) -> Optional[Dict[str, float]]:
-    """Variables d'un client à la date d'observation `t`, calculées sur `]-inf, t]`.
-
-    `hist` ne contient QUE des lignes de date <= t : la sélection est faite par
-    l'appelant, et c'est là que repose la garantie d'absence de fuite.
-    """
+    """Variables d'un client à la date d'observation `t`, calculées sur `]-inf, t]`."""
     if hist.empty:
         return None
 
@@ -183,25 +95,18 @@ def _features_client(hist: pd.DataFrame, t: pd.Timestamp) -> Optional[Dict[str, 
     derniere = pd.Timestamp(dates[-1])
     premiere = pd.Timestamp(dates[0])
 
-    # Fenêtres glissantes
     def fenetre(mois: int) -> pd.DataFrame:
         borne = t - pd.Timedelta(days=30 * mois)
         return hist[hist["date"] > borne]
 
     f3, f6, f12 = fenetre(3), fenetre(6), fenetre(12)
 
-    # Un client est « actif » s'il a commandé au moins MIN_FACTURES_ACTIF fois
-    # sur la fenêtre d'activité. Sans ce filtre, on prédirait le décrochage de
-    # clients déjà partis — une tâche triviale qui gonflerait l'AUC sans servir.
     actif = hist[hist["date"] > t - pd.Timedelta(days=FENETRE_ACTIVITE_J)]
     if len(actif) < MIN_FACTURES_ACTIF:
         return None
 
-    # Intervalles entre commandes : la régularité est le socle du signal.
     if len(hist) >= 2:
         ecarts = np.diff(dates).astype("timedelta64[D]").astype(float)
-        # On borne la fenêtre d'estimation aux 20 derniers intervalles : un
-        # rythme d'achat d'il y a quatre ans ne dit rien du rythme actuel.
         ecarts = ecarts[-20:]
         interv_moy = float(np.mean(ecarts))
         interv_std = float(np.std(ecarts))
@@ -211,8 +116,6 @@ def _features_client(hist: pd.DataFrame, t: pd.Timestamp) -> Optional[Dict[str, 
     recence = float((t - derniere).days)
     ca12 = float(f12["ttc"].sum())
 
-    # Tendance : dynamique récente contre dynamique précédente. Bornée pour que
-    # quelques valeurs extrêmes ne dominent pas l'apprentissage.
     ca_prec = float(hist[(hist["date"] > t - pd.Timedelta(days=180))
                          & (hist["date"] <= t - pd.Timedelta(days=90))]["ttc"].sum())
     ca_rec = float(f3["ttc"].sum())
@@ -238,9 +141,6 @@ def _features_client(hist: pd.DataFrame, t: pd.Timestamp) -> Optional[Dict[str, 
         "tendance_freq": tendance_freq,
         "intervalle_moyen_j": interv_moy,
         "intervalle_ecart_type_j": interv_std,
-        # LA variable clé : un client qui commande tous les 20 jours et n'a rien
-        # commandé depuis 80 jours est anormal ; un client trimestriel ne l'est
-        # pas. C'est le rapport, pas la récence brute, qui porte le signal.
         "ratio_recence_intervalle": float(recence / interv_moy) if interv_moy > 0 else 0.0,
         "panier_moyen": float(hist["ttc"].tail(20).mean()),
         "mois": float(t.month),
@@ -249,21 +149,11 @@ def _features_client(hist: pd.DataFrame, t: pd.Timestamp) -> Optional[Dict[str, 
 
 def construire_panel(df: pd.DataFrame,
                      horizon: int = HORIZON_JOURS) -> pd.DataFrame:
-    """Panel (client, date d'observation) avec variables passées et cible future.
-
-    Une observation par client et par fin de mois. La cible vaut 1 si le client
-    n'a **aucune** facture dans `]t, t+horizon]`.
-
-    La dernière date d'observation retenue est `max(date) - horizon` : au-delà, la
-    fenêtre cible serait tronquée et un client apparaîtrait décroché simplement
-    parce que les données s'arrêtent. C'est le même garde-fou que celui appliqué
-    à l'échéancier de trésorerie.
-    """
+    """Panel (client, date d'observation) avec variables passées et cible future."""
     df = df[df["date"] >= pd.Timestamp(DEBUT_EXPLOITABLE)].copy()
     fin_donnees = df["date"].max()
     fin_obs = fin_donnees - pd.Timedelta(days=horizon)
 
-    # Fins de mois servant de dates d'observation
     dates_obs = pd.date_range(
         start=pd.Timestamp(DEBUT_EXPLOITABLE) + pd.Timedelta(days=FENETRE_ACTIVITE_J),
         end=fin_obs, freq="ME")
@@ -286,7 +176,7 @@ def construire_panel(df: pd.DataFrame,
             feats.update({
                 "client": client,
                 "date_obs": t,
-                "y": int(len(futur) == 0),      # 1 = décroche
+                "y": int(len(futur) == 0),
             })
             lignes.append(feats)
 
@@ -294,26 +184,8 @@ def construire_panel(df: pd.DataFrame,
     return panel.sort_values(["date_obs", "client"]).reset_index(drop=True)
 
 
-# ── Deux familles de comparaison, à ne pas confondre ────────────────────────
-#
-# La distinction est méthodologique et elle décide de tout :
-#
-#   * une RÉFÉRENCE TRIVIALE n'utilise qu'une seule variable brute et n'apprend
-#     rien. Elle mesure la VALEUR AJOUTÉE du modèle : si « il n'a rien commandé
-#     depuis N jours » suffit, le modèle n'apporte rien, quelle que soit son AUC.
-#     C'est cette famille, et elle seule, qui décide du déploiement.
-#
-#   * un MODÈLE CANDIDAT utilise les mêmes variables et apprend. Le comparer au
-#     modèle principal ne dit rien de la valeur ajoutée — cela répond à une autre
-#     question : « la non-linéarité est-elle nécessaire ? ». Si un modèle linéaire
-#     fait aussi bien, c'est LUI qu'il faut servir : plus simple, plus rapide,
-#     interprétable par ses coefficients, et moins sujet à la dérive.
-#
-# Mélanger les deux familles fait rejeter un bon modèle parce qu'un autre bon
-# modèle existe — ce qui n'a aucun sens.
-
 def _references_triviales(te: pd.DataFrame) -> Dict[str, float]:
-    """Une variable, aucun apprentissage. C'est le juge du déploiement."""
+    """Une variable, aucun apprentissage."""
     from sklearn.metrics import roc_auc_score
 
     return {
@@ -346,23 +218,12 @@ def _modele(nom: str = "gradient_boosting"):
 
 CANDIDATS = ["regression_logistique", "gradient_boosting"]
 
-# Écart d'AUC en dessous duquel deux modèles sont jugés équivalents. En cas
-# d'équivalence, on retient le plus simple — ici la régression logistique, qui
-# est en tête de `CANDIDATS`. Un demi-point d'AUC ne justifie pas de renoncer à
-# l'interprétabilité d'un modèle linéaire.
 ECART_PARCIMONIE = 0.01
 
 
 def evaluer_hors_periode(panel: pd.DataFrame,
                          horizon: int = HORIZON_JOURS) -> Dict[str, Any]:
-    """Protocole de référence : entraînement sur le passé, test sur le futur.
-
-    Point délicat, et c'est lui qui rend la mesure honnête : la cible d'une
-    observation d'entraînement se lit sur `]t, t+horizon]`. Pour qu'aucune
-    information postérieure à la coupure n'entre dans l'entraînement, on exige
-    `t + horizon <= coupure`. Sans cette marge, les dernières observations du
-    train « verraient » le début de la période de test.
-    """
+    """Protocole de référence : entraînement sur le passé, test sur le futur."""
     from sklearn.metrics import (accuracy_score, average_precision_score,
                                  brier_score_loss, confusion_matrix, f1_score,
                                  precision_score, recall_score, roc_auc_score)
@@ -377,7 +238,6 @@ def evaluer_hors_periode(panel: pd.DataFrame,
         return {"applicable": False,
                 "motif": f"train={len(tr)} test={len(te)} — effectifs insuffisants"}
 
-    # 1) Les deux candidats, sur exactement les mêmes données
     aucs: Dict[str, float] = {}
     proba: Dict[str, np.ndarray] = {}
     ajustes: Dict[str, Any] = {}
@@ -389,8 +249,6 @@ def evaluer_hors_periode(panel: pd.DataFrame,
         proba[nom] = p
         aucs[nom] = float(roc_auc_score(te["y"], p))
 
-    # 2) Sélection par PARCIMONIE : on part du plus simple et on ne change que si
-    #    un modèle plus complexe apporte un gain d'AUC réellement significatif.
     retenu = CANDIDATS[0]
     for nom in CANDIDATS[1:]:
         if aucs[nom] - aucs[retenu] > ECART_PARCIMONIE:
@@ -400,7 +258,6 @@ def evaluer_hors_periode(panel: pd.DataFrame,
     pred = (p >= 0.5).astype(int)
     auc = aucs[retenu]
 
-    # 3) Le déploiement se juge UNIQUEMENT contre les références triviales
     triv = _references_triviales(te)
     meilleure_triv = max(triv, key=triv.get)
 
@@ -427,9 +284,6 @@ def evaluer_hors_periode(panel: pd.DataFrame,
         "f1": float(f1_score(te["y"], pred, zero_division=0)),
         "brier": float(brier_score_loss(te["y"], p)),
         "confusion_matrix": confusion_matrix(te["y"], pred).tolist(),
-        # Métriques complètes et homogènes entre modèles (accuracy, balanced
-        # accuracy, MCC, spécificité...) au seuil 0,5 ET au seuil choisi sur le
-        # seul entraînement — cf. ml_engine/metriques.py.
         "classification": metriques_classification(
             te["y"], p, y_train=tr["y"],
             p_train=ajustes[retenu].predict_proba(tr[FEATURES])[:, 1]),
@@ -443,14 +297,7 @@ def evaluer_hors_periode(panel: pd.DataFrame,
 
 def evaluer_groupkfold(panel: pd.DataFrame,
                        modele: str = "gradient_boosting") -> Dict[str, Any]:
-    """GroupKFold par client — reporté à titre INDICATIF seulement.
-
-    Ce protocole garantit qu'un client de test est inconnu, mais il brasse les
-    périodes : le modèle peut apprendre la conjoncture d'une année sur d'autres
-    clients de la même année. C'est exactement l'écart entre ce chiffre et celui
-    hors période qui avait révélé la fuite du modèle de crédit (0,811 → 0,597).
-    Le conserver rend l'écart visible au lieu de le masquer.
-    """
+    """GroupKFold par client — reporté à titre INDICATIF seulement."""
     from sklearn.metrics import roc_auc_score
     from sklearn.model_selection import GroupKFold
 
@@ -472,11 +319,7 @@ def evaluer_groupkfold(panel: pd.DataFrame,
 def importance_permutation(panel: pd.DataFrame,
                            horizon: int = HORIZON_JOURS,
                            modele: str = "gradient_boosting") -> Dict[str, float]:
-    """Importance par permutation, mesurée SUR LE JEU DE TEST hors période.
-
-    Mesurée sur le test et non sur le train : une variable peut être très
-    utilisée à l'entraînement sans rien apporter en généralisation.
-    """
+    """Importance par permutation, mesurée SUR LE JEU DE TEST hors période."""
     from sklearn.inspection import permutation_importance
     from sklearn.metrics import roc_auc_score
 
@@ -495,7 +338,6 @@ def importance_permutation(panel: pd.DataFrame,
                                key=lambda kv: -kv[1])}
 
 
-# ── Entraînement complet ────────────────────────────────────────────────────
 def train(csv: Optional[Path] = None) -> Dict[str, Any]:
     import joblib
     from sklearn.calibration import CalibratedClassifierCV
@@ -537,13 +379,6 @@ def train(csv: Optional[Path] = None) -> Dict[str, Any]:
     print("[churn] Importance par permutation…")
     imp = importance_permutation(panel, modele=retenu)
 
-    # ── Règle d'acceptation ─────────────────────────────────────────────────
-    # Trois conditions, et chacune répond à un échec constaté ailleurs dans ce
-    # projet :
-    #   1. gain réel sur la meilleure référence triviale (le crédit échouait ici) ;
-    #   2. AUC absolue décente — un gain sur une référence faible ne suffit pas ;
-    #   3. écart GroupKFold / hors période contenu : un écart large est la
-    #      signature d'une fuite temporelle (0,811 → 0,597 pour le crédit).
     MARGE_MIN = 0.02
     AUC_MIN = 0.70
     ECART_MAX = 0.15
@@ -554,9 +389,6 @@ def train(csv: Optional[Path] = None) -> Dict[str, Any]:
     pas_de_fuite = bool(abs(ecart) <= ECART_MAX)
     deploye = bool(gain_confirme and auc_suffisante and pas_de_fuite)
 
-    # ── Modèle final calibré ────────────────────────────────────────────────
-    # Calibré parce que la sortie est lue comme une probabilité : « 0,8 » doit
-    # signifier « 8 chances sur 10 », sinon le seuil d'alerte n'a pas de sens.
     from sklearn.model_selection import GroupKFold
     final = CalibratedClassifierCV(
         _modele(retenu), method="isotonic",
@@ -595,7 +427,8 @@ def train(csv: Optional[Path] = None) -> Dict[str, Any]:
             "nettoyage": "avoirs exclus, factures dédupliquées sur PIECENOFULL",
             "debut_exploitable": DEBUT_EXPLOITABLE,
             "motif_troncature": (
-                "le trou de 27 mois (2018-08 → 2020-10) est une bascule d'ERP "
+                "le trou de 27 mois (2018-08 → 2020-10) vient d'un changement "
+                "d'outil de gestion, "
                 "confirmée absente de toutes les sources ; le traverser avec une "
                 "fenêtre de récence produirait des variables aberrantes"),
             "fin_observation": (
@@ -647,80 +480,25 @@ def train(csv: Optional[Path] = None) -> Dict[str, Any]:
 
     print(f"[churn] Décision : {'DÉPLOYÉ' if deploye else 'NON DÉPLOYÉ'}")
 
-    # ── Scores par client (dernière observation disponible) ─────────────────
     derniere = panel["date_obs"].max()
     courant = panel[panel["date_obs"] == derniere].copy()
     courant["p"] = final.predict_proba(courant[FEATURES])[:, 1]
 
-    # ── Modèle d'explication ────────────────────────────────────────────────
-    #
-    # Le modèle servi est CALIBRÉ : il agrège plusieurs estimateurs, et ses
-    # coefficients ne sont pas directement lisibles. On ajuste donc une
-    # régression logistique simple sur les mêmes données, uniquement pour
-    # expliquer — les scores servis restent ceux du modèle calibré.
-    #
-    # La cohérence entre les deux est VÉRIFIÉE et publiée : si leurs classements
-    # divergeaient, l'explication décrirait un autre modèle que celui qui décide.
-    raisons: List[List[Dict[str, Any]]] = [[] for _ in range(len(courant))]
-    accord_explication = None
-    try:
-        from scipy.stats import spearmanr
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.preprocessing import StandardScaler
-
-        sc = StandardScaler().fit(panel[FEATURES].to_numpy(dtype=float))
-        lr = LogisticRegression(max_iter=2000, C=1.0, random_state=SEED)
-        lr.fit(sc.transform(panel[FEATURES].to_numpy(dtype=float)), panel["y"])
-
-        p_expl = lr.predict_proba(
-            sc.transform(courant[FEATURES].to_numpy(dtype=float)))[:, 1]
-        accord_explication = round(float(spearmanr(courant["p"], p_expl).statistic), 4)
-
-        raisons = expliquer(lr, (lr.coef_[0], sc.mean_, sc.scale_), panel, courant)
-    except Exception:
-        pass
-
-    if accord_explication is not None:
-        print(f"[churn] Accord modèle servi / modèle d'explication : "
-              f"{accord_explication:.4f} (Spearman)")
-
-    # Renseigné ici et non dans le bloc `metrics` : l'explication ne peut être
-    # calculée qu'une fois le modèle final ajusté et les clients courants extraits.
-    metrics["explicabilite"] = {
-        "methode": (
-            "Contribution de chaque variable = coefficient × valeur normalisée. "
-            "Sur une régression logistique, cette décomposition est EXACTE : la "
-            "somme des contributions et de l'ordonnée à l'origine reconstitue "
-            "exactement le logit. Un modèle d'ensemble aurait exigé une "
-            "attribution approchée — c'est un argument rétrospectif en faveur du "
-            "choix de parcimonie."),
-        "accord_avec_le_modele_servi": accord_explication,
-        "lecture_accord": (
-            "Corrélation de Spearman entre les scores du modèle servi (calibré) "
-            "et ceux du modèle d'explication. Une valeur basse signifierait que "
-            "l'explication décrit un autre modèle que celui qui décide."),
-        "seules_contributions_positives": (
-            "Un commercial veut savoir ce qui inquiète, pas ce qui rassure : les "
-            "facteurs protecteurs ne sont pas affichés."),
-    }
+    metrics["explicabilite"], raisons, contrefactuels = expliquer_scores(
+        final, panel, courant)
 
     scores: Dict[str, Any] = {}
     for pos, (_, r) in enumerate(courant.iterrows()):
         scores[str(r["client"])] = {
-            # Pourquoi CE client est signalé. C'est ce qui transforme un score en
-            # argument d'appel : un commercial ne décroche pas son téléphone sur
-            # un nombre, mais sur « il n'a rien commandé depuis 80 jours alors
-            # qu'il commandait toutes les trois semaines ».
             "raisons": raisons[pos] if pos < len(raisons) else [],
+            "contrefactuel": (contrefactuels[pos]
+                              if pos < len(contrefactuels) else None),
             "probabilite_decrochage": round(float(r["p"]), 3),
             "recence_j": int(r["recence_j"]),
             "intervalle_moyen_j": round(float(r["intervalle_moyen_j"]), 1),
             "ca_12m": round(float(r["ca_12m"]), 0),
             "freq_12m": int(r["freq_12m"]),
             "tendance_ca": round(float(r["tendance_ca"]), 2),
-            # L'enjeu financier est ce qui permet de PRIORISER : une probabilité
-            # de 0,9 sur un client à 2 000 DT ne vaut pas 0,6 sur un client à
-            # 2 M DT. Le score seul ne suffit pas à décider.
             "enjeu_dt": round(float(r["p"]) * float(r["ca_12m"]), 0),
             "source": "modele_churn" if deploye else "non_deploye",
         }
@@ -744,72 +522,104 @@ def train(csv: Optional[Path] = None) -> Dict[str, Any]:
     return metrics
 
 
-# ── Explicabilité ───────────────────────────────────────────────────────────
-#
-# Traduction de chaque variable en langage de commercial. Sans elle, le modèle
-# reste une boîte qui produit un nombre — et un commercial ne décroche pas son
-# téléphone sur un nombre. Le sens est donné pour une contribution POSITIVE au
-# risque ; l'inverse n'est pas affiché, un client rassurant n'appelant pas d'action.
-_SENS_VARIABLES: Dict[str, str] = {
-    "recence_j": "n'a pas commandé depuis {v:.0f} jours",
-    "ratio_recence_intervalle": "son silence dure {v:.1f} fois son rythme habituel",
-    "freq_3m": "seulement {v:.0f} commande(s) sur les 3 derniers mois",
-    "freq_6m": "activité faible sur 6 mois ({v:.0f} commandes)",
-    "freq_12m": "seulement {v:.0f} commande(s) sur 12 mois",
-    "tendance_ca": "son chiffre d'affaires récent a reculé",
-    "tendance_freq": "il commande moins souvent qu'avant",
-    "ca_3m": "chiffre d'affaires quasi nul sur le trimestre",
-    "ca_6m": "chiffre d'affaires en retrait sur 6 mois",
-    "ca_12m": "volume annuel faible au regard de son historique",
-    "log_ca_12m": "volume annuel faible au regard de son historique",
-    "intervalle_moyen_j": "il espace naturellement ses commandes",
-    "intervalle_ecart_type_j": "son rythme de commande est irrégulier",
-    "panier_moyen": "ses commandes sont de faible montant",
-    "anciennete_j": "relation encore récente",
-    "mois": "effet de saison",
+# Ce qu'un commercial peut réellement faire bouger, et dans quel sens. Les bornes
+# ne sont pas écrites ici : elles sont relevées sur le panel, pour qu'un
+# contrefactuel ne propose jamais une valeur jamais observée.
+ACTIONNABLES: Dict[str, str] = {
+    "recence_j": "baisse",
+    "ratio_recence_intervalle": "baisse",
+    "freq_3m": "hausse",
+    "freq_6m": "hausse",
+    "ca_3m": "hausse",
+    "ca_6m": "hausse",
 }
 
+SEUIL_RISQUE = 0.5
+N_RAISONS = 3
 
-def expliquer(modele_lineaire, scaler_stats, panel: pd.DataFrame,
-              lignes: pd.DataFrame, n_raisons: int = 3) -> List[List[Dict[str, Any]]]:
-    """Raisons individuelles derrière chaque score, en langage métier.
 
-    Sur une régression logistique, la contribution d'une variable au score vaut
-    `coefficient × valeur normalisée`. C'est une décomposition EXACTE, pas une
-    approximation : la somme des contributions et de l'ordonnée à l'origine donne
-    exactement le logit. Un modèle d'ensemble aurait exigé une méthode
-    d'attribution approchée — c'est l'une des raisons pour lesquelles le modèle
-    linéaire a été retenu à performance équivalente.
+def expliquer_scores(modele, panel: pd.DataFrame, lignes: pd.DataFrame):
+    
+    from ml_engine.explication import (contrefactuel, contributions_lineaires,
+                                       extraire_pipeline_lineaire,
+                                       fidelite_suppression)
 
-    Seules les contributions POSITIVES sont remontées : un commercial veut savoir
-    ce qui inquiète, pas ce qui rassure.
-    """
-    coefs, moyennes, echelles = scaler_stats
+    vide = ([[] for _ in range(len(lignes))], [None] * len(lignes))
+
+    lin = extraire_pipeline_lineaire(modele)
+    if lin is None:
+        return ({"disponible": False,
+                 "motif": ("le modèle servi n'est pas linéaire : une attribution "
+                           "exacte est impossible, il faudrait TreeSHAP")},
+                *vide)
+
+    coefs, moyennes, ecarts = (lin["coefficients"], lin["moyennes"],
+                               lin["ecarts"])
     X = lignes[FEATURES].to_numpy(dtype=float)
-    Xn = (X - moyennes) / np.where(echelles == 0, 1.0, echelles)
-    contributions = Xn * coefs      # (n_clients, n_variables)
+    scores = ((X - np.asarray(moyennes)) / np.asarray(ecarts)) @ np.asarray(coefs)
+    reference = {v: panel[v].to_numpy(dtype=float) for v in FEATURES}
 
-    out: List[List[Dict[str, Any]]] = []
-    for i in range(len(lignes)):
-        ordre = np.argsort(-contributions[i])
-        raisons: List[Dict[str, Any]] = []
-        for j in ordre:
-            if contributions[i, j] <= 0.05:     # contribution négligeable
-                continue
-            nom = FEATURES[j]
-            gabarit = _SENS_VARIABLES.get(nom)
-            if not gabarit:
-                continue
-            raisons.append({
-                "variable": nom,
-                "valeur": round(float(X[i, j]), 2),
-                "poids": round(float(contributions[i, j]), 3),
-                "explication": gabarit.format(v=float(X[i, j])),
-            })
-            if len(raisons) >= n_raisons:
-                break
-        out.append(raisons)
-    return out
+    raisons = [contributions_lineaires(coefs, moyennes, ecarts, X[i], FEATURES,
+                                       n=N_RAISONS, reference=reference)
+               for i in range(len(lignes))]
+
+    # Le score linéaire et la probabilité servie ne vivent pas sur la même
+    # échelle : la calibration isotonique est monotone mais non paramétrique. Le
+    # seuil est donc RELEVÉ sur la population, pas supposé.
+    p = lignes["p"].to_numpy(dtype=float)
+    ordre = np.argsort(scores)
+    seuil_score = float(np.interp(SEUIL_RISQUE, p[ordre], scores[ordre]))
+    bornes = {v: (float(panel[v].min()), float(panel[v].max())) for v in FEATURES}
+    actionnables = {v: {"sens": s, "min": bornes[v][0], "max": bornes[v][1]}
+                    for v, s in ACTIONNABLES.items() if v in bornes}
+
+    contrefactuels = [
+        contrefactuel(coefs, moyennes, ecarts, X[i], FEATURES,
+                      float(scores[i]), seuil_score, actionnables)
+        if p[i] >= SEUIL_RISQUE else None
+        for i in range(len(lignes))]
+
+    from scipy.stats import spearmanr
+    monotonie = round(float(spearmanr(scores, p).statistic), 4)
+
+    attributions = ((X - np.asarray(moyennes)) / np.asarray(ecarts)) * np.asarray(coefs)
+    fidelite = fidelite_suppression(
+        lambda A: modele.predict_proba(pd.DataFrame(A, columns=FEATURES))[:, 1],
+        X, attributions, np.asarray(moyennes), k_max=5)
+
+    rapport = {
+        "disponible": True,
+        "methode": (
+            "Attribution additive locale : contribution = coefficient × écart "
+            "centré. Sur un modèle linéaire, cette décomposition est EXACTE et "
+            "coïncide avec les valeurs de Shapley φⱼ = βⱼ(xⱼ − E[xⱼ])."),
+        "origine_des_coefficients": lin["origine"],
+        "monotonie_score_lineaire_vs_probabilite_servie": monotonie,
+        "lecture_monotonie": (
+            "Spearman entre la somme des contributions et la probabilité servie. "
+            "Elle vaut 1 lorsque la calibration ne fait que déformer l'échelle "
+            "sans changer l'ordre — c'est alors le même modèle qui est expliqué "
+            "et qui décide."),
+        "fidelite": fidelite,
+        "contrefactuel": {
+            "methode": ("forme close sur le modèle linéaire : valeur d'une seule "
+                        "variable actionnable ramenant le score au seuil, bornée "
+                        "aux valeurs observées sur le panel"),
+            "seuil_de_score_releve": round(seuil_score, 4),
+            "variables_actionnables": sorted(actionnables),
+            "n_clients_avec_action": sum(1 for c in contrefactuels if c),
+        },
+        "facteurs_protecteurs": (
+            "Le facteur qui pousse le plus dans le sens inverse est affiché avec "
+            "`sens: protege` : masquer ce qui rassure donne une lecture biaisée "
+            "d'un score qui en tient compte."),
+        "aucun_gabarit_de_phrase": (
+            "Les phrases sont composées depuis le libellé de la variable, le "
+            "signe appris du coefficient et la position dans la distribution. "
+            "Les gabarits précédents affirmaient une direction que le modèle "
+            "pouvait contredire."),
+    }
+    return rapport, raisons, contrefactuels
 
 
 def load_client_churn() -> Dict[str, Any]:

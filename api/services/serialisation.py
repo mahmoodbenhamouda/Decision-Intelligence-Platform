@@ -1,8 +1,4 @@
-"""
-api/services/serialisation.py
-=============================
-Conversion des résultats des moteurs (numpy, pandas) en valeurs JSON.
-"""
+"""Conversion des résultats des moteurs (numpy, pandas) en valeurs JSON."""
 
 from __future__ import annotations
 

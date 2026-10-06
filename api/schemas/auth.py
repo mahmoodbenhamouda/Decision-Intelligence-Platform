@@ -1,8 +1,4 @@
-"""
-api/schemas/auth.py
-===================
-Connexion et profil courant.
-"""
+"""Connexion et profil courant."""
 
 from __future__ import annotations
 
@@ -20,12 +16,10 @@ class LoginResponse(BaseModel):
     role: str
     email: str
     full_name: str | None = None
-    client_code: str | None = None
 
 
 class MeResponse(BaseModel):
     email: str
     role: str
     full_name: str | None
-    client_code: str | None
     last_login: str | None

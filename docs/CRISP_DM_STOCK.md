@@ -13,8 +13,8 @@ et `reports/stock_risk_metrics.json`, régénérés à chaque entraînement.
 
 > **Avertissement de périmètre.** Les *ventes* sont réelles (6 ans d'ERP,
 > 18 782 observations produit × mois). Les *positions de stock* sont simulées par
-> un modèle (s,S) calibré sur ces ventes réelles — l'ERP d'Overlyne n'expose
-> aucune table de stock (voir `docs/STOCK_SIMULE.md`). Les métriques valident
+> un modèle (s,S) calibré sur ces ventes réelles — les exports de l'ERP du
+> distributeur ne contiennent aucune table de stock (voir `docs/STOCK_SIMULE.md`). Les métriques valident
 > donc la chaîne de modélisation et la partie « demande » ; elles ne constituent
 > pas une mesure de performance sur des stocks observés.
 
@@ -24,9 +24,9 @@ et `reports/stock_risk_metrics.json`, régénérés à chaque entraînement.
 
 ### Contexte
 
-Overlyne distribue des réactifs et automates de diagnostic in vitro à des
-hôpitaux publics, cliniques privées et laboratoires tunisiens. Deux coûts
-s'opposent :
+L'entreprise dont l'ERP alimente le projet — un client d'Overlyne — distribue
+des réactifs et automates de diagnostic in vitro à des hôpitaux publics,
+cliniques privées et laboratoires tunisiens. Deux coûts s'opposent :
 
 * **Rupture** — un laboratoire sans réactif arrête une série d'analyses. Le coût
   n'est pas le manque à gagner sur une commande, mais le risque de perdre le

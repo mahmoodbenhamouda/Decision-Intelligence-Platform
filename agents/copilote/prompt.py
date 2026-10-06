@@ -1,14 +1,4 @@
-"""
-agents/copilote/prompt.py
-=========================
-Les prompts du copilote, écrits à un seul endroit.
-
-* `construire_prompt` — question sur les données : consignes de forme et de
-  chiffres, question, thèmes, périmètre client, données pertinentes, radar,
-  glossaire, historique ;
-* `prompt_documentaire` — question sur la base documentaire (RAG) ;
-* `prompt_fichier` — fichier CSV ou PDF joint par l'utilisateur.
-"""
+"""Les prompts du copilote, écrits à un seul endroit."""
 
 from __future__ import annotations
 
@@ -19,20 +9,11 @@ from agents.copilote.contexte import (build_client_context, build_history_contex
 from agents.copilote.glossaire import build_glossary_section, detect_glossary_terms
 from agents.copilote.intention import detect_theme
 
-# Prompt volontairement CONTRAIGNANT sur la forme.
-# La version précédente demandait « concis » puis exigeait des titres,
-# des émojis, une section de définitions et une conclusion chiffrée :
-# le modèle produisait un rapport de quatre sections qui répétait
-# trois fois la même action. Les règles ci-dessous plafonnent la
-# longueur ET interdisent les sections redondantes.
-#
-# Consignes système : la FORME (longueur, structure) et les CHIFFRES (aucun
-# calcul, aucune invention). Voir `verification.py` pour le contrôle a posteriori.
 SYSTEME = (
-    "Tu es FinBot, copilote financier d'Overlyne (distributeur de matériel de "
-    "diagnostic médical en Tunisie). Tu maîtrises le recouvrement, la trésorerie, "
-    "le risque de change, les marchés publics tunisiens (TUNEPS) et l'analyse "
-    "financière de PME.\n\n"
+    "Tu es FinBot, copilote financier d'un distributeur de matériel de diagnostic "
+    "médical en Tunisie (plateforme éditée par Overlyne). Tu maîtrises le "
+    "recouvrement, la trésorerie, les marchés publics tunisiens (TUNEPS) et "
+    "l'analyse financière de PME.\n\n"
 
     "FORMAT — impératif, une réponse trop longue n'est pas lue :\n"
     "1. 1000 caractères MAXIMUM. Vise 600.\n"
@@ -62,11 +43,9 @@ SYSTEME = (
 def construire_prompt(question: str, kpis: Dict[str, Any], filters: Dict[str, Any],
                       history: List[Dict[str, str]]) -> str:
     """Prompt complet d'une question sur les données du périmètre."""
-    # 1. Détection thématique
     themes = detect_theme(question)
     glossary_terms = detect_glossary_terms(question)
 
-    # 2. Radar financier (actions prioritaires chiffrées)
     radar = kpis.get("finance_radar") or []
     radar_txt = "\n".join(
         f"  - [{c.get('severite','')}] {c.get('titre','')} : {c.get('montant_dt',0):,.0f} DT "
@@ -75,7 +54,6 @@ def construire_prompt(question: str, kpis: Dict[str, Any], filters: Dict[str, An
         for c in radar[:5]
     ) or "  Aucune action prioritaire détectée."
 
-    # 3. Contexte thématique (KPIs pertinents)
     thematic_ctx = build_thematic_context(themes, kpis)
     try:
         blocs_modeles = contexte_modeles(themes, kpis, filters)
@@ -84,16 +62,12 @@ def construire_prompt(question: str, kpis: Dict[str, Any], filters: Dict[str, An
     if blocs_modeles:
         thematic_ctx = (thematic_ctx + "\n\n" if thematic_ctx else "") + "\n\n".join(blocs_modeles)
 
-    # 4. Contexte client (si périmètre client)
     client_ctx = build_client_context(filters, kpis)
 
-    # 5. Glossaire financier pertinent
     glossary_ctx = build_glossary_section(glossary_terms, themes)
 
-    # 6. Historique de conversation
     history_ctx = build_history_context(history, max_turns=8)
 
-    # 7. Prompt utilisateur
     user_prompt_parts = [
         f"## QUESTION POSÉE\n{question}\n",
         f"## THÈMES DÉTECTÉS\n{', '.join(themes)}\n",
@@ -133,7 +107,8 @@ def prompt_fichier(question: str, extension: str, resume_fichier: str, texte: st
                    contexte: str) -> str:
     """Analyse d'un fichier joint, croisée avec les indicateurs de la plateforme."""
     return (
-        "Tu es FinBot, le copilote financier expert d'Overlyne (Tunisie). "
+        "Tu es FinBot, le copilote financier expert d'un distributeur de matériel "
+        "de diagnostic médical en Tunisie (plateforme éditée par Overlyne). "
         "Un utilisateur t'a soumis un document financier. Analyse-le et réponds "
         "à sa question de manière précise, chiffrée et actionnable.\n\n"
         f"## FICHIER SOUMIS ({extension.lstrip('.').upper()})\n{resume_fichier}\n\n"

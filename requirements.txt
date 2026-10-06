@@ -72,7 +72,7 @@ langgraph>=0.2               # graphe d'agents (repli sequentiel si absent)
 python-multipart>=0.0.9
 
 # Authentification & RBAC (base relationnelle séparée de l'entrepôt DuckDB)
-sqlalchemy>=2.0            # ORM — schéma portable PostgreSQL/SQLite
+sqlalchemy>=2.0            # ORM — PostgreSQL uniquement
 psycopg2-binary>=2.9       # driver PostgreSQL (production)
 bcrypt>=4.0                # hachage bcrypt salé des mots de passe (lib directe, sans passlib)
 PyJWT>=2.8                 # jetons JWT signés à expiration

@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * DocumentsOCR — onglet « Documents & OCR ».
- *
- * Trois usages du service OCR transversal :
- *  1. FACTURE : scan → champs structurés (n°, dates, HT/TVA/TTC, tiers) +
- *     RAPPROCHEMENT automatique avec l'entrepôt ERP (retrouvée / écart / doublon).
- *  2. TEXTE : extraction brute avec indicateur de qualité de lecture.
- *  3. BASE DOCUMENTAIRE (directeur) : le document océrisé est indexé dans le
- *     RAG et devient interrogeable par le copilote via le préfixe « doc: ».
- */
-
 import {
   AlertTriangle, CheckCircle2, FileScan, FileText, Library, Loader2,
   Save, ScanLine, ShieldAlert, Upload, Wallet, XCircle,
@@ -26,7 +15,7 @@ const STATUT_META: Record<string, { label: string; color: string; icon: React.Re
   introuvable: { label: "Introuvable dans l'ERP", color: "#64748B", icon: <XCircle size={15} /> },
   montant_absent: { label: "Montant illisible", color: "#64748B", icon: <XCircle size={15} /> },
   entrepot_indisponible: { label: "Entrepôt indisponible", color: "#64748B", icon: <XCircle size={15} /> },
-  // Postérieure à la fin de l'export ERP : son absence ne prouve rien.
+
   hors_periode: { label: "Postérieure à l'export ERP", color: "#64748B", icon: <AlertTriangle size={15} /> },
   sens_a_choisir: { label: "Achat ou vente ?", color: "#64748B", icon: <AlertTriangle size={15} /> },
 };
@@ -74,9 +63,7 @@ export default function DocumentsOCR() {
       desc: "Le document est indexé : interrogez-le ensuite dans le copilote avec « doc: »." }] : []),
   ];
   const modeCourant = MODES.find(m => m.id === mode) || MODES[0];
-  // Tant qu'aucun résultat n'est affiché, le formulaire occupe toute la largeur
-  // au lieu de 5 colonnes sur 12 — l'ancienne mise en page laissait 7 colonnes
-  // vides à droite, ce qui donnait un écran minuscule et sans intention.
+
   const aUnResultat = Boolean(invoice || rawText);
 
   const zoneDepot = (
@@ -120,7 +107,6 @@ export default function DocumentsOCR() {
   return (
     <div style={{ gridColumn: "span 12", display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 14 }}>
 
-      {/* Panneau de dépôt */}
       <div className="chart-card" style={{ gridColumn: aUnResultat ? "span 5" : "span 12" }}>
         <div className="card-header">
           <span className="card-label"><ScanLine size={16} style={{ verticalAlign: "-3px" }} /> Numériser un document</span>
@@ -135,9 +121,6 @@ export default function DocumentsOCR() {
           <p className="ocr-flash warn"><AlertTriangle size={13} /> {engineInfo}</p>
         )}
 
-        {/* « Règles seules » a trois causes très différentes : modèle absent,
-            dépendances absentes, ou modèle refusé par le registre. La dernière
-            est invisible sans ce message. */}
         {moteurMotif && (
           <p className="muted-note" style={{ marginTop: 2,
               color: moteurCause === "refuse_par_registre" ? "#F59E0B" : "var(--text-muted)" }}>
@@ -176,7 +159,6 @@ export default function DocumentsOCR() {
         )}
       </div>
 
-      {/* Résultat facture */}
       {invoice && (
         <div className="chart-card" style={{ gridColumn: "span 7" }}>
           <div className="card-header">
@@ -193,8 +175,6 @@ export default function DocumentsOCR() {
             </p>
           )}
 
-          {/* Le TTC est la valeur sur laquelle se joue le rapprochement :
-              il est sorti de la grille pour être lisible d'un coup d'œil. */}
           <div className="ocr-hero">
             <div>
               <span>Montant TTC</span>
@@ -209,7 +189,6 @@ export default function DocumentsOCR() {
             )}
           </div>
 
-          {/* Enregistrement : sans cette étape, la lecture ne laissait aucune trace. */}
           <div className="ocr-import">
             {importRes?.ok ? (
               <p className="ocr-flash ok">
@@ -342,7 +321,6 @@ export default function DocumentsOCR() {
             </p>
           )}
 
-          {/* Rapprochement ERP */}
           {invoice.rapprochement && st && (
             <div style={{ marginTop: 14, borderTop: "1px solid rgba(26,35,72,0.10)", paddingTop: 12 }}>
               <p style={{ margin: "0 0 10px", fontSize: "0.82rem" }}>{invoice.rapprochement.message}</p>
@@ -374,7 +352,6 @@ export default function DocumentsOCR() {
         </div>
       )}
 
-      {/* Échéancier : factures lues, absentes de l'ERP, non réglées */}
       {!!ech?.n_factures && (
         <div className="chart-card" style={{ gridColumn: "span 12" }}>
           <div className="card-header">
@@ -432,7 +409,6 @@ export default function DocumentsOCR() {
         </div>
       )}
 
-      {/* Résultat texte brut */}
       {rawText && (
         <div className="chart-card" style={{ gridColumn: "span 7" }}>
           <div className="card-header">

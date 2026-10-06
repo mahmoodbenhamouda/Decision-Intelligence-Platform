@@ -1,89 +1,60 @@
 "use client";
 
-/**
- * ViewModel — administration réservée au directeur.
- *
- * Porte l'état des trois blocs (création de compte, liste des comptes avec
- * édition, traitement des demandes) et toutes les actions. Chaque action
- * affiche un message cinq secondes puis recharge les listes.
- */
 import { useState } from "react";
 import { useRequete } from "@/core/hooks/useRequete";
-import { STATUS_META, emailFromName } from "./admin.regles";
-import {
-  chargerAdmin, creerCompte, modifierCompte, supprimerCompte, traiterDemande,
-} from "./admin.service";
-import type { AdminRequest, AdminUser, ModeCreation } from "./admin.types";
+import { emailFromName } from "./admin.regles";
+import { chargerAdmin, creerCompte, modifierCompte, purgerRolesRetires, supprimerCompte } from "./admin.service";
+import type { AdminUser, ModeCreation } from "./admin.types";
 
 export function useAdmin() {
   const r = useRequete(chargerAdmin);
   const users = r.donnees?.users ?? [];
-  const erp = r.donnees?.erp ?? [];
-  const requests = r.donnees?.requests ?? [];
   const auditLog = r.donnees?.audit ?? [];
+  const rolesRetires = r.donnees?.rolesRetires ?? 0;
   const load = r.recharger;
 
   const [message, setNotice] = useState<string | null>(null);
   const notice = message ?? r.donnees?.erreur ?? null;
   const flash = (m: string) => { setNotice(m); window.setTimeout(() => setNotice(null), 5000); };
 
-  // Formulaire création — trois parcours : client déjà facturé (ERP), nouveau
-  // client, ou membre de l'équipe interne à qui confier des tâches.
-  const [mode, setMode] = useState<ModeCreation>("erp");
+  const [mode, setMode] = useState<ModeCreation>("employe");
   const [newPoste, setNewPoste] = useState("recouvrement");
-  const [newCode, setNewCode] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [newName, setNewName] = useState("");
   const [newPhone, setNewPhone] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [emailTouched, setEmailTouched] = useState(false);
 
-  // Modale d'édition
   const [editing, setEditing] = useState<AdminUser | null>(null);
-  const [editForm, setEditForm] = useState({ full_name: "", email: "", client_code: "", phone: "" });
+  const [editForm, setEditForm] = useState({ full_name: "", email: "", phone: "", poste: "" });
 
-  // Réponses en cours d'édition (demandes)
-  const [draft, setDraft] = useState<Record<number, string>>({});
-
-  const pickErp = (code: string) => {
-    setNewCode(code);
-    const c = erp.find(x => x.code === code);
-    if (c) {
-      setNewName(c.nom);
-      setNewEmail(emailFromName(c.nom, code));   // proposition alignée sur le nom
-    }
+  const changerNom = (v: string) => {
+    setNewName(v);
+    if (!emailTouched) setNewEmail(emailFromName(v));
   };
 
   const createUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    // Un employé n'a pas de code client : son périmètre, ce sont ses tâches.
     const estEmploye = mode === "employe";
     const res = await creerCompte({
       email: newEmail.trim(), password: newPassword, full_name: newName.trim() || null,
-      role: estEmploye ? "employe" : "client",
-      client_code: estEmploye ? null : newCode.trim(),
-      phone: newPhone.trim() || null,
+      role: mode, phone: newPhone.trim() || null,
       poste: estEmploye ? newPoste : null,
     });
     const d = res.data;
     if (res.ok) {
       flash(estEmploye
         ? `Compte employé créé : ${d.email} — vous pouvez lui confier des tâches.`
-        : `Compte créé et enregistré en base : ${d.email}`
-          + (d.in_erp === false ? " (nouveau client — aucune donnée ERP pour l'instant)" : ""));
-      setNewCode(""); setNewEmail(""); setNewName(""); setNewPhone(""); setNewPassword("");
+        : `Compte directeur créé : ${d.email}`);
+      setNewEmail(""); setNewName(""); setNewPhone(""); setNewPassword("");
       setEmailTouched(false);
       load();
     } else flash(`Erreur : ${d.detail || res.status}`);
   };
 
-  /* ── Édition complète via modale ──────────────────────────────────────── */
   const openEdit = (u: AdminUser) => {
     setEditing(u);
-    setEditForm({
-      full_name: u.full_name || "", email: u.email,
-      client_code: u.client_code || "", phone: u.phone || "",
-    });
+    setEditForm({ full_name: u.full_name || "", email: u.email, phone: u.phone || "", poste: u.poste || "" });
   };
 
   const saveEdit = async (e: React.FormEvent) => {
@@ -93,22 +64,20 @@ export function useAdmin() {
       full_name: editForm.full_name.trim() || null,
       phone: editForm.phone.trim() || null,
     };
+    if (editing.role === "employe") payload.poste = editForm.poste || null;
     if (editForm.email.trim().toLowerCase() !== editing.email.toLowerCase())
       payload.email = editForm.email.trim().toLowerCase();
-    if (editing.role === "client" && editForm.client_code.trim() !== (editing.client_code || ""))
-      payload.client_code = editForm.client_code.trim();
     const res = await modifierCompte(editing.id, payload);
     flash(res.ok ? "Compte mis à jour en base." : `Erreur : ${res.data.detail || res.status}`);
     if (res.ok) setEditing(null);
     load();
   };
 
-  /** Suppression DÉFINITIVE : double confirmation, dont la saisie de l'email. */
   const deleteForever = async (u: AdminUser) => {
     if (!window.confirm(
       `SUPPRESSION DÉFINITIVE de ${u.full_name || u.email}\n\n` +
       `• Le compte sera retiré de la base de données (irréversible)\n` +
-      `• Ses demandes seront supprimées\n` +
+      `• Ses tâches ouvertes repasseront « à affecter »\n` +
       `• Le journal d'audit sera conservé (anonymisé)\n\n` +
       `Astuce : la désactivation (icône ⊖) suffit si vous voulez juste bloquer l'accès.\n\n` +
       `Continuer ?`)) return;
@@ -121,7 +90,26 @@ export function useAdmin() {
     const res = await supprimerCompte(u.id, true);
     const d = res.data;
     flash(res.ok
-      ? `Compte ${d.email} supprimé définitivement (${d.demandes_supprimees} demande(s) supprimée(s), ${d.audit_anonymise} entrée(s) d'audit conservée(s)).`
+      ? `Compte ${d.email} supprimé définitivement (${d.taches_a_reaffecter} tâche(s) à réaffecter, ${d.audit_anonymise} entrée(s) d'audit conservée(s)).`
+      : `Erreur : ${d.detail || res.status}`);
+    load();
+  };
+
+  /** Le rôle « client » a été retiré : ses comptes n'ont plus lieu d'être en base. */
+  const purgerRetires = async () => {
+    if (!window.confirm(
+      `SUPPRESSION DÉFINITIVE de ${rolesRetires} compte(s)\n\n` +
+      `La plateforme ne sert plus que le directeur et ses employés. Ces comptes ont\n` +
+      `été créés sous un rôle retiré et ne peuvent déjà plus se connecter.\n\n` +
+      `• Ils seront effacés de la base de données (irréversible)\n` +
+      `• Leurs tâches ouvertes repasseront « à affecter »\n` +
+      `• Le journal d'audit sera conservé (anonymisé)\n\n` +
+      `Aucun compte directeur ou employé n'est concerné.\n\nContinuer ?`)) return;
+    const res = await purgerRolesRetires();
+    const d = res.data as { n_supprimes?: number; emails?: string[]; detail?: string };
+    flash(res.ok
+      ? `${d.n_supprimes ?? 0} compte(s) de rôle retiré supprimé(s)${
+          d.emails?.length ? ` : ${d.emails.join(", ")}` : ""}.`
       : `Erreur : ${d.detail || res.status}`);
     load();
   };
@@ -142,21 +130,12 @@ export function useAdmin() {
     flash(res.ok ? "Mot de passe réinitialisé." : `Erreur : ${res.data.detail || res.status}`);
   };
 
-  /* ── Traitement des demandes ──────────────────────────────────────────── */
-  const setRequestStatus = async (req: AdminRequest, status: string) => {
-    const ok = await traiterDemande(req.id, status, draft[req.id] ?? req.reponse ?? null);
-    flash(ok ? `Demande #${req.id} → ${STATUS_META[status]?.label || status}` : "Erreur de traitement.");
-    load();
-  };
-
-  const nNew = requests.filter(x => x.status === "nouvelle").length;
-
   return {
-    users, erp, requests, auditLog, loading: r.chargement, load, notice,
-    mode, setMode, newPoste, setNewPoste, newCode, setNewCode, newEmail, setNewEmail,
-    newName, setNewName, newPhone, setNewPhone, newPassword, setNewPassword,
-    emailTouched, setEmailTouched, editing, setEditing, editForm, setEditForm,
-    draft, setDraft, pickErp, createUser, openEdit, saveEdit, deleteForever,
-    toggleActive, resetPassword, setRequestStatus, nNew,
+    users, auditLog, rolesRetires, loading: r.chargement, load, notice,
+    mode, setMode, newPoste, setNewPoste, newEmail, setNewEmail,
+    newName, changerNom, newPhone, setNewPhone, newPassword, setNewPassword,
+    setEmailTouched, editing, setEditing, editForm, setEditForm,
+    createUser, openEdit, saveEdit, deleteForever, toggleActive, resetPassword,
+    purgerRetires,
   };
 }

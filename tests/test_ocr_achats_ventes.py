@@ -1,8 +1,4 @@
-"""Import OCR : achats et ventes séparés, traçabilité, corrections.
-
-Tout se passe dans un entrepôt DuckDB TEMPORAIRE : la base réelle n'est
-jamais touchée par ces tests.
-"""
+"""Import OCR : achats et ventes séparés, traçabilité, corrections."""
 import json
 
 import pytest
@@ -32,7 +28,6 @@ def entrepot(tmp_path, monkeypatch):
                    est_avoir BOOLEAN, mode_regl VARCHAR, year INT, payment_delay_days INT)""")
     con.execute("""INSERT INTO purchases VALUES (1, 'A1', 'SUN CHEMICAL', 'F001',
                    DATE '2025-02-01', NULL, 1000, 1190, FALSE, 'LCR', 2025, NULL)""")
-    # une ligne à l'ANCIEN format (19 colonnes, sans `sens`)
     con.execute("""CREATE TABLE factures_importees (id BIGINT, numero VARCHAR, client_code VARCHAR,
         client_name VARCHAR, date DATE, echeance DATE, ht DOUBLE, tva DOUBLE, ttc DOUBLE,
         timbre_fiscal DOUBLE, net_a_payer DOUBLE, devise VARCHAR, matricule_fiscal VARCHAR,
@@ -62,23 +57,21 @@ def _q(chemin, sql):
         con.close()
 
 
-# ── migration ──────────────────────────────────────────────────────────────
 def test_migration_garde_l_ancienne_ligne_comme_vente(entrepot):
-    imp.factures_importees()                                     # déclenche la migration
+    imp.factures_importees()
     assert _q(entrepot, "SELECT count(*) FROM factures_importees")[0][0] == 1
     assert _q(entrepot, "SELECT count(*) FROM sales_augmentee WHERE source = 'ocr'")[0][0] == 1
     assert _q(entrepot, "SELECT count(*) FROM purchases_augmentee WHERE source = 'ocr'")[0][0] == 0
     assert imp.factures_importees()[0]["sens"] == "vente"
 
 
-# ── achats ────────────────────────────────────────────────────────────────
 def test_un_achat_ne_gonfle_jamais_les_ventes(entrepot):
     r = imp.importer_facture(_facture(), sens="achat", utilisateur="t")
     assert r["ok"] and r["sens"] == "achat"
-    assert r["tiers_code"] == "F001" and r["statut_tiers"] == "existant"   # SUN CHEMICAL (ERP)
+    assert r["tiers_code"] == "F001" and r["statut_tiers"] == "existant"
     assert _q(entrepot, "SELECT count(*) FROM sales_augmentee WHERE source = 'ocr'")[0][0] == 1
     assert _q(entrepot, "SELECT count(*) FROM purchases_augmentee WHERE source = 'ocr'")[0][0] == 1
-    assert _q(entrepot, "SELECT count(*) FROM dim_client")[0][0] == 1        # aucune fausse fiche client
+    assert _q(entrepot, "SELECT count(*) FROM dim_client")[0][0] == 1
 
 
 def test_nouveau_fournisseur_puis_rattachement(entrepot):
@@ -94,7 +87,6 @@ def test_vente_rattachee_au_client(entrepot):
     assert r["ok"] and r["client_code"] == "CP001" and r["sens"] == "vente"
 
 
-# ── doublons ──────────────────────────────────────────────────────────────
 def test_meme_numero_chez_deux_fournisseurs_n_est_pas_un_doublon(entrepot):
     assert imp.importer_facture(_facture(numero="000975"), sens="achat")["ok"]
     assert imp.importer_facture(_facture(numero="000975", fournisseur="ENNASR MARBRE"),
@@ -113,7 +105,6 @@ def test_meme_document_est_un_doublon(entrepot):
     assert not r["ok"] and "déjà été importé" in r["erreur"]
 
 
-# ── corrections : la matière de l'apprentissage ───────────────────────────
 def test_corrections_enregistrees(entrepot):
     lu = _facture(montant_tva=356.25, numero="FV-2026-0142")
     valide = _facture(montant_tva=364.65, numero="FV-2026-0142")
@@ -125,7 +116,7 @@ def test_corrections_enregistrees(entrepot):
     assert json.loads(row[0])["montant_tva"]["valide"] == 364.65
     assert json.loads(row[1])["montant_tva"] == 356.25
     assert row[2] == "layoutlmv3+regles"
-    assert row[3] == pytest.approx(23.607)                      # retenue à la source
+    assert row[3] == pytest.approx(23.607)
 
 
 def test_validation_sans_correction(entrepot):
@@ -141,7 +132,6 @@ def test_saisie_nettoyee():
     assert s == {"montant_ttc": 2360.65, "date_facture": "2026-09-14", "numero": "FV 1"}
 
 
-# ── sens de la facture ────────────────────────────────────────────────────
 NOUS = {"nom": "POLYMER SERVICE PROVIDER", "alias": ["PSP"], "mf": "1234567/A/M/000",
         "configuree": True}
 

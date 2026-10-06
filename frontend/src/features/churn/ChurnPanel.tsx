@@ -1,27 +1,12 @@
 "use client";
 
-/**
- * ChurnPanel — clients susceptibles de cesser de commander.
- *
- * Destiné au DIRECTEUR : aucun vocabulaire technique n'apparaît à l'écran.
- * Pas de « modèle », « score », « probabilité », « AUC » ni « prédiction » —
- * seulement des phrases qu'un responsable commercial lit sans traduction.
- *
- * Ce que le panneau montre réellement : parmi les clients qui commandent encore,
- * lesquels risquent de s'arrêter dans les trois mois. C'est la différence avec
- * l'onglet Clients, qui constate les baisses de chiffre d'affaires déjà
- * survenues — quand le compte est souvent déjà perdu.
- *
- * Le classement suit le MONTANT EN JEU (risque × chiffre d'affaires annuel) et
- * non le risque seul : un risque élevé sur un petit compte ne justifie pas la
- * même attention qu'un risque modéré sur un compte majeur.
- */
-
+import { useState } from "react";
 import {
   CartesianGrid, ResponsiveContainer, Scatter, ScatterChart,
   Tooltip as RTooltip, XAxis, YAxis, ZAxis,
 } from "recharts";
 import { AlertTriangle, CalendarClock, TrendingDown, UserMinus } from "lucide-react";
+import PanneauMasque, { BadgeFiltreClients } from "@/shared/ui/PanneauMasque";
 import Pourquoi from "@/shared/ui/Pourquoi";
 import type { ChurnClient } from "./churn.types";
 import { useChurn } from "./useChurn";
@@ -33,8 +18,6 @@ function fMoney(v: number | null | undefined) {
   return `${v.toFixed(0)} DT`;
 }
 
-/** Quatre niveaux, pas dix. Un dégradé continu ne se traduit pas en décision ;
- *  quatre paliers correspondent à quatre conduites à tenir. */
 function niveau(p: number) {
   if (p >= 0.7) return { label: "Très inquiétant", color: "#DC2626", action: "Appeler cette semaine" };
   if (p >= 0.5) return { label: "Inquiétant", color: "#F97316", action: "Reprendre contact" };
@@ -42,8 +25,6 @@ function niveau(p: number) {
   return { label: "Rassurant", color: "#10B981", action: "Suivi habituel" };
 }
 
-/** Le risque exprimé en mots. Un pourcentage invite à une précision que
- *  l'estimation n'a pas ; une formulation verbale reste juste. */
 function enMots(p: number): string {
   if (p >= 0.7) return "Très probable";
   if (p >= 0.5) return "Probable";
@@ -55,12 +36,18 @@ export default function ChurnPanel({ clientNames }: {
   clientNames?: Record<string, string>;
 }) {
   const { data, loading } = useChurn();
+  // Les 10 premiers par enjeu : une liste d'appels se traite, elle ne se parcourt pas.
+  const [toutVoir, setToutVoir] = useState(false);
 
-  // Le nom vient de l'API, qui le joint depuis l'entrepôt. La table locale sert
-  // de repli, et le code n'apparaît qu'en dernier recours.
   const nomDe = (c: ChurnClient) => c.nom || clientNames?.[c.code] || c.code;
 
   if (loading) return <p className="muted-note">Analyse de vos clients en cours…</p>;
+
+  if (data?.masque) return <PanneauMasque motif={data.motif} />;
+
+  if (data?.portee === "clients" && !(data.top || []).length) {
+    return <PanneauMasque motif={data.motif || "Aucun des clients filtrés n'a de score de départ."} />;
+  }
 
   if (!data?.servi) {
     return (
@@ -88,11 +75,11 @@ export default function ChurnPanel({ clientNames }: {
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
-      {/* ── Ce qu'il faut retenir, en une phrase ────────────────────────── */}
       <div className="chart-card" style={{
         padding: "15px 17px", borderLeft: "4px solid #DC2626",
         background: "linear-gradient(90deg, rgba(220,38,38,0.04), rgba(255,255,255,0))",
       }}>
+        <BadgeFiltreClients n={data.n_clients_filtre} />
         <div style={{ fontSize: 15.5, fontWeight: 700, color: "#16204A", marginBottom: 4 }}>
           {urgents.length > 0
             ? `${urgents.length} client${urgents.length > 1 ? "s" : ""} risque${urgents.length > 1 ? "nt" : ""} de vous quitter`
@@ -109,7 +96,6 @@ export default function ChurnPanel({ clientNames }: {
         </div>
       </div>
 
-      {/* ── Trois chiffres, pas plus ────────────────────────────────────── */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 12 }}>
         <Case icon={<UserMinus size={15} />} couleur="#DC2626"
               label="Clients à relancer"
@@ -125,7 +111,6 @@ export default function ChurnPanel({ clientNames }: {
               sous="délai avant un arrêt probable" />
       </div>
 
-      {/* ── La carte des priorités ──────────────────────────────────────── */}
       <div className="chart-card" style={{ padding: 15 }}>
         <p className="card-label" style={{ marginBottom: 10 }}>Où concentrer vos efforts</p>
         <div style={{ height: 280 }}>
@@ -174,7 +159,6 @@ export default function ChurnPanel({ clientNames }: {
         </div>
       </div>
 
-      {/* ── La liste d'appels ───────────────────────────────────────────── */}
       <div className="chart-card" style={{ padding: 15 }}>
         <p className="card-label" style={{ marginBottom: 10 }}>Votre liste d&apos;appels</p>
         <div style={{ overflowX: "auto" }}>
@@ -189,11 +173,9 @@ export default function ChurnPanel({ clientNames }: {
               </tr>
             </thead>
             <tbody>
-              {top.map(c => {
+              {(toutVoir ? top : top.slice(0, 10)).map(c => {
                 const n = niveau(c.probabilite_decrochage);
-                // Un silence n'est anormal que rapporté au rythme habituel du
-                // client : 60 jours ne signifient rien pour un client trimestriel,
-                // beaucoup pour un client hebdomadaire.
+
                 const anormal = c.intervalle_moyen_j > 0
                   && c.recence_j > c.intervalle_moyen_j * 2;
                 return (
@@ -203,10 +185,8 @@ export default function ChurnPanel({ clientNames }: {
                       <div style={{ fontSize: 11, color: "#64748B" }}>
                         {fMoney(c.ca_12m)} sur 12 mois · {c.freq_12m} commande{c.freq_12m > 1 ? "s" : ""}
                       </div>
-                      {/* La justification se lit là où la décision se prend :
-                          sur la ligne du client qu'on s'apprête à appeler. */}
                       <div style={{ marginTop: 5 }}>
-                        <Pourquoi raisons={c.raisons}
+                        <Pourquoi raisons={c.raisons} contrefactuel={c.contrefactuel}
                           titre={`Pourquoi ${nomDe(c)} est signalé`} />
                       </div>
                     </td>
@@ -234,6 +214,11 @@ export default function ChurnPanel({ clientNames }: {
             </tbody>
           </table>
         </div>
+        {top.length > 10 && (
+          <button className="vk-lien" style={{ marginTop: 8 }} onClick={() => setToutVoir(v => !v)}>
+            {toutVoir ? "Ne garder que les 10 premiers" : `Afficher les ${top.length - 10} suivants`}
+          </button>
+        )}
       </div>
 
     </div>

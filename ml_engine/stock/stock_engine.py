@@ -1,27 +1,4 @@
-"""
-ml_engine/stock/stock_engine.py
-===============================
-Indicateurs de GESTION DE STOCK, calculés sur les données **simulées**.
-
-⚠️ Chaque sortie porte `is_simulated: True`. Voir `docs/STOCK_SIMULE.md`.
-
-Indicateurs produits (tous des standards de la gestion de stock) :
-
-| Indicateur | Formule | Décision qu'il éclaire |
-|---|---|---|
-| Couverture (jours) | `stock ÷ demande_jour` | combien de temps je tiens |
-| Taux de rotation | `demande_annuelle ÷ stock` | mon stock tourne-t-il ? |
-| Taux de service estimé | part des produits au-dessus du stock de sécurité | risque de rupture client |
-| Valeur immobilisée | `Σ stock × coût_unitaire` | trésorerie bloquée |
-| Jours avant rupture | `(stock − stock_sécurité) ÷ demande_jour` | urgence de la commande |
-| Quantité à commander | `niveau_cible − stock` (si `stock ≤ point_commande`) | combien commander |
-| Péremption à risque | lots expirant avant écoulement du stock | perte sèche à venir |
-
-Le dernier indicateur est **spécifique au diagnostic in vitro** : un réactif
-périmé est une perte totale. On compare la date de péremption à la date
-d'écoulement prévisionnelle (`stock ÷ demande_jour`) : si le lot expire avant
-d'être consommé, la quantité excédentaire est perdue.
-"""
+"""Indicateurs de GESTION DE STOCK, calculés sur les données **simulées**."""
 
 from __future__ import annotations
 
@@ -30,7 +7,8 @@ import re
 from typing import Any, Dict, List, Optional
 
 AVERTISSEMENT = (
-    "DONNÉES SIMULÉES — l'ERP d'Overlyne ne contient aucune donnée de stock. "
+    "DONNÉES SIMULÉES — aucun relevé de stock n'est disponible chez le "
+    "distributeur. "
     "Ces valeurs sont générées par un modèle (s,S) calibré sur la demande réelle "
     "(6 ans, 1 973 produits) pour démontrer la chaîne de gestion ; elles ne "
     "mesurent aucun stock observé. Modèle : docs/STOCK_SIMULE.md."
@@ -57,18 +35,8 @@ def stock_available() -> bool:
 def compute_stock_kpis(famille: Optional[str] = None,
                        client: Optional[str] = None,
                        limit_alertes: int = 12) -> Dict[str, Any]:
-    """Indicateurs de stock + alertes priorisées.
-
-    Args:
-        famille: restreint à une famille de produits (REACTIF, EQUIPEMENT…).
-        client: restreint au stock d'un client / hôpital.
-        limit_alertes: nombre d'alertes retournées par catégorie.
-    """
+    """Indicateurs de stock + alertes priorisées."""
     if not stock_available():
-        # Message destiné à un UTILISATEUR, pas à un développeur : l'ancien
-        # libellé affichait une commande Python dans l'interface du directeur.
-        # La régénération est de toute façon automatique au prochain cycle de
-        # maintenance, personne n'a de commande à taper.
         return {"error": "Les estimations de stock sont en cours de reconstruction.",
                 "is_simulated": True, "avertissement": AVERTISSEMENT}
 
@@ -88,7 +56,6 @@ def compute_stock_kpis(famille: Optional[str] = None,
 
     ref = con.execute("SELECT max(date) FROM sales").fetchone()[0] or date.today()
 
-    # ── Indicateurs globaux ──
     g = con.execute(f"""
         SELECT count(*)                                              AS n_produits,
                sum(valeur_stock)                                     AS valeur_totale,
@@ -135,22 +102,15 @@ def compute_stock_kpis(famille: Optional[str] = None,
         "n_a_commander": int(g[3] or 0),
         "n_sous_securite": int(g[4] or 0),
         "n_ruptures": int(g[5] or 0),
-        # Références à stock nul SANS demande : ce ne sont pas des ruptures mais
-        # du catalogue mort. Exposé séparément pour que la distinction reste
-        # visible plutôt que d'être silencieusement absorbée.
         "n_references_dormantes": int(g[6] or 0),
         "n_surstock": int(g[7] or 0),
         "valeur_surstock_dt": round(float(g[8] or 0), 0),
-        # Rotation = coût annuel écoulé ÷ valeur du stock (nb de fois par an)
         "taux_rotation": round(cout_annuel / valeur, 2) if valeur > 0 else 0.0,
-        # Taux de service estimé : part des produits au-dessus du stock de sécurité
         "taux_service_estime_pct": round(
             (n_prod - int(g[4] or 0)) / n_prod * 100, 1),
     }
-    # Délai moyen d'écoulement du stock (jours)
     k["jours_de_stock"] = round(365 / k["taux_rotation"], 0) if k["taux_rotation"] else None
 
-    # ── Alertes : produits à commander, triés par urgence ──
     k["alertes_reappro"] = [{
         "produit": r[0], "famille": r[1],
         "stock_actuel": round(float(r[2]), 1),
@@ -176,7 +136,6 @@ def compute_stock_kpis(famille: Optional[str] = None,
         LIMIT {int(limit_alertes)}
     """).fetchall()]
 
-    # ── Alertes péremption : lots qui expireront avant d'être consommés ──
     k["alertes_peremption"] = [{
         "produit": r[0], "famille": r[1],
         "date_peremption": r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2]),
@@ -209,7 +168,6 @@ def compute_stock_kpis(famille: Optional[str] = None,
     """).fetchone()[0]
     k["perte_peremption_estimee_dt"] = round(float(perte or 0), 0)
 
-    # ── Répartition par famille et par situation ──
     k["par_famille"] = [{
         "famille": r[0], "n_produits": int(r[1]),
         "valeur_dt": round(float(r[2] or 0), 0),
@@ -228,7 +186,6 @@ def compute_stock_kpis(famille: Optional[str] = None,
         FROM stock_simule WHERE {where} GROUP BY situation ORDER BY 2 DESC
     """).fetchall()]
 
-    # ── Top immobilisations (trésorerie bloquée) ──
     k["top_immobilisations"] = [{
         "produit": r[0], "valeur_dt": round(float(r[1]), 0),
         "couverture_jours": round(float(r[2]), 0) if r[2] is not None else None,
@@ -239,7 +196,6 @@ def compute_stock_kpis(famille: Optional[str] = None,
         ORDER BY valeur_stock DESC LIMIT 8
     """).fetchall()]
 
-    # Métadonnées de génération (traçabilité)
     try:
         m = con.execute("SELECT seed, genere_le, modele FROM stock_simule_meta "
                         "ORDER BY genere_le DESC LIMIT 1").fetchone()
@@ -253,39 +209,16 @@ def compute_stock_kpis(famille: Optional[str] = None,
     return k
 
 
-# Code client brut de l'ERP (CP000884, T0421…), par opposition à un libellé.
 _RE_CODE_CLIENT = re.compile(r"[A-Z]{1,3}\d{4,}")
 
 
 def classer_clients_par_risque(limit: int = 5, min_references: int = 3) -> Dict[str, Any]:
-    """Classe les clients selon l'état de leur stock — sains d'un côté, exposés de l'autre.
-
-    Chaque ligne du stock simulé porte déjà un client et une `situation`
-    (`sain`, `a_commander`, `rupture`, `surstock`). L'information existait donc,
-    mais rien ne l'agrégeait au niveau du client : à la question « quels clients
-    n'ont pas de risque de stock ? », le copilote répondait « donnée non
-    disponible » alors qu'elle était là.
-
-    Un client est dit **sain** lorsque AUCUNE de ses références n'est en rupture,
-    en surstock ni à commander. Le classement se fait ensuite par valeur de
-    stock décroissante : entre deux clients sans risque, le plus significatif
-    est celui qui immobilise le plus de valeur.
-
-    Args:
-        limit: nombre de clients retournés dans chaque liste.
-        min_references: seuil sous lequel un client est ignoré. Un client avec
-            une seule référence saine n'est pas un « client sans risque », c'est
-            un client sans données — l'inclure fausserait le classement.
-    """
+    """Classe les clients selon l'état de leur stock — sains d'un côté, exposés de l'autre."""
     if not stock_available():
         return {"error": "Les estimations de stock sont en cours de reconstruction.",
                 "is_simulated": True, "avertissement": AVERTISSEMENT}
 
     con = _connect()
-    # LEFT JOIN sur dim_client : le stock est rattaché tantôt à un libellé,
-    # tantôt à un code (CP000884…). Certains comptes n'ont AUCUN libellé dans
-    # l'ERP — le code est alors le seul identifiant existant, et `nom_resolu`
-    # le signale plutôt que de laisser croire à un échec de jointure.
     rows = con.execute(f"""
         SELECT s.client,
                max(d.client_name)                                            nom,
@@ -313,11 +246,6 @@ def classer_clients_par_risque(limit: int = 5, min_references: int = 3) -> Dict[
     for (cle, nom, ville, n_ref, val, n_rup, n_sur, n_cmd, n_sain, val_sur) in rows:
         n_risque = int(n_rup) + int(n_sur) + int(n_cmd)
         libelle = (nom or "").strip() or cle
-        # Le stock stocke tantôt un libellé, tantôt un code. Ce qui compte pour
-        # l'affichage n'est pas de savoir si la jointure a trouvé une ligne,
-        # mais si l'étiquette finale est lisible par un humain : certains
-        # comptes n'ont AUCUN libellé dans l'ERP et le code est alors leur seul
-        # identifiant — ce n'est pas une donnée manquante.
         resolu = not _RE_CODE_CLIENT.fullmatch(libelle)
         clients.append({
             "client": libelle,
@@ -343,11 +271,8 @@ def classer_clients_par_risque(limit: int = 5, min_references: int = 3) -> Dict[
         "n_clients_sans_risque": len(sains),
         "n_clients_exposes": len(exposes),
         "min_references": int(min_references),
-        # Déjà triés par valeur de stock décroissante par la requête.
         "clients_sans_risque": sains[:limit],
         "clients_les_plus_exposes": exposes[:limit],
-        # Lecture inverse : parmi les plus gros détenteurs de stock, lesquels
-        # sont sains ? C'est la question réellement posée par « top 5 clients ».
         "top_par_valeur": clients[:limit],
         "is_simulated": True,
         "avertissement": AVERTISSEMENT,

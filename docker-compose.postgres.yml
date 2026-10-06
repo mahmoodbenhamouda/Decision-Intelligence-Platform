@@ -1,7 +1,11 @@
-# PostgreSQL pour la base d'authentification (option Docker).
+# PostgreSQL pour la base d'authentification — la seule base supportée.
 # Lancement :  docker compose -f docker-compose.postgres.yml up -d
 # Puis dans .env :
 #   AUTH_DATABASE_URL=postgresql+psycopg2://finance:finance_pfe_2026@localhost:5432/finance_auth
+#
+# Deux bases sont créées : `finance_auth` (application) et `finance_auth_test`
+# (pytest). La seconde vient de docker/init-bases.sql, POSTGRES_DB n'en créant
+# qu'une.
 services:
   auth-db:
     image: postgres:16
@@ -14,6 +18,9 @@ services:
       - "5432:5432"
     volumes:
       - auth_pgdata:/var/lib/postgresql/data
+      # Scripts joués UNE fois, à la création du volume. Si le volume existe
+      # déjà, lancez plutôt : python scripts/preparer_bases.py
+      - ./docker/init-bases.sql:/docker-entrypoint-initdb.d/10-bases.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U finance -d finance_auth"]
       interval: 5s

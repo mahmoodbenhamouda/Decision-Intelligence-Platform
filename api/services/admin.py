@@ -1,78 +1,47 @@
-"""
-api/services/admin.py
-=====================
-Administration (directeur) : comptes, demandes clients, journal d'audit.
-
-- Comptes : un client HISTORIQUE (code ERP existant) ou NOUVEAU (code libre,
-  pas encore de facture dans l'entrepôt). Un code client = un seul compte ; un
-  compte interne n'a pas de code client ; le directeur ne peut ni se
-  désactiver, ni se supprimer, ni supprimer le dernier directeur actif.
-- Demandes clients : statut (en_cours/traitee/rejetee) + réponse.
-- Journal d'audit : consultation.
-"""
+"""Administration (directeur) : comptes de l'équipe et journal d'audit."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from sqlalchemy import delete, func, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
 from api.auth.journal import audit
-from api.auth.models import (REQUEST_STATUS, ROLE_CLIENT, ROLE_DIRECTEUR,
-                             ROLE_EMPLOYE, ROLES, AuditLog, ClientRequest,
+from api.auth.models import (ROLE_DIRECTEUR, ROLE_EMPLOYE, ROLES, AuditLog,
                              EvenementTache, RevokedToken, Tache, User)
 from api.auth.security import hash_password, password_policy_errors
-from api.donnees import entrepot
-from api.schemas.admin import RequestUpdate, UserCreate, UserOut, UserUpdate
+from api.schemas.admin import UserCreate, UserOut, UserUpdate
 from api.services.erreurs import Conflit, DonneesInvalides, Introuvable
 
 
-def _codes_erp() -> set[str]:
-    """Codes clients présents dans l'entrepôt (vide si l'entrepôt est absent)."""
-    try:
-        return entrepot.codes_clients()
-    except Exception:
-        return set()
+def lister_comptes(db: Session, inclure_retires: bool = False) -> List[UserOut]:
+    """Les comptes de l'équipe (directeurs et employés).
+
+    Un compte dont le rôle n'est plus dans `ROLES` — le portail client, retiré —
+    n'est PAS listé par défaut : il ne peut plus se connecter, l'afficher ne
+    ferait que suggérer un rôle que la plateforme ne sert plus. `compter_roles_retires`
+    dit combien il en reste, et `purger_roles_retires` les efface.
+    """
+    q = select(User)
+    if not inclure_retires:
+        q = q.where(User.role.in_(ROLES))
+    users = db.execute(q.order_by(User.role, User.email)).scalars().all()
+    return [UserOut.of(u) for u in users]
 
 
-def _dans_erp(code: Optional[str], codes: Optional[set[str]] = None) -> Optional[bool]:
-    if not code:
-        return None
-    return code.strip().upper() in (codes if codes is not None else _codes_erp())
-
-
-# ── Comptes ─────────────────────────────────────────────────────────────────
-def lister_comptes(db: Session) -> List[UserOut]:
-    """Tous les comptes, avec l'info « présent dans l'ERP » pour distinguer
-    les clients historiques des nouveaux."""
-    users = db.execute(select(User).order_by(User.role, User.email)).scalars().all()
-    codes = _codes_erp()
-    return [UserOut.of(u, in_erp=_dans_erp(u.client_code, codes)) for u in users]
+def compter_roles_retires(db: Session) -> int:
+    """Combien de comptes subsistent en base avec un rôle que la plateforme ne sert plus."""
+    return int(db.execute(
+        select(func.count()).select_from(User).where(User.role.notin_(ROLES))
+    ).scalar_one() or 0)
 
 
 def creer_compte(db: Session, admin: User, body: UserCreate) -> UserOut:
-    """Contrôles : rôle valide, `client_code` obligatoire et UNIQUE pour un
-    client (deux comptes ne peuvent pas viser le même périmètre de données),
-    email unique, politique de mot de passe."""
+    """Contrôles : rôle valide (directeur ou employé), mot de passe robuste, email unique."""
     if body.role not in ROLES:
         raise DonneesInvalides(f"Rôle invalide (attendu : {', '.join(ROLES)}).")
-
-    code = (body.client_code or "").strip()
-    if body.role == ROLE_CLIENT:
-        if not code:
-            raise DonneesInvalides("Un compte client doit avoir un code client.")
-        if len(code) > 64:
-            raise DonneesInvalides("Code client trop long (64 caractères max).")
-        dup = db.execute(select(User).where(
-            func.upper(User.client_code) == code.upper())).scalar_one_or_none()
-        if dup is not None:
-            raise Conflit(f"Le code client « {code} » est déjà attribué au compte {dup.email}.")
-    elif code:
-        raise DonneesInvalides("Un compte interne (directeur ou employé) ne doit pas "
-                               "avoir de code client.")
 
     errs = password_policy_errors(body.password)
     if errs:
@@ -83,29 +52,24 @@ def creer_compte(db: Session, admin: User, body: UserCreate) -> UserOut:
 
     u = User(email=email, password_hash=hash_password(body.password),
              full_name=(body.full_name or "").strip() or None, role=body.role,
-             client_code=code or None,
              phone=(body.phone or "").strip() or None,
              poste=((body.poste or "").strip() or None) if body.role == ROLE_EMPLOYE else None,
              is_active=True)
     db.add(u)
     db.commit()
-    in_erp = _dans_erp(code)
     audit(db, user=admin, action="admin_create_user", resource="/api/admin/users",
-          detail=(f"création {email} ({body.role}"
-                  f"{f', code={code}, ERP={in_erp}' if code else ''})"))
-    return UserOut.of(u, in_erp=in_erp)
+          detail=f"création {email} ({body.role})")
+    return UserOut.of(u)
 
 
 def modifier_compte(db: Session, admin: User, user_id: int, body: UserUpdate) -> UserOut:
-    """Nom, identifiant, code client, téléphone, poste, activité, mot de passe."""
+    """Nom, identifiant, téléphone, poste, activité, mot de passe."""
     u = db.get(User, user_id)
     if u is None:
         raise Introuvable("Compte introuvable.")
     if u.id == admin.id and body.is_active is False:
         raise DonneesInvalides("Impossible de désactiver son propre compte.")
     if body.email:
-        # Changement d'identifiant (ex. établissement renommé) : unicité
-        # vérifiée en minuscules, mot de passe et historique conservés.
         new_email = body.email.lower().strip()
         if new_email != u.email:
             clash = db.execute(select(User).where(User.email == new_email)).scalar_one_or_none()
@@ -119,20 +83,7 @@ def modifier_compte(db: Session, admin: User, user_id: int, body: UserUpdate) ->
         if errs:
             raise DonneesInvalides("Mot de passe trop faible : " + ", ".join(errs) + ".")
         u.password_hash = hash_password(body.password)
-        # Révocation GLOBALE : tous les jetons émis avant ce changement
-        # deviennent invalides (token_version incrémentée, vérifiée à chaque requête).
         u.token_version = (u.token_version or 0) + 1
-    if body.client_code is not None:
-        code = body.client_code.strip()
-        if u.role == ROLE_CLIENT and not code:
-            raise DonneesInvalides("Un compte client doit garder un code client.")
-        if code and code.upper() != (u.client_code or "").upper():
-            dup = db.execute(select(User).where(
-                func.upper(User.client_code) == code.upper(),
-                User.id != u.id)).scalar_one_or_none()
-            if dup is not None:
-                raise Conflit(f"Le code client « {code} » est déjà attribué à {dup.email}.")
-        u.client_code = code or None
     for field in ("full_name", "phone", "poste", "is_active"):
         v = getattr(body, field)
         if v is not None:
@@ -140,20 +91,70 @@ def modifier_compte(db: Session, admin: User, user_id: int, body: UserUpdate) ->
     db.commit()
     audit(db, user=admin, action="admin_update_user", resource="/api/admin/users",
           detail=f"maj compte #{user_id} ({u.email})")
-    return UserOut.of(u, in_erp=_dans_erp(u.client_code))
+    return UserOut.of(u)
+
+
+def _detacher_et_effacer(db: Session, u: User) -> tuple[int, int]:
+    """Efface un compte en préservant ce qui le référence.
+
+    Le journal d'audit n'est JAMAIS amputé : ses entrées sont anonymisées
+    (`user_id` à NULL, l'email reste écrit dans la ligne), sans quoi supprimer
+    un compte effacerait la preuve de ce qu'il a fait. Les tâches encore
+    ouvertes qui lui étaient confiées repassent à affecter plutôt que de
+    disparaître avec lui.
+
+    Retourne (tâches remises à affecter, entrées d'audit anonymisées).
+    Ne valide pas la transaction : l'appelant décide quand committer.
+    """
+    n_taches = db.execute(
+        sa_update(Tache).where(Tache.assigne_id == u.id,
+                               Tache.statut.in_(("a_faire", "en_cours", "bloquee")))
+        .values(assigne_id=None, statut="a_affecter")).rowcount or 0
+    db.execute(sa_update(Tache).where(Tache.assigne_id == u.id).values(assigne_id=None))
+    db.execute(sa_update(Tache).where(Tache.cree_par_id == u.id).values(cree_par_id=None))
+    db.execute(sa_update(EvenementTache).where(
+        EvenementTache.user_id == u.id).values(user_id=None))
+    db.execute(delete(RevokedToken).where(RevokedToken.user_id == u.id))
+    n_audit = db.execute(
+        sa_update(AuditLog).where(AuditLog.user_id == u.id).values(user_id=None)
+    ).rowcount or 0
+    db.delete(u)
+    return n_taches, n_audit
+
+
+def purger_roles_retires(db: Session, admin: User) -> Dict[str, Any]:
+    """Efface définitivement les comptes d'un rôle que la plateforme ne sert plus.
+
+    Le rôle « client » (portail des établissements) a été retiré : la plateforme
+    est désormais destinée au directeur et à ses employés. Les comptes créés sous
+    ce rôle ne peuvent déjà plus se connecter — `ROLES` ne les contient plus —
+    mais ils subsistaient en base. Cette opération les efface, journal d'audit
+    préservé. Elle ne touche AUCUN compte de rôle en vigueur : un directeur ou un
+    employé ne peut pas être emporté par une purge, même par erreur.
+    """
+    comptes = db.execute(select(User).where(User.role.notin_(ROLES))).scalars().all()
+    if not comptes:
+        return {"ok": True, "n_supprimes": 0, "emails": [],
+                "message": "Aucun compte de rôle retiré en base."}
+
+    efface: List[Dict[str, Any]] = []
+    for u in comptes:
+        email, role = u.email, u.role
+        n_taches, n_audit = _detacher_et_effacer(db, u)
+        efface.append({"email": email, "role": role,
+                       "audit_anonymise": n_audit, "taches_a_reaffecter": n_taches})
+    db.commit()
+    audit(db, user=admin, action="admin_purge_roles_retires",
+          resource="/api/admin/purger-roles-retires",
+          detail=("suppression définitive de "
+                  f"{len(efface)} compte(s) de rôle retiré : "
+                  + ", ".join(f"{e['email']} ({e['role']})" for e in efface)))
+    return {"ok": True, "n_supprimes": len(efface),
+            "emails": [e["email"] for e in efface], "details": efface}
 
 
 def supprimer_compte(db: Session, admin: User, user_id: int, definitif: bool) -> Dict[str, Any]:
-    """Deux modes :
-
-    - `definitif=False` : **désactivation**. Le compte ne peut plus se connecter
-      mais reste en base : historique, demandes et audit intacts, réactivation
-      possible. C'est le mode recommandé.
-    - `definitif=True` : **suppression DÉFINITIVE**. Les demandes du compte et
-      ses jetons révoqués sont supprimés ; le journal d'audit est CONSERVÉ mais
-      anonymisé (`user_id` mis à NULL, l'email reste comme trace) ; les tâches
-      survivent au compte.
-    """
+    """Deux modes :"""
     u = db.get(User, user_id)
     if u is None:
         raise Introuvable("Compte introuvable.")
@@ -168,7 +169,7 @@ def supprimer_compte(db: Session, admin: User, user_id: int, definitif: bool) ->
             raise DonneesInvalides(
                 "Impossible : ce compte est le dernier directeur actif de la plateforme.")
 
-    email, code = u.email, u.client_code
+    email = u.email
 
     if not definitif:
         u.is_active = False
@@ -177,92 +178,17 @@ def supprimer_compte(db: Session, admin: User, user_id: int, definitif: bool) ->
               resource="/api/admin/users", detail=f"désactivation {email}")
         return {"ok": True, "email": email, "is_active": False, "deleted": False}
 
-    # Les tâches SURVIVENT au compte : le travail et son résultat appartiennent
-    # à l'entreprise, pas à la personne. Celles qui étaient en cours redeviennent
-    # « à affecter », sinon elles disparaîtraient de tous les écrans avec leur
-    # responsable.
-    n_taches = db.execute(
-        sa_update(Tache).where(Tache.assigne_id == u.id,
-                               Tache.statut.in_(("a_faire", "en_cours", "bloquee")))
-        .values(assigne_id=None, statut="a_affecter")).rowcount or 0
-    db.execute(sa_update(Tache).where(Tache.assigne_id == u.id).values(assigne_id=None))
-    db.execute(sa_update(Tache).where(Tache.cree_par_id == u.id).values(cree_par_id=None))
-    db.execute(sa_update(EvenementTache).where(
-        EvenementTache.user_id == u.id).values(user_id=None))
-
-    # Une demande client supprimée ne doit pas laisser une tâche pointer dans le vide.
-    req_ids = [r for (r,) in db.execute(
-        select(ClientRequest.id).where(ClientRequest.user_id == u.id)).all()]
-    if req_ids:
-        db.execute(sa_update(Tache).where(Tache.request_id.in_(req_ids))
-                   .values(request_id=None))
-    n_req = db.execute(delete(ClientRequest).where(
-        ClientRequest.user_id == u.id)).rowcount or 0
-    db.execute(delete(RevokedToken).where(RevokedToken.user_id == u.id))
-    # L'audit survit à la suppression : on coupe seulement la clé étrangère.
-    n_audit = db.execute(
-        sa_update(AuditLog).where(AuditLog.user_id == u.id).values(user_id=None)
-    ).rowcount or 0
-    db.delete(u)
+    n_taches, n_audit = _detacher_et_effacer(db, u)
     db.commit()
     audit(db, user=admin, action="admin_delete_user_permanent",
           resource="/api/admin/users",
-          detail=(f"suppression définitive {email}"
-                  f"{f' (code {code})' if code else ''} — "
-                  f"{n_req} demande(s) supprimée(s), {n_audit} entrée(s) d'audit anonymisée(s), "
+          detail=(f"suppression définitive {email} — "
+                  f"{n_audit} entrée(s) d'audit anonymisée(s), "
                   f"{n_taches} tâche(s) remise(s) à affecter"))
     return {"ok": True, "email": email, "deleted": True,
-            "demandes_supprimees": n_req, "audit_anonymise": n_audit,
-            "taches_a_reaffecter": n_taches}
+            "audit_anonymise": n_audit, "taches_a_reaffecter": n_taches}
 
 
-def clients_erp() -> Dict[str, Any]:
-    """Codes clients réels de l'entrepôt (pour créer un compte relié à l'ERP)."""
-    try:
-        return {"clients": entrepot.clients_principaux(limite=100)}
-    except Exception as e:
-        return {"clients": [], "error": str(e)}
-
-
-# ── Demandes clients ────────────────────────────────────────────────────────
-def _demande_dict(r: ClientRequest, u: Optional[User]) -> Dict[str, Any]:
-    return {
-        "id": r.id, "type": r.type, "sujet": r.sujet, "message": r.message,
-        "invoice_ref": r.invoice_ref, "status": r.status, "reponse": r.reponse,
-        "client_code": r.client_code,
-        "client_nom": (u.full_name or u.email) if u else None,
-        "created_at": r.created_at.isoformat() if r.created_at else None,
-        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-    }
-
-
-def lister_demandes(db: Session, statut: Optional[str]) -> Dict[str, Any]:
-    q = select(ClientRequest).order_by(ClientRequest.created_at.desc())
-    if statut:
-        q = q.where(ClientRequest.status == statut)
-    reqs = db.execute(q).scalars().all()
-    users = {u.id: u for u in db.execute(select(User)).scalars().all()}
-    return {"requests": [_demande_dict(r, users.get(r.user_id)) for r in reqs]}
-
-
-def traiter_demande(db: Session, admin: User, req_id: int, body: RequestUpdate) -> Dict[str, Any]:
-    r = db.get(ClientRequest, req_id)
-    if r is None:
-        raise Introuvable("Demande introuvable.")
-    if body.status is not None:
-        if body.status not in REQUEST_STATUS:
-            raise DonneesInvalides(f"Statut invalide (attendu : {', '.join(REQUEST_STATUS)}).")
-        r.status = body.status
-    if body.reponse is not None:
-        r.reponse = body.reponse
-    r.updated_at = datetime.now(timezone.utc)
-    db.commit()
-    audit(db, user=admin, action="admin_update_request", resource="/api/admin/requests",
-          detail=f"demande #{req_id} → {r.status}")
-    return _demande_dict(r, db.get(User, r.user_id))
-
-
-# ── Audit ───────────────────────────────────────────────────────────────────
 def journal_audit(db: Session, limite: int) -> Dict[str, Any]:
     """Dernières entrées du journal d'audit (qui a fait quoi, quand)."""
     limite = max(1, min(500, limite))

@@ -33,8 +33,8 @@ Recherche systématique sur les **32 fichiers CSV** de `data_pfe/`, sur les moti
 |---|---|---|
 | `dso_jours` | ⚠️ proxy | délai **accordé** moyen, pas le délai d'encaissement |
 | `exposition_recente_dt` | ⚠️ proxy | CA **facturé à délai long**, pas un impayé |
-| `retards_30j/60j/90j` | ⚠️ proxy | factures à délai **accordé** long |
-| `montant_risque_ttc` | ⚠️ proxy | comportement contractuel cumulé, **pas un encours dû** |
+| `factures_delai_sup_30j/60j/90j` | ⚠️ proxy | factures à délai **accordé** long |
+| `montant_delai_sup_60j_ttc` | ⚠️ proxy | comportement contractuel cumulé, **pas un encours dû** |
 | Modèle de risque crédit | ⚠️ cible proxy | prédit `P(délai accordé > 60 j)`, pas `P(défaut)` |
 | `cash_forecast` | ✅ correct | encaissements attendus **à l'échéance** — c'est bien ce qui est calculé |
 | CA, marge, concentration, produits, fournisseurs, demande | ✅ correct | aucun lien avec la date de paiement |

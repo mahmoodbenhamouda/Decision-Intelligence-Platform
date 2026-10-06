@@ -1,40 +1,4 @@
-"""
-scripts/generer_grille_validation.py
-=====================================
-Pré-remplit la grille de validation métier avec les CAS RÉELS de la plateforme.
-
-Le problème que ce script résout
---------------------------------
-`docs/VALIDATION_METIER.md` décrit quatre grilles à faire remplir par
-l'entreprise. C'est la seule limite du projet qu'aucun code ne peut lever :
-toutes les métriques mesurées sont INTERNES — une AUC compare des prédictions à
-des étiquettes calculées sur les mêmes données, et ne dit rien de la pertinence
-terrain.
-
-Mais un protocole qui demande à un directeur commercial de recopier lui-même
-trente noms de clients depuis une application ne sera jamais rempli. Ce script
-produit un fichier où **chaque ligne est déjà instruite** : le cas, ce que la
-plateforme affirme, et une colonne vide pour le verdict. Il reste à cocher.
-
-Ce que le script ne fait PAS
----------------------------
-Il ne remplit **aucun verdict**. La colonne `VERDICT_ENTREPRISE` reste vide, et
-c'est le point entier de l'exercice : une grille auto-remplie mesurerait la
-plateforme contre elle-même, ce qui est exactement le défaut qu'elle est censée
-corriger. Le seul moyen honnête de la remplir est de la faire remplir.
-
-Ce qu'il faut chercher en la remplissant
-----------------------------------------
-Les faux positifs sautent aux yeux — un client signalé qui vient de commander.
-Les **faux négatifs** sont le vrai enjeu : un client inquiétant ABSENT de la
-liste. Le modèle ne peut pas les voir seul, et une dernière section du fichier
-les réclame explicitement.
-
-Sortie : `reports/validation_metier.csv`
-
-Lancement :
-    python scripts/generer_grille_validation.py
-"""
+"""Pré-remplit la grille de validation métier avec les CAS RÉELS de la plateforme."""
 
 from __future__ import annotations
 
@@ -50,10 +14,6 @@ sys.path.insert(0, str(BASE))
 REPORTS = BASE / "reports"
 SORTIE = REPORTS / "validation_metier.csv"
 
-# Nombre de cas par grille. Volontairement modeste : une grille de 200 lignes ne
-# sera pas remplie, et 15 cas par domaine suffisent à détecter un biais
-# systématique. Mieux vaut une grille courte et rendue qu'une grille exhaustive
-# et abandonnée.
 PAR_GRILLE = 15
 
 
@@ -155,12 +115,7 @@ def _lignes_ruptures() -> List[List[str]]:
 
 
 def _lignes_nomenclature() -> List[List[str]]:
-    """Classements produit sur lesquels tout le domaine stock repose.
-
-    Placés dans la même grille que le reste plutôt que dans un fichier séparé :
-    c'est la limite la plus faible du projet, et la séparer réduirait ses chances
-    d'être corrigée.
-    """
+    """Classements produit sur lesquels tout le domaine stock repose."""
     try:
         from ml_engine.stock.nomenclature import classee_explicitement, classer
         from ml_engine.stock.flux_reels import _connect
@@ -182,9 +137,6 @@ def _lignes_nomenclature() -> List[List[str]]:
     except Exception:
         return []
 
-    # Priorité aux références classées PAR DÉFAUT : ce sont les seules dont le
-    # classement ne repose sur aucun signal, donc les seules où l'avis de
-    # l'entreprise apporte une information que le code n'a pas.
     douteuses = [(p, v) for p, v in rows if not classee_explicitement(p or "")]
     out = []
     for produit, valeur in douteuses[:PAR_GRILLE]:
@@ -218,12 +170,6 @@ def construire() -> Path:
         for l in lignes:
             w.writerow(l)
 
-        # ── La section que le code ne peut pas pré-remplir ──────────────────
-        #
-        # Les faux positifs se lisent dans les lignes ci-dessus. Les faux
-        # NÉGATIFS — un cas inquiétant que la plateforme n'a pas signalé — sont
-        # invisibles par construction : aucune mesure interne ne peut les
-        # produire, et ils sont pourtant le vrai test.
         w.writerow([])
         w.writerow(["6 — CE QUE LA PLATEFORME A MANQUÉ", "", "", "", "", ""])
         w.writerow(["", "(à compléter par l'entreprise)",

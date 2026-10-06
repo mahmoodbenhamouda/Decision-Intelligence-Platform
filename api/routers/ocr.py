@@ -1,26 +1,4 @@
-"""
-api/routers/ocr.py
-==================
-Service OCR transversal exposé en API — utilisable par tout le projet.
-
-Endpoints (tous authentifiés) :
-
-  POST /api/ocr/extract      — texte brut + qualité (tout rôle, sur son propre document)
-  POST /api/ocr/invoice      — facture scannée → champs structurés + sens proposé + RAPPROCHEMENT ERP
-  POST /api/ocr/invoice/import — enregistre une lecture validée (achat ou vente), sans relire
-  GET  /api/ocr/imports      — factures déjà enregistrées (filtres : sens, rapprochement)
-  POST /api/ocr/rapprocher   — refait le rapprochement d'une lecture (sens / valeurs corrigées)
-  POST /api/ocr/imports/rerapprocher — refait les rapprochements après une mise à jour ERP
-  GET  /api/ocr/echeancier   — à payer / à encaisser par mois (factures OCR hors ERP)
-  POST /api/ocr/imports/{id}/reglement — marque une facture réglée
-  GET  /api/ocr/qualite      — exactitude en production, d'après les corrections (directeur)
-  GET|PUT /api/ocr/entreprise — identité de l'entreprise (pour distinguer achats et ventes)
-  POST /api/ocr/to-rag       — document scanné → base documentaire du copilote (directeur)
-  GET  /api/ocr/status       — moteur disponible ? langues ? LayoutLMv3 installé ?
-
-Les règles d'accès (un client ne traite que des ventes à son propre code) sont
-dans `api/services/ocr.py` ; cette couche contrôle le fichier reçu.
-"""
+"""Service OCR transversal exposé en API — utilisable par tout le projet."""
 
 from __future__ import annotations
 
@@ -31,7 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from api.auth.database import get_db
-from api.auth.deps import get_current_user, require_directeur
+from api.auth.deps import require_directeur
 from api.auth.models import User
 from api.services import ocr as service
 
@@ -54,13 +32,13 @@ async def _lire_fichier(file: UploadFile) -> tuple[bytes, str]:
 
 
 @router.get("/status")
-def status(user: User = Depends(get_current_user)):
+def status(user: User = Depends(require_directeur)):
     return service.etat(user)
 
 
 @router.post("/extract")
 async def extract(file: UploadFile = File(...),
-                  user: User = Depends(get_current_user),
+                  user: User = Depends(require_directeur),
                   db: Session = Depends(get_db)):
     content, name = await _lire_fichier(file)
     return service.extraire_texte(db, user, content, name)
@@ -69,7 +47,7 @@ async def extract(file: UploadFile = File(...),
 @router.post("/invoice")
 async def invoice(file: UploadFile = File(...),
                   reconcile: bool = Form(default=True),
-                  user: User = Depends(get_current_user),
+                  user: User = Depends(require_directeur),
                   db: Session = Depends(get_db)):
     content, name = await _lire_fichier(file)
     return service.lire_une_facture(db, user, content, name, rapprocher=reconcile)
@@ -79,7 +57,7 @@ async def invoice(file: UploadFile = File(...),
 async def rapprocher(lecture_id: str = Form(...),
                      sens: str = Form(...),
                      facture: Optional[str] = Form(default=None),
-                     user: User = Depends(get_current_user)):
+                     user: User = Depends(require_directeur)):
     return service.rapprocher_lecture(user, lecture_id, sens, facture)
 
 
@@ -91,11 +69,11 @@ async def invoice_import(file: Optional[UploadFile] = File(default=None),
                          client_code: Optional[str] = Form(default=None),
                          tiers_code: Optional[str] = Form(default=None),
                          creer_client: bool = Form(default=True),
-                         user: User = Depends(get_current_user),
+                         user: User = Depends(require_directeur),
                          db: Session = Depends(get_db)):
     content: Optional[bytes] = None
     name: Optional[str] = None
-    if not lecture_id and file is not None:      # le document n'est lu que sans lecture_id
+    if not lecture_id and file is not None:
         content, name = await _lire_fichier(file)
     return service.importer(db, user, contenu=content, nom_fichier=name,
                             lecture_id=lecture_id, facture=facture, sens=sens,
@@ -106,7 +84,7 @@ async def invoice_import(file: Optional[UploadFile] = File(default=None),
 @router.get("/imports")
 def imports(client_code: Optional[str] = None, sens: Optional[str] = None,
             rapprochement: Optional[str] = None,
-            user: User = Depends(get_current_user)):
+            user: User = Depends(require_directeur)):
     return service.factures_importees(user, client_code, sens, rapprochement)
 
 
@@ -118,7 +96,7 @@ def imports_rerapprocher(seulement: Optional[str] = Form(default=None),
 
 
 @router.get("/echeancier")
-def echeancier_ocr(sens: Optional[str] = None, user: User = Depends(get_current_user)):
+def echeancier_ocr(sens: Optional[str] = None, user: User = Depends(require_directeur)):
     return service.echeancier(user, sens)
 
 
@@ -136,7 +114,7 @@ def qualite(depuis: Optional[str] = None, admin: User = Depends(require_directeu
 
 
 @router.get("/entreprise")
-def entreprise(user: User = Depends(get_current_user)):
+def entreprise(user: User = Depends(require_directeur)):
     return service.identite_entreprise()
 
 

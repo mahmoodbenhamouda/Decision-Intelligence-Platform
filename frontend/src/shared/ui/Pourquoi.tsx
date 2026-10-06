@@ -1,41 +1,45 @@
 "use client";
 
-/**
- * Pourquoi — l'explication d'un classement, en trois phrases.
- *
- * Un écran qui affiche « ce client risque de partir » sans dire pourquoi
- * demande un acte de foi. Ce composant rend la justification consultable là où
- * la décision se prend : une ligne, un clic, trois raisons chiffrées.
- *
- * Ce qu'on y lit, et rien d'autre : les RAISONS, en français, sans jargon. La
- * mécanique du calcul (décomposition exacte, valeurs de Shapley, seuils d'une
- * règle) n'a pas sa place à l'écran — ni pour un client, ni pour le directeur,
- * qui a besoin de savoir QUOI faire, pas COMMENT le score a été obtenu. Cette
- * partie-là est documentée dans `docs/XAI.md`.
- *
- * La barre de poids ne s'affiche que pour les facteurs qui poussent DANS le
- * sens du signalement : leurs parts totalisent 100 %. Le facteur qui joue en
- * sens inverse est écrit sans barre — lui donner un pourcentage laisserait
- * croire qu'il appartient à la même somme.
- */
-
 import { useState } from "react";
-import { HelpCircle, TrendingDown, TrendingUp } from "lucide-react";
+import { HelpCircle, Target, TrendingDown, TrendingUp } from "lucide-react";
 import { BLEU } from "@/shared/ui/VisuelKit";
 
 export interface Raison {
   variable?: string;
+  libelle?: string;
   valeur?: number;
+  valeur_affichee?: string;
+  centile?: number | null;
+  position?: string | null;
   poids?: number | null;
-  sens?: string;            // aggrave | protege | favorise | freine
+  sens?: string;
   explication: string;
+}
+
+/** Plus petit changement d'une variable qui ramène le score sous le seuil. */
+export interface Contrefactuel {
+  libelle?: string;
+  valeur_actuelle_affichee?: string;
+  valeur_cible_affichee?: string;
+  phrase: string;
 }
 
 const POUSSE = new Set(["aggrave", "favorise", undefined, ""]);
 
-/** Bloc d'explication déplié sous une ligne ou une carte. */
-export function Raisons({ raisons, titre = "Pourquoi ce classement" }: {
+/** Libellé et valeur séparés quand le backend les fournit, sinon la phrase. */
+function Enonce({ r }: { r: Raison }) {
+  if (!r.libelle || !r.valeur_affichee) return <span>{r.explication}</span>;
+  return (
+    <span>
+      {r.libelle} : <b>{r.valeur_affichee}</b>
+      {r.position ? <i className="xai-position"> — {r.position}</i> : null}
+    </span>
+  );
+}
+
+export function Raisons({ raisons, contrefactuel, titre = "Pourquoi ce classement" }: {
   raisons?: Raison[];
+  contrefactuel?: Contrefactuel | null;
   titre?: string;
 }) {
   const liste = (raisons || []).filter(r => r?.explication);
@@ -52,7 +56,7 @@ export function Raisons({ raisons, titre = "Pourquoi ce classement" }: {
         <div key={i} className="xai-raison">
           <div className="xai-phrase">
             <TrendingUp size={12} style={{ color: BLEU[3], flexShrink: 0, marginTop: 2 }} />
-            <span>{r.explication}</span>
+            <Enonce r={r} />
           </div>
           {typeof r.poids === "number" && (
             <div className="xai-barre" title={`${Math.round(r.poids * 100)} % du poids`}>
@@ -67,17 +71,26 @@ export function Raisons({ raisons, titre = "Pourquoi ce classement" }: {
         <div key={`c${i}`} className="xai-raison xai-inverse">
           <div className="xai-phrase">
             <TrendingDown size={12} style={{ color: "#0CA30C", flexShrink: 0, marginTop: 2 }} />
-            <span>En sens inverse : {r.explication}</span>
+            <span>En sens inverse : </span><Enonce r={r} />
           </div>
         </div>
       ))}
+
+      {contrefactuel?.phrase && (
+        <div className="xai-raison xai-action">
+          <div className="xai-phrase">
+            <Target size={12} style={{ color: BLEU[4], flexShrink: 0, marginTop: 2 }} />
+            <span>{contrefactuel.phrase}</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-/** Bouton « Pourquoi ? » qui déplie le bloc ci-dessus. */
-export default function Pourquoi({ raisons, libelle = "Pourquoi ?", titre }: {
+export default function Pourquoi({ raisons, contrefactuel, libelle = "Pourquoi ?", titre }: {
   raisons?: Raison[];
+  contrefactuel?: Contrefactuel | null;
   libelle?: string;
   titre?: string;
 }) {
@@ -89,7 +102,7 @@ export default function Pourquoi({ raisons, libelle = "Pourquoi ?", titre }: {
         aria-expanded={ouvert}>
         <HelpCircle size={12} /> {ouvert ? "Masquer" : libelle}
       </button>
-      {ouvert && <Raisons raisons={raisons} titre={titre} />}
+      {ouvert && <Raisons raisons={raisons} contrefactuel={contrefactuel} titre={titre} />}
     </>
   );
 }

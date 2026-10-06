@@ -1,16 +1,10 @@
-/**
- * Model — règles de la saisie vérifiée : champs contrôlables avant
- * enregistrement, valeur lue par champ, normalisation pour détecter une
- * correction (chaque correction est conservée pour le réentraînement).
- */
+
 import type { InvoiceFields, TypeChamp } from "./ocr.types";
 
 export const SOURCE_ECHEANCE: Record<string, string> = {
   lue: "lue sur la facture", delai_tiers: "délai habituel du tiers", delai_moyen: "délai moyen",
 };
 
-/* Champs vérifiables avant enregistrement. Chaque écart avec la lecture est
-   conservé comme correction : c'est la matière du réentraînement. */
 export const CHAMPS: { cle: keyof InvoiceFields; label: string; type: TypeChamp }[] = [
   { cle: "numero", label: "N° de facture", type: "texte" },
   { cle: "fournisseur", label: "Fournisseur (émetteur)", type: "texte" },
@@ -30,7 +24,7 @@ export function versSaisie(v: unknown, type: TypeChamp): string {
   if (type === "date") return String(v).slice(0, 10);
   return String(v);
 }
-// Sans LayoutLMv3, les règles ne remplissent que `tiers` (surtout le client).
+
 export function lectureDe(f: InvoiceFields, cle: keyof InvoiceFields): unknown {
   return cle === "client" ? (f.client ?? f.tiers) : f[cle];
 }

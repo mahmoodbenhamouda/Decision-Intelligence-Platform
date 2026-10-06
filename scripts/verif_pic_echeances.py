@@ -1,33 +1,4 @@
-"""
-scripts/verif_pic_echeances.py
-===============================
-Explique le pic d'echeances de 2026-01 a 2026-03.
-
-Le fait a expliquer
--------------------
-Les totaux mensuels par date d'echeance sont stables autour de 4,0-4,8 M DT sur
-tout 2025, puis montent brutalement :
-
-    2026-01 : 5,68 M     2026-02 : 6,70 M     2026-03 : 9,09 M
-
-Le dernier mois vaut le DOUBLE de la norme. Et c'est exactement sur ces trois
-mois que la methode du carnet semble gagner, parce que la part deja acquise y
-passe de 0,1 % a 49 %. Tout le resultat a h=3 repose donc sur ce pic.
-
-Deux explications possibles, aux consequences opposees :
-
-  * REALITE METIER -- forte facturation de fin 2025 a delais longs, ou
-    saisonnalite des marches publics. Le resultat tient.
-
-  * ARTEFACT DE FENETRE -- les mois d'echeance proches de la fin des donnees
-    accumulent anormalement, ou des dates d'echeance aberrantes s'y empilent.
-    Le resultat ne tient pas, et la cible doit etre tronquee plus tot.
-
-Ce script mesure la composition de ces mois : distribution des delais, mois
-d'emission d'origine, et presence de delais anormalement longs.
-
-    .venv\\Scripts\\python.exe scripts\\verif_pic_echeances.py
-"""
+"""Explique le pic d'echeances de 2026-01 a 2026-03."""
 
 from __future__ import annotations
 
@@ -47,14 +18,13 @@ def dt(v) -> str:
 
 
 def main() -> int:
-    factures = charger_factures()          # (mois emission, mois echeance, ttc)
+    factures = charger_factures()
     echeances = sorted({e for _, e, _ in factures})
     emissions = sorted({em for em, _, _ in factures})
     print(f"\nfactures = {len(factures):,}".replace(",", " "))
     print(f"emissions : {_libelle(emissions[0])} -> {_libelle(emissions[-1])}")
     print(f"echeances : {_libelle(echeances[0])} -> {_libelle(echeances[-1])}")
 
-    # ── 1. La serie complete des echeances, sans troncature ────────────────
     print("\n=== 1. TOTAL PAR MOIS D'ECHEANCE (2025-01 et au-dela) ===")
     print(f"  {'mois':<10}{'total':>14}{'n factures':>12}{'delai median':>14}")
     seuil = 2025 * 12
@@ -67,7 +37,6 @@ def main() -> int:
         print(f"  {_libelle(k):<10}{dt(sum(t for _, t in lot)):>14}"
               f"{len(lot):>12}{med:>11} mois")
 
-    # ── 2. Distribution des delais, en mois ────────────────────────────────
     print("\n=== 2. DISTRIBUTION DES DELAIS (echeance - emission, en mois) ===")
     c = Counter(ech - em for em, ech, _ in factures)
     total_n = sum(c.values())
@@ -84,7 +53,6 @@ def main() -> int:
     print("  -> Si ce taux est faible, un `acquis` de 49 % a h=3 est IMPOSSIBLE")
     print("     par la seule structure des delais : il faut une autre cause.")
 
-    # ── 3. D'ou viennent les echeances des trois mois du pic ? ─────────────
     print("\n=== 3. COMPOSITION DES TROIS MOIS DU PIC ===")
     for cible_lbl in ("2026-01", "2026-02", "2026-03"):
         a, m = cible_lbl.split("-")
@@ -104,7 +72,6 @@ def main() -> int:
             print(f"    emises {_libelle(em)} (delai {d:>2} mois) : "
                   f"{par_em[em]:>6} factures  {dt(mt_em[em]):>13} DT")
 
-    # ── 4. Comparaison avec un mois normal ─────────────────────────────────
     print("\n=== 4. MOIS DE REFERENCE (2025-06) POUR COMPARAISON ===")
     k = 2025 * 12 + 5
     lot = [(em, t) for em, ech, t in factures if ech == k]

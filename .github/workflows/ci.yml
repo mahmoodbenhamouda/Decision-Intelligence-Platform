@@ -14,6 +14,24 @@ jobs:
   backend-tests:
     name: Tests backend (pytest)
     runs-on: ubuntu-latest
+
+    # PostgreSQL est fourni comme service : les tests d'authentification
+    # s'exécutent sur le moteur réellement servi en production. Sans lui ils
+    # seraient SAUTÉS, et une suite verte ne prouverait plus rien sur l'auth.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: finance_auth_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,8 +44,24 @@ jobs:
           pip install pytest httpx
       - name: Suite de tests (intégrité, flotte, demande, auth, RBAC, portail)
         env:
-          JWT_SECRET_KEY: ci-secret-uniquement
+          JWT_SECRET_KEY: ci-secret-uniquement-assez-long-pour-hs256
+          AUTH_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/finance_auth_test
+          AUTH_TEST_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/finance_auth_test
         run: python -m pytest tests/ -v --tb=short
+
+      # Un saut silencieux ferait passer la CI sans tester l'authentification.
+      - name: Refuser une suite où les tests d'auth ont été sautés
+        env:
+          JWT_SECRET_KEY: ci-secret-uniquement-assez-long-pour-hs256
+          AUTH_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/finance_auth_test
+          AUTH_TEST_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/finance_auth_test
+        run: |
+          python -m pytest tests/test_auth_rbac.py tests/test_admin_portal.py \
+            -q --tb=short -p no:cacheprovider | tee /tmp/auth.log
+          grep -q "skipped" /tmp/auth.log && {
+            echo "::error::tests d'authentification SAUTÉS — PostgreSQL injoignable"
+            exit 1
+          } || true
 
   frontend-build:
     name: Typecheck + build frontend

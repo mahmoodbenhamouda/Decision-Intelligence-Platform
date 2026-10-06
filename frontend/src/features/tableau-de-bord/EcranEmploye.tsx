@@ -1,13 +1,9 @@
 "use client";
 
-/**
- * Vue — l'écran de l'employé. Volontairement réduit : ses tâches, rien
- * d'autre. Lui présenter un cockpit dont chaque onglet renverrait un refus
- * serait une fausse promesse.
- */
 import { LogOut, User as UserIcon } from "lucide-react";
 import type { SessionInfo } from "@/core/auth/session";
 import { seDeconnecter } from "@/features/auth/auth.service";
+import MesCommandes from "@/features/stock/MesCommandes";
 import TachesPanel from "@/features/taches/TachesPanel";
 
 export default function EcranEmploye({ session }: { session: SessionInfo | null }) {
@@ -28,6 +24,9 @@ export default function EcranEmploye({ session }: { session: SessionInfo | null 
       <main className="cockpit-main">
         <section className="view-area">
           <div className="view-grid">
+            {/* Les commandes validées par la direction arrivent ici : c'est
+                l'employé qui les passe et qui saisit la réception. */}
+            <MesCommandes />
             <TachesPanel role="employe" />
           </div>
         </section>

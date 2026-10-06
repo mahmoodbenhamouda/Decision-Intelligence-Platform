@@ -1,60 +1,4 @@
-"""
-ml_engine/stock/reappro_model.py
-=================================
-Besoin de réapprovisionnement à 3 mois — un modèle appris sur des données **réelles**.
-
-Pourquoi ce modèle, et pas un autre
------------------------------------
-Les deux modèles de risque produit existants (`ml_engine/models/`) apprennent sur
-des variables de position **simulées**, faute d'inventaire dans l'ERP. Leur usage
-est donc borné : ils hiérarchisent, ils ne chiffrent pas. La reconstruction des
-positions mensuelles (`positions_historiques.py`) lève cette limite, et rend
-possible une question entièrement mesurable sur les factures :
-
-    à la fin du mois m, cette référence sera-t-elle réapprovisionnée
-    au cours des trois mois suivants ?
-
-Trois propriétés rendent cette formulation défendable là où d'autres échouaient :
-
-1. **La cible est observée, jamais construite.** Un achat a eu lieu, ou non. Il
-   n'y a rien à estimer, rien à simuler, aucun seuil à déclarer. C'est l'exact
-   opposé du premier modèle de risque de stock, dont la cible « rupture » était
-   définie par une formule mêlant trois variables explicatives — et qui affichait
-   pour cette raison une AUC de 1,0000.
-
-2. **Aucune variable ne peut contenir la cible.** Toutes se calculent sur les
-   mois ≤ m ; la cible se lit sur ]m, m+3]. La séparation est temporelle, donc
-   vérifiable mécaniquement plutôt que par relecture.
-
-3. **La question a un usage.** Savoir quelles références seront à commander au
-   prochain trimestre, c'est préparer les négociations fournisseur et lisser la
-   trésorerie. C'est la décision que le service achat prend réellement.
-
-Ce que ce modèle apprend, et qu'il faut dire
---------------------------------------------
-Il apprend le **comportement d'achat historique**, pas le besoin optimal. Si
-l'entreprise a jusqu'ici surcommandé certaines références, le modèle reproduira
-cette habitude. Il prévoit ce que le service achat VA faire, non ce qu'il DEVRAIT
-faire — et c'est pour cela qu'il est présenté à côté du constat d'obsolescence,
-qui dit l'inverse : là où les deux se contredisent, il y a une décision à revoir.
-
-Ne pas énoncer cette limite serait la faute la plus grave du module, parce qu'elle
-est invisible dans les métriques : un modèle qui reproduit fidèlement une mauvaise
-habitude affiche une excellente AUC.
-
-Seuils de déploiement — déclarés AVANT la mesure
-------------------------------------------------
-    AUC hors période ≥ 0,70   ET   gain ≥ 0,02 sur la meilleure référence triviale
-
-Le registre applique ces seuils. Si le modèle ne les atteint pas, il est refusé
-et le tableau de bord continue de servir la détection de rupture arithmétique de
-`flux_reels.py`, qui ne dépend d'aucun apprentissage.
-
-Sorties : `models/reappro_model.joblib` + `reports/reappro_metrics.json`
-
-Lancement :
-    python -m ml_engine.stock.reappro_model
-"""
+"""Besoin de réapprovisionnement à 3 mois — un modèle appris sur des données **réelles**."""
 
 from __future__ import annotations
 
@@ -77,28 +21,15 @@ MODELS_DIR = BASE / "models"
 REPORTS_DIR = BASE / "reports"
 
 SEED = 42
-HORIZON_MOIS = 3            # fenêtre d'observation de la cible
-MIN_MOIS_HISTORIQUE = 12    # avant cela, aucune moyenne sur 12 mois n'existe
+HORIZON_MOIS = 3
+MIN_MOIS_HISTORIQUE = 12
 
-# Seuils de déploiement, fixés avant toute mesure. Les écrire ici plutôt que de
-# les choisir après coup est ce qui distingue une règle d'un arrangement.
 SEUIL_AUC_MINIMALE = 0.70
 SEUIL_GAIN_MINIMAL = 0.02
 
 ECART_PARCIMONIE = 0.01
 CANDIDATS = ["regression_logistique", "gradient_boosting"]
 
-# ── Les variables, et pourquoi chacune est légitime ─────────────────────────
-#
-# Le classement en deux familles n'est pas décoratif. La position reconstruite
-# porte un décalage inconnu mais CONSTANT par référence (le stock antérieur à
-# l'historique). Ce décalage :
-#   * s'annule dans toute variable de VARIATION — une différence de positions ;
-#   * subsiste dans toute variable de NIVEAU — la position elle-même.
-#
-# Les variables de niveau sont conservées parce que l'information reste utile,
-# mais leur biais est documenté et l'ablation ci-dessous mesure ce qu'elles
-# apportent réellement.
 VARIABLES_VARIATION = [
     "conso_1m", "conso_3m", "conso_6m", "conso_12m",
     "tendance_conso", "volatilite_conso", "part_mois_actifs_12m",
@@ -116,13 +47,7 @@ _EPS = 1e-6
 
 def construire_panel(brut: Optional[pd.DataFrame] = None,
                      pour_prediction: bool = False) -> pd.DataFrame:
-    """Variables au mois m, cible sur ]m, m+3].
-
-    Toute la prévention de fuite tient dans une règle appliquée sans exception :
-    chaque variable se calcule par `rolling`/`cumsum` sur les lignes passées ou
-    courantes, la cible par un `shift` NÉGATIF. Aucune variable n'utilise
-    `shift(-k)`, aucune cible n'utilise `shift(+k)`.
-    """
+    """Variables au mois m, cible sur ]m, m+3]."""
     if brut is None:
         from ml_engine.stock.positions_historiques import charger_panel
         brut = charger_panel()
@@ -134,23 +59,11 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
     df["mois"] = pd.to_datetime(df["mois"])
     df = df.sort_values(["cle", "mois"]).reset_index(drop=True)
 
-    # Le groupement est reconstruit à chaque usage plutôt que conservé dans une
-    # variable : un objet `groupby` fige les colonnes existantes au moment de sa
-    # création, et lever une colonne ajoutée ensuite échoue. Le coût est
-    # négligeable, l'erreur qu'il évite est silencieuse.
     def par_ref(colonne: str):
         return df.groupby("cle", sort=False)[colonne]
 
-    # Rang du mois dans l'historique PROPRE à la référence.
-    #
-    # Distinction qui a son importance : `rang_mois`, calculé en SQL, compte les
-    # mois depuis le début du calendrier commun. Une référence dont le premier
-    # achat date de 2024 y porte donc un rang élevé sans avoir pour autant un
-    # long historique. Exiger « rang_mois >= 12 » ne garantirait rien ; exiger
-    # douze mois de série propre, si.
     df["rang_ref"] = df.groupby("cle", sort=False).cumcount() + 1
 
-    # ── Consommation : moyennes glissantes, mois courant inclus ─────────────
     df["conso_1m"] = df["sorties"].astype(float)
     for f in (3, 6, 12):
         df[f"conso_{f}m"] = par_ref("sorties").transform(
@@ -163,14 +76,10 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
     df["part_mois_actifs_12m"] = par_ref("sorties").transform(
         lambda s: (s > 0).rolling(12, min_periods=1).mean())
 
-    # ── Achats : rythme, attente, taille de lot ─────────────────────────────
     df["_achat"] = (df["entrees"] > 0).astype(int)
     df["n_achats_12m"] = par_ref("_achat").transform(
         lambda s: s.rolling(12, min_periods=1).sum())
 
-    # Mois écoulés depuis le dernier achat. Calculé par différence de rangs et
-    # non par une date : la grille étant mensuelle et complète, le rang EST le
-    # temps, et cela évite tout décalage de calendrier.
     df["_rang_achat"] = np.where(df["_achat"] == 1, df["rang_ref"], np.nan)
     df["mois_depuis_dernier_achat"] = (
         df["rang_ref"] - par_ref("_rang_achat").transform(lambda s: s.ffill())
@@ -181,52 +90,30 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
         df["rang_ref"] - par_ref("_rang_vente").transform(lambda s: s.ffill())
     ).fillna(df["rang_ref"]).astype(float)
 
-    # Intervalle moyen entre deux achats DEPUIS LE DÉBUT — une moyenne
-    # expansive, jamais calculée sur toute la série : utiliser la fréquence
-    # d'achat totale de la référence ferait entrer le futur dans le passé.
     achats_cumul = par_ref("_achat").transform("cumsum")
     df["intervalle_moyen_achat"] = df["rang_ref"] / achats_cumul.clip(lower=1)
     df["ratio_attente"] = (df["mois_depuis_dernier_achat"]
                            / (df["intervalle_moyen_achat"] + _EPS))
 
-    # Taille de lot habituelle : moyenne des entrées des mois où il y a eu achat.
     df["_entree_si_achat"] = np.where(df["_achat"] == 1, df["entrees"], np.nan)
     df["taille_lot_moyen"] = par_ref("_entree_si_achat").transform(
         lambda s: s.expanding().mean()).ffill().fillna(0.0)
 
-    # ── Niveau (biaisé par le stock initial inconnu, conservé et mesuré) ────
     df["position_fin"] = df["position_fin"].astype(float)
     df["couverture_mois"] = df["position_fin"] / (df["conso_3m"] + _EPS)
     df["variation_position_3m"] = par_ref("position_fin").transform(
         lambda s: s - s.shift(3)).fillna(0.0)
     df["ratio_position_lot"] = df["position_fin"] / (df["taille_lot_moyen"] + _EPS)
 
-    # ── Contexte ────────────────────────────────────────────────────────────
     df["log_cout_unitaire"] = np.log1p(df["cout_unitaire"].fillna(0.0).clip(lower=0))
     df["mois_calendaire"] = df["mois"].dt.month.astype(float)
 
-    # ── Cible : un achat survient-il dans les 3 mois suivants ? ─────────────
-    #
-    # `shift(-k)` est le SEUL endroit du fichier où le futur est regardé, et il
-    # ne sert qu'à la cible. Les lignes dont l'horizon dépasse la fin des données
-    # sont supprimées : garder un « pas d'achat » qu'on n'a pas pu observer
-    # apprendrait au modèle une absence fictive.
     futurs = [df.groupby("cle", sort=False)["_achat"].shift(-k)
               for k in range(1, HORIZON_MOIS + 1)]
     fut = pd.concat(futurs, axis=1)
     df["y"] = (fut.sum(axis=1) > 0).astype(float)
     df["_horizon_observe"] = fut.notna().all(axis=1)
 
-    # Deux usages, deux filtres — et la distinction n'est pas cosmétique.
-    #
-    # Pour APPRENDRE et MESURER, les trois derniers mois doivent disparaître :
-    # leur cible n'est pas observable, et conserver un « pas d'achat » qu'on n'a
-    # pas pu constater apprendrait une absence fictive.
-    #
-    # Pour PRÉDIRE, c'est l'inverse : la seule ligne utile est justement la plus
-    # récente. Les écarter rendrait le modèle systématiquement en retard de trois
-    # mois sur la réalité — un défaut invisible dans les métriques, puisque
-    # celles-ci se calculent sur le passé.
     df = df[df["rang_ref"] >= MIN_MOIS_HISTORIQUE]
     if not pour_prediction:
         df = df[df["_horizon_observe"]]
@@ -238,26 +125,15 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
     return df.reset_index(drop=True)
 
 
-# ── Références triviales : une variable, aucun apprentissage ────────────────
-#
-# Elles jugent le DÉPLOIEMENT : un modèle qui ne les bat pas n'apporte rien
-# qu'un tableur ne ferait. Chacune a une direction fixée a priori, jamais
-# choisie après avoir vu le résultat — inverser un signe au vu de l'AUC
-# reviendrait à entraîner la référence elle-même.
 def _references_triviales(te: pd.DataFrame) -> Dict[str, float]:
     from sklearn.metrics import roc_auc_score
 
     refs = {
         "classe_majoritaire": 0.5,
-        # Une référence achetée récemment est une référence activement réapprovisionnée.
         "achat_recent": -te["mois_depuis_dernier_achat"],
-        # Un acheteur régulier rachète.
         "frequence_achat_12m": te["n_achats_12m"],
-        # Retard par rapport au rythme habituel.
         "ratio_attente": te["ratio_attente"],
-        # Une couverture faible appelle une commande.
         "couverture_faible": -te["couverture_mois"],
-        # Un fort volume consommé se recommande.
         "consommation_3m": te["conso_3m"],
     }
     out: Dict[str, float] = {}
@@ -291,14 +167,7 @@ def _modele(nom: str = "gradient_boosting"):
 
 
 def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
-    """Entraînement sur le passé, test sur le futur — avec marge anti-fuite.
-
-    La marge est le point délicat. La cible d'une observation d'entraînement se
-    lit sur ]m, m+3] : sans exiger `m + 3 mois <= coupure`, les derniers mois du
-    train verraient le début de la période de test. C'est exactement l'écart qui
-    avait révélé la fuite du modèle de crédit (0,8116 en validation croisée
-    contre 0,5973 hors période).
-    """
+    """Entraînement sur le passé, test sur le futur — avec marge anti-fuite."""
     from sklearn.metrics import (average_precision_score, brier_score_loss,
                                  confusion_matrix, f1_score, precision_score,
                                  recall_score, roc_auc_score)
@@ -336,12 +205,6 @@ def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
     triv = _references_triviales(te)
     meilleure = max(triv, key=triv.get)
 
-    # ── Ablation : que valent les variables de NIVEAU ? ─────────────────────
-    #
-    # Ce sont les seules affectées par le stock initial inconnu. Si le modèle
-    # tient sans elles, sa performance ne repose pas sur la partie biaisée de la
-    # reconstruction — et c'est une réponse directe à l'objection la plus
-    # légitime qu'on puisse opposer à ce module.
     sans_niveau = [f for f in FEATURES if f not in VARIABLES_NIVEAU]
     m2 = _modele(retenu)
     m2.fit(tr[sans_niveau], tr["y"])
@@ -393,12 +256,7 @@ def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
 
 
 def evaluer_groupkfold(panel: pd.DataFrame, modele: str) -> Dict[str, Any]:
-    """Par référence — INDICATIF seulement : ce protocole brasse les périodes.
-
-    Conservé pour que l'écart avec le protocole hors période reste visible. C'est
-    cet écart, et non sa valeur absolue, qui informe : un GroupKFold très
-    supérieur signale que le modèle exploite la conjoncture d'une période.
-    """
+    """Par référence — INDICATIF seulement : ce protocole brasse les périodes."""
     from sklearn.metrics import roc_auc_score
     from sklearn.model_selection import GroupKFold
 
@@ -423,8 +281,7 @@ def evaluer_groupkfold(panel: pd.DataFrame, modele: str) -> Dict[str, Any]:
 
 
 def importance_permutation(panel: pd.DataFrame, modele: str) -> Dict[str, float]:
-    """Mesurée sur le TEST hors période : une variable très utilisée à
-    l'entraînement peut n'apporter aucune généralisation."""
+    """Mesurée sur le TEST hors période : une variable très utilisée à l'entraînement peut n'apporter…"""
     from sklearn.inspection import permutation_importance
 
     coupure = panel["mois"].quantile(0.75)
@@ -443,12 +300,7 @@ def importance_permutation(panel: pd.DataFrame, modele: str) -> Dict[str, float]
 
 
 def train() -> Dict[str, Any]:
-    """Entraîne, mesure, décide — et n'enregistre l'artefact que si la décision
-    est positive.
-
-    Écrire le modèle sur le disque quoi qu'il arrive serait le piège que le
-    registre existe pour fermer : un artefact présent finit par être chargé.
-    """
+    """Entraîne, mesure, décide — et n'enregistre l'artefact que si la décision est positive."""
     import joblib
 
     panel = construire_panel()
@@ -545,8 +397,6 @@ def train() -> Dict[str, Any]:
                                      "période — le modèle servi voit donc plus "
                                      "de données que celui mesuré")
     else:
-        # Aucun artefact écrit, et l'ancien est retiré : un fichier présent finit
-        # toujours par être chargé par quelqu'un.
         ancien = MODELS_DIR / "reappro_model.joblib"
         if ancien.exists():
             try:
@@ -565,13 +415,7 @@ def _ecrire(metriques: Dict[str, Any]) -> None:
 
 
 def predire(limite: int = 15) -> Dict[str, Any]:
-    """Références à préparer pour le trimestre, si le registre l'autorise.
-
-    Le classement suit le **budget à prévoir** — probabilité × trois mois de
-    consommation × coût unitaire — et non la probabilité seule. Une référence
-    quasi certaine à 40 DT n'appelle aucune décision ; une référence probable à
-    80 000 DT en appelle une.
-    """
+    """Références à préparer pour le trimestre, si le registre l'autorise."""
     from ml_engine.registre import est_deploye
 
     if not est_deploye("reappro"):
@@ -589,8 +433,6 @@ def predire(limite: int = 15) -> Dict[str, Any]:
         if panel.empty:
             return {"servi": False, "motif": "panneau indisponible"}
 
-        # Dernier mois connu pour chaque référence : c'est la seule ligne dont
-        # la prédiction porte sur l'avenir plutôt que sur le passé.
         dernier = panel.sort_values("mois").groupby("cle", as_index=False).tail(1)
         p = paquet["modele"].predict_proba(dernier[paquet["features"]])[:, 1]
         dernier = dernier.assign(probabilite=p)

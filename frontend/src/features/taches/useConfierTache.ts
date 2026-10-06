@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * ViewModel — la fenêtre « Confier cette action ».
- *
- * Elle arrive PRÉ-REMPLIE à partir de l'alerte : intitulé, type d'action
- * suggéré, échéance selon la gravité, montant. Le collègue dont le métier
- * correspond au domaine passe en tête de liste et, tant que le directeur n'a
- * choisi personne, c'est lui qui est proposé.
- */
 import { useMemo, useState } from "react";
 import { useRequete } from "@/core/hooks/useRequete";
 import { dansNJours } from "@/shared/format";
@@ -20,8 +12,8 @@ const PERSONNE: EmployeAssignable[] = [];
 export function useConfierTache(origine: Origine, onClose: () => void, onCree?: () => void) {
   const employes = useRequete(chargerEmployesAssignables).donnees ?? PERSONNE;
   const [choix, setAssigne] = useState<number | "">("");
-  const [type, setType] = useState(typeSuggere(origine.categorie));
-  const [titre, setTitre] = useState(origine.titre.slice(0, 200));
+  const [type, setType] = useState(origine.execution?.type || typeSuggere(origine.categorie));
+  const [titre, setTitre] = useState((origine.titre_tache || origine.titre).slice(0, 200));
   const [details, setDetails] = useState(origine.details || "");
   const [echeance, setEcheance] = useState(dansNJours(DELAI[origine.severite || "moyenne"] ?? 10));
   const [montant, setMontant] = useState<string>(
@@ -29,18 +21,14 @@ export function useConfierTache(origine: Origine, onClose: () => void, onCree?: 
   const [envoi, setEnvoi] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
 
-  // Le collègue dont le métier correspond au domaine passe en tête, et la
-  // charge de chacun reste visible : on ne confie pas la dixième relance de la
-  // semaine à la même personne sans le savoir.
   const classes = useMemo(() => {
-    const p = posteSuggere(origine.categorie);
+    const p = origine.execution?.poste || posteSuggere(origine.categorie);
     return [...employes].sort((a, b) => {
       const pa = a.poste === p ? 0 : 1, pb = b.poste === p ? 0 : 1;
-      return pa - pb || a.taches_ouvertes - b.taches_ouvertes;
+      return pa - pb || a.taches_ouvertes - b.taches_ouvertes || a.id - b.id;
     });
-  }, [employes, origine.categorie]);
+  }, [employes, origine.execution?.poste, origine.categorie]);
 
-  // Tant que personne n'est choisi, le premier de la liste est proposé.
   const assigne: number | "" = choix === "" && classes.length ? classes[0].id : choix;
 
   const envoyer = async () => {

@@ -1,43 +1,4 @@
-"""
-ml_engine/analytics/encours.py
-===============================
-« Qui me doit de l'argent ? » — la réponse la plus honnête possible.
-
-Le problème, posé franchement
------------------------------
-L'ERP n'enregistre **aucune date de règlement**. Il est donc impossible de savoir
-qui a payé. Répondre « on ne peut pas savoir » est exact, mais laisse le
-directeur sans rien : c'est sa première question chaque matin.
-
-Ce qu'on peut affirmer sans se tromper
----------------------------------------
-Chaque facture porte une date d'échéance **contractuelle**. On peut donc calculer
-exactement ce qui **aurait dû être encaissé** à ce jour. Ce n'est pas un impayé,
-c'est un droit à encaissement arrivé à terme — grandeur factuelle, vérifiable
-facture par facture.
-
-Le signal indirect qui affine l'analyse
----------------------------------------
-Un client qui continue à commander après l'échéance d'une facture la règle très
-probablement : aucune entreprise ne maintient une ligne de crédit ouverte à un
-client qui ne paie pas. Inversement, **un client dont les factures sont échues et
-qui a cessé de commander** cumule les deux signaux.
-
-Cette lecture ne prouve rien — c'est une inférence, et elle est présentée comme
-telle. Mais elle transforme une liste inexploitable de milliers de factures
-échues en une liste courte de comptes à vérifier en priorité.
-
-Ce que ce module ne dit PAS
----------------------------
-Il ne dit jamais qu'une créance est impayée. Il classe des factures selon deux
-faits mesurés — leur échéance est passée, et le client a commandé ou non depuis —
-et laisse la conclusion au comptable, seul à disposer des relevés bancaires.
-
-Sortie : `reports/encours_metrics.json`
-
-Lancement :
-    python -m ml_engine.analytics.encours
-"""
+"""« Qui me doit de l'argent ?"""
 
 from __future__ import annotations
 
@@ -53,15 +14,8 @@ except Exception:  # pragma: no cover
 
 REPORTS_DIR = BASE / "reports"
 
-# Fenêtre d'analyse. Au-delà de 18 mois, une facture échue a selon toute
-# vraisemblance été réglée ou passée en perte : la maintenir dans un « encours »
-# produirait un chiffre cumulé sans rapport avec la réalité du moment. C'est
-# exactement le défaut qui faisait annoncer 133 M DT ailleurs dans le projet.
 FENETRE_MOIS = 18
 
-# Durée sans commande au-delà de laquelle le silence d'un client devient un
-# signal. Calée sur l'horizon du modèle de décrochage, pour que les deux
-# modules parlent de la même chose.
 SILENCE_JOURS = 90
 
 
@@ -70,17 +24,6 @@ def calculer(data_dir: Optional[Path] = None) -> Dict[str, Any]:
 
     con = _connect(data_dir)
     try:
-        # ── DEUX références distinctes, et la confusion des deux invalidait tout
-        #
-        # `ref_ech` — dernière échéance connue : sert à déterminer ce qui est
-        # arrivé à terme. Utiliser la date du jour rendrait tout l'historique
-        # échu si l'export date de plusieurs mois.
-        #
-        # `ref_act` — dernière FACTURE ÉMISE : sert à mesurer le silence d'un
-        # client. Une facture d'avril échoit en juin ou septembre ; mesurer le
-        # silence depuis la dernière échéance ajoutait donc mécaniquement quatre
-        # mois à tous les clients, et 922 sur 922 paraissaient inactifs. Un
-        # filtre qui retient tout le monde ne filtre rien.
         ref_ech, ref_act = con.execute("""
             SELECT max(echeance), max(date) FROM sales
             WHERE echeance IS NOT NULL AND date IS NOT NULL
@@ -141,7 +84,6 @@ def calculer(data_dir: Optional[Path] = None) -> Dict[str, Any]:
         silence = int(silence or 0)
         actif = silence <= SILENCE_JOURS
 
-        # Trois situations, hiérarchisées par ce qu'elles justifient comme action.
         if not actif and float(m90 or 0) > 0:
             situation = "a_verifier_en_priorite"
             lecture = ("factures échues depuis plus de 90 jours ET client sans "
@@ -187,7 +129,7 @@ def calculer(data_dir: Optional[Path] = None) -> Dict[str, Any]:
         "ce_que_ce_chiffre_est": (
             "Somme des factures dont l'échéance CONTRACTUELLE est dépassée à la "
             "date de référence. C'est ce qui aurait dû être encaissé, non ce qui "
-            "reste dû : l'ERP n'enregistre aucune date de règlement."),
+            "reste dû : aucune date de règlement n'est enregistrée."),
         "ce_que_ce_chiffre_n_est_pas": (
             "Ce n'est PAS un montant d'impayés. Une grande partie de ces factures "
             "a certainement été réglée — nous ne pouvons simplement pas le "
@@ -220,10 +162,6 @@ def calculer(data_dir: Optional[Path] = None) -> Dict[str, Any]:
             "critere": "échéance dépassée de plus de 90 jours ET client silencieux",
         },
 
-        # On exporte les comptes À VÉRIFIER, pas les plus gros du portefeuille.
-        # Trier par montant puis tronquer faisait disparaître 115 des 117 comptes
-        # concernés : les plus gros débiteurs sont majoritairement des clients
-        # actifs, donc précisément ceux qu'il n'y a PAS lieu de vérifier.
         "clients_a_verifier": sorted(
             a_verifier, key=lambda c: -c["montant_echu_dt"])[:60],
         "plus_gros_echus_tous_statuts": clients[:20],

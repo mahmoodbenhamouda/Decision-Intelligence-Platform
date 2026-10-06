@@ -30,7 +30,7 @@ def _script():
 @pytest.fixture
 def importee(tmp_path, monkeypatch):
     monkeypatch.setattr("ml_engine.analytics.kpi_engine.STORE_PATH", tmp_path / "store.duckdb")
-    monkeypatch.setattr("ml_engine.ocr.layoutlm.mots.LANG", "eng")       # langue dispo partout
+    monkeypatch.setattr("ml_engine.ocr.layoutlm.mots.LANG", "eng")
     con = duckdb.connect(str(tmp_path / "store.duckdb"))
     con.execute("CREATE TABLE dim_client (client_code VARCHAR, client_name VARCHAR, x VARCHAR)")
     con.close()
@@ -62,7 +62,7 @@ def test_la_verite_est_la_valeur_corrigee_et_elle_est_etiquetee(importee):
     etq = [e for l in lignes for e in l["etiquettes"]]
     mots = [w for l in lignes for w in l["mots"]]
     tva = [w for w, e in zip(mots, etq) if e.endswith("-TVA")]
-    assert tva == ["364,650"], tva          # le TOTAL, pas le 356,250 du récapitulatif
+    assert tva == ["364,650"], tva
     assert all(len(l["mots"]) == len(l["boites"]) == len(l["etiquettes"]) for l in lignes)
     assert set(images) == {l["image"] for l in lignes}
 
@@ -75,7 +75,7 @@ def test_fusion_dans_une_copie_du_vrai_zip(importee):
     ex = m.construire_exemples(m.factures_validees())[:5]
     n = m.fusionner_zip(copie, *ex)
     assert n["documents_origine"] == 89 and n["documents_production"] == 1
-    assert m.fusionner_zip(copie, *ex) == n                       # relancer ne duplique rien
+    assert m.fusionner_zip(copie, *ex) == n
     z = zipfile.ZipFile(copie)
     v = json.loads(z.read("verite.json"))
     assert len(v) == 90 and all("devise" in x for x in v.values())

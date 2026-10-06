@@ -1,26 +1,9 @@
 "use client";
 
-/**
- * FinBotAvatar — assistant IA sous forme d'ORBE (pas de visage humain).
- *
- * Un noyau lumineux « vivant » : grands yeux expressifs, anneau orbital,
- * bouche = égaliseur vocal (barres synchronisées à la parole). Il expose une
- * petite API impérative (setViseme / restMouth / gesture) et fait tourner UNE
- * boucle requestAnimationFrame qui pilote :
- *   - la synchro labiale  → amplitude des barres d'égaliseur
- *   - les émotions        → forme des yeux + sourcils + teinte
- *   - le "vivant"         → regard (saccades) + clignements + respiration
- *   - les gestes          → hochement / recul alerte / penché / coup d'œil
- *
- * Les mouvements rapides sont appliqués directement sur le DOM SVG (refs) pour
- * ne pas re-rendre React 60x/seconde.
- */
-
 import {
   forwardRef, useEffect, useImperativeHandle, useRef,
 } from "react";
 
-/* ── Types publics (inchangés pour rester compatibles) ──────────────────── */
 export type AvatarMode = "idle" | "listening" | "thinking" | "speaking";
 export type AvatarMood = "neutral" | "happy" | "concerned" | "alert";
 export type GestureType = "nod" | "alert" | "glance" | "lean";
@@ -39,7 +22,6 @@ interface AvatarProps {
   accent: string;
 }
 
-/* ── Visèmes : caractère → forme de bouche (amplitude via .open) ─────────── */
 const REST: Viseme = { open: 0.05, wide: 0.42, round: 0 };
 
 function stripAccent(c: string): string {
@@ -62,10 +44,8 @@ export function visemeForChar(raw: string): Viseme {
   return { open: 0.45, wide: 0.5, round: 0.1 };
 }
 
-/* ── Utilitaires ────────────────────────────────────────────────────────── */
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
-/** Couleur d'accent secondaire (yeux / lueur) selon l'humeur. */
 function moodGlow(mood: AvatarMood, accent: string): string {
   switch (mood) {
     case "happy": return "#28E0A8";
@@ -75,17 +55,16 @@ function moodGlow(mood: AvatarMood, accent: string): string {
   }
 }
 
-/** Cibles émotionnelles : courbure des yeux + inclinaison des sourcils. */
 interface MoodTarget { eyeCurve: number; browTy: number; browRot: number; squint: number }
 function moodTarget(mode: AvatarMode, mood: AvatarMood): MoodTarget {
   if (mode === "thinking") return { eyeCurve: 0, browTy: -2, browRot: 4, squint: 0.15 };
   if (mode === "listening") return { eyeCurve: 0.15, browTy: -2, browRot: 0, squint: 0 };
   switch (mood) {
     case "happy": return { eyeCurve: 1, browTy: -3, browRot: 0, squint: 0.35 };
-    // Adouci : sourcils légèrement relevés (empathie) plutôt que froncés (colère)
+
     case "concerned": return { eyeCurve: -0.15, browTy: -1, browRot: 7, squint: 0.08 };
     case "alert": return { eyeCurve: -0.3, browTy: 0, browRot: 12, squint: 0.1 };
-    // Neutre avenant : très léger sourire par défaut
+
     default: return { eyeCurve: 0.12, browTy: -0.5, browRot: 0, squint: 0 };
   }
 }
@@ -98,25 +77,20 @@ function poseTarget(mode: AvatarMode): { gx: number; gy: number; rot: number } {
   }
 }
 
-/**
- * Path d'un œil : morphe entre un œil "pilule" arrondi (neutre),
- * un arc souriant (curve>0) et un œil incliné/agacé (curve<0).
- * cx = centre horizontal, cy = centre vertical, curve ∈ [-1,1].
- */
 function eyePath(cx: number, cy: number, curve: number, side: 1 | -1): string {
-  const w = 9;                       // demi-largeur
-  const h = 11;                      // demi-hauteur
+  const w = 9;
+  const h = 11;
   const L = cx - w, R = cx + w;
   if (curve > 0) {
-    // œil souriant : arc convexe vers le haut
+
     const lift = curve * 11;
     const yb = cy + 3;
     return `M ${L} ${yb} Q ${cx} ${yb - lift - 8} ${R} ${yb} Q ${cx} ${yb - lift} ${L} ${yb} Z`;
   }
-  // œil neutre → incliné : pilule arrondie, coin intérieur relevé si curve<0
-  const inner = side === 1 ? R : L;   // côté nez
+
+  const inner = side === 1 ? R : L;
   const outer = side === 1 ? L : R;
-  const tilt = -curve * 6;            // inclinaison "agacé"
+  const tilt = -curve * 6;
   const topInner = cy - h - tilt, topOuter = cy - h + tilt * 0.4;
   const botInner = cy + h - tilt, botOuter = cy + h + tilt * 0.4;
   return `M ${outer} ${topOuter}
@@ -126,14 +100,13 @@ function eyePath(cx: number, cy: number, curve: number, side: 1 | -1): string {
           Q ${outer - side * 3} ${cy} ${outer} ${topOuter} Z`;
 }
 
-/* ── Composant ──────────────────────────────────────────────────────────── */
 const FinBotAvatar = forwardRef<AvatarHandle, AvatarProps>(function FinBotAvatar(
   { mode, mood, accent },
   ref,
 ) {
-  const coreRef = useRef<SVGGElement>(null);       // groupe animé (respiration/pose/gestes)
-  const ringRef = useRef<SVGGElement>(null);       // anneau orbital rotatif
-  const eyesRef = useRef<SVGGElement>(null);       // groupe yeux (regard + clignement)
+  const coreRef = useRef<SVGGElement>(null);
+  const ringRef = useRef<SVGGElement>(null);
+  const eyesRef = useRef<SVGGElement>(null);
   const eyeLRef = useRef<SVGPathElement>(null);
   const eyeRRef = useRef<SVGPathElement>(null);
   const browLRef = useRef<SVGPathElement>(null);
@@ -142,7 +115,7 @@ const FinBotAvatar = forwardRef<AvatarHandle, AvatarProps>(function FinBotAvatar
 
   const modeRef = useRef<AvatarMode>(mode);
   const moodRef = useRef<AvatarMood>(mood);
-  const targetAmp = useRef(0);      // amplitude bouche cible (via viseme.open)
+  const targetAmp = useRef(0);
   const speakingRef = useRef(false);
 
   const cur = useRef({
@@ -164,29 +137,24 @@ const FinBotAvatar = forwardRef<AvatarHandle, AvatarProps>(function FinBotAvatar
 
   const NBARS = 9;
 
-  /* ── Boucle d'animation ───────────────────────────────────────────────── */
   useEffect(() => {
     let raf = 0;
     const loop = (now: number) => {
       const t = now / 1000;
       const md = modeRef.current;
 
-      /* Respiration (pulsation douce) */
       const breath = 1 + Math.sin(t * 1.5) * 0.018;
 
-      /* Anneau orbital : rotation continue (plus vite quand il parle/réfléchit) */
       const ringSpeed = speakingRef.current ? 46 : md === "thinking" ? 34 : 14;
       cur.current.ring = (cur.current.ring + ringSpeed / 60) % 360;
       if (ringRef.current)
         ringRef.current.setAttribute("transform", `rotate(${cur.current.ring.toFixed(1)} 110 110)`);
 
-      /* Pose (mode) lissée */
       const pt = poseTarget(md);
       cur.current.poseGx = lerp(cur.current.poseGx, pt.gx, 0.06);
       cur.current.poseGy = lerp(cur.current.poseGy, pt.gy, 0.06);
       cur.current.poseRot = lerp(cur.current.poseRot, pt.rot, 0.06);
 
-      /* Gestes ponctuels */
       let gGx = 0, gGy = 0, gRot = 0;
       if (gest.current) {
         const g = gest.current;
@@ -211,7 +179,6 @@ const FinBotAvatar = forwardRef<AvatarHandle, AvatarProps>(function FinBotAvatar
         );
       }
 
-      /* Regard : saccades / dirigé selon le mode */
       if (now >= gaze.current.nextAt) {
         if (md === "thinking") { gaze.current.tx = -3.5; gaze.current.ty = -3; }
         else if (md === "listening") { gaze.current.tx = 0; gaze.current.ty = 1.6; }
@@ -222,7 +189,6 @@ const FinBotAvatar = forwardRef<AvatarHandle, AvatarProps>(function FinBotAvatar
       cur.current.gazeX = lerp(cur.current.gazeX, gaze.current.tx, 0.14);
       cur.current.gazeY = lerp(cur.current.gazeY, gaze.current.ty, 0.14);
 
-      /* Clignement */
       if (!blink.current.closing && now >= blink.current.nextAt) {
         blink.current.closing = true; blink.current.startAt = now;
       }
@@ -232,14 +198,12 @@ const FinBotAvatar = forwardRef<AvatarHandle, AvatarProps>(function FinBotAvatar
         else blink.current.open = 1 - Math.sin(bp * Math.PI) * 0.9;
       }
 
-      /* Émotion (yeux + sourcils) lissée */
       const mt = moodTarget(md, moodRef.current);
       cur.current.eyeCurve = lerp(cur.current.eyeCurve, mt.eyeCurve, 0.1);
       cur.current.browTy = lerp(cur.current.browTy, mt.browTy, 0.1);
       cur.current.browRot = lerp(cur.current.browRot, mt.browRot, 0.1);
       cur.current.squint = lerp(cur.current.squint, mt.squint, 0.1);
 
-      // Yeux : path (émotion) + clignement/squint via scaleY autour du centre
       const eScale = (blink.current.open * (1 - cur.current.squint * 0.45)).toFixed(3);
       if (eyeLRef.current) eyeLRef.current.setAttribute("d", eyePath(88, 100, cur.current.eyeCurve, -1));
       if (eyeRRef.current) eyeRRef.current.setAttribute("d", eyePath(132, 100, cur.current.eyeCurve, 1));
@@ -249,13 +213,11 @@ const FinBotAvatar = forwardRef<AvatarHandle, AvatarProps>(function FinBotAvatar
           `translate(${cur.current.gazeX.toFixed(2)} ${cur.current.gazeY.toFixed(2)}) translate(110 100) scale(1 ${eScale}) translate(-110 -100)`,
         );
 
-      // Sourcils (deux traits qui s'inclinent)
       if (browLRef.current)
         browLRef.current.setAttribute("transform", `translate(0 ${cur.current.browTy.toFixed(2)}) rotate(${cur.current.browRot.toFixed(2)} 88 80)`);
       if (browRRef.current)
         browRRef.current.setAttribute("transform", `translate(0 ${cur.current.browTy.toFixed(2)}) rotate(${(-cur.current.browRot).toFixed(2)} 132 80)`);
 
-      /* Bouche = égaliseur vocal */
       const k = speakingRef.current ? 0.4 : 0.16;
       cur.current.amp = lerp(cur.current.amp, speakingRef.current ? targetAmp.current : 0, k);
       const amp = cur.current.amp;
@@ -263,7 +225,7 @@ const FinBotAvatar = forwardRef<AvatarHandle, AvatarProps>(function FinBotAvatar
       for (let i = 0; i < NBARS; i++) {
         const el = barRefs.current[i];
         if (!el) continue;
-        // profil en cloche (barres centrales plus hautes) + oscillation temporelle
+
         const bell = 0.55 + 0.45 * Math.sin((i / (NBARS - 1)) * Math.PI);
         const wobble = 0.45 + 0.55 * Math.abs(Math.sin(t * 11 + i * 0.9));
         const h = minH + amp * maxH * bell * wobble;
@@ -307,10 +269,8 @@ const FinBotAvatar = forwardRef<AvatarHandle, AvatarProps>(function FinBotAvatar
         </filter>
       </defs>
 
-      {/* Ombre portée */}
       <ellipse cx="110" cy="205" rx="60" ry="10" fill="rgba(11,27,77,0.16)" />
 
-      {/* Anneau orbital rotatif + particule */}
       <g ref={ringRef}>
         <circle cx="110" cy="110" r="97" fill="none" stroke="url(#orbRing)" strokeWidth="2"
           strokeDasharray="3 10" opacity="0.55" />
@@ -318,33 +278,25 @@ const FinBotAvatar = forwardRef<AvatarHandle, AvatarProps>(function FinBotAvatar
         <circle cx="207" cy="110" r="3" fill="#14C2D6" opacity="0.8" />
       </g>
 
-      {/* Noyau (groupe animé) */}
       <g ref={coreRef}>
-        {/* corps de l'orbe */}
         <circle cx="110" cy="110" r="80" fill="url(#orbBody)" />
-        {/* liseré lumineux interne selon l'humeur */}
         <circle cx="110" cy="110" r="80" fill="url(#orbInner)" />
         <circle cx="110" cy="110" r="80" fill="none" stroke={glow} strokeWidth="2" opacity="0.6" />
-        {/* reflet glossy */}
         <ellipse cx="84" cy="78" rx="34" ry="22" fill="#FFFFFF" opacity="0.18" />
         <circle cx="150" cy="150" r="30" fill="#0B1B4D" opacity="0.14" />
 
-        {/* Sourcils (émotion) */}
         <path ref={browLRef} d="M76 82 q12 -6 24 -1" stroke="#EAF2FF" strokeWidth="3.4"
           strokeLinecap="round" fill="none" opacity="0.9" />
         <path ref={browRRef} d="M120 81 q12 -5 24 1" stroke="#EAF2FF" strokeWidth="3.4"
           strokeLinecap="round" fill="none" opacity="0.9" />
 
-        {/* Yeux (regard + clignement + émotion) */}
         <g ref={eyesRef}>
           <path ref={eyeLRef} d={eyePath(88, 100, 0, -1)} fill="#F4FBFF" />
           <path ref={eyeRRef} d={eyePath(132, 100, 0, 1)} fill="#F4FBFF" />
-          {/* petits éclats dans les yeux */}
           <circle cx="91" cy="96" r="2.4" fill={accent} opacity="0.85" />
           <circle cx="135" cy="96" r="2.4" fill={accent} opacity="0.85" />
         </g>
 
-        {/* Bouche = égaliseur vocal */}
         <g>
           {barX.map((x, i) => (
             <rect

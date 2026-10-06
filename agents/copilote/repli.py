@@ -1,13 +1,4 @@
-"""
-agents/copilote/repli.py
-========================
-Réponses DÉTERMINISTES, une par thème, quand aucun modèle de langage n'est
-disponible ou que sa réponse a été écartée (montant non traçable).
-
-Même format que celui imposé au modèle : une phrase d'ouverture chiffrée,
-quelques puces d'une ligne, une seule ligne « À faire ». Chaque chiffre vient
-des indicateurs ou de la passerelle des modèles.
-"""
+"""Réponses DÉTERMINISTES, une par thème, quand aucun modèle de langage n'est disponible ou que sa…"""
 
 from __future__ import annotations
 
@@ -42,8 +33,6 @@ def reponse_deterministe(question: str, kpis: Dict[str, Any], filters: Dict[str,
         lines.extend(reponse_modeles(themes, kpis, filters))
 
     elif "recouvrement" in themes:
-        # Format aligné sur celui imposé au LLM : une phrase d'ouverture
-        # chiffrée, quelques puces d'une ligne, une seule ligne d'action.
         top_risk = kpis.get("clients_relance") or kpis.get("clients_a_risque") or []
         periode = kpis.get("exposition_recente_periode", "6 derniers mois")
         expo = float(kpis.get("exposition_recente_dt") or 0)
@@ -122,9 +111,6 @@ def reponse_deterministe(question: str, kpis: Dict[str, Any], filters: Dict[str,
         except Exception:
             pass
 
-    # `risque_stock` est plus spécifique que `prevision` : une question sur
-    # la péremption contient souvent « prochain trimestre », qui déclenche
-    # aussi le thème prévision. On laisse la priorité au thème spécifique.
     elif "prevision" in themes and "risque_stock" not in themes:
         fc = kpis.get("forecast_next") or []
         lines.append("## 🔮 Prévision de chiffre d'affaires\n")
@@ -176,9 +162,6 @@ def reponse_deterministe(question: str, kpis: Dict[str, Any], filters: Dict[str,
             def _nom(c):
                 return c["client"] if c["nom_resolu"] else f"{c['code']} (sans libellé ERP)"
 
-            # Séparateur de milliers appliqué AU NOMBRE SEUL : un
-            # `.replace(",", " ")` sur la ligne entière effacerait aussi les
-            # virgules de la phrase.
             def _dt(v):
                 return f"{v:,.0f}".replace(",", " ")
 
@@ -239,7 +222,6 @@ def reponse_deterministe(question: str, kpis: Dict[str, Any], filters: Dict[str,
         else:
             lines.append("Aucun décrochage marqué : les clients établis maintiennent leur niveau d'achat.")
             lines.append("\n**À faire :** rien sur ce périmètre.")
-        # Le constaté dit qui est DÉJÀ parti ; le modèle dit qui va partir.
         try:
             from ml_engine import passerelle as pw
             ch = pw.decrochage(kpis=kpis)
@@ -275,7 +257,6 @@ def reponse_deterministe(question: str, kpis: Dict[str, Any], filters: Dict[str,
         lines.append("\n**À faire :** élargir la base clients pour réduire la dépendance aux premiers comptes.")
 
     elif "risque_stock" in themes:
-        # Repli déterministe, sans le modèle retiré : flux réels + fin de vie.
         try:
             ctx = outils.contexte_stock_reel(kpis)
         except Exception as e:
@@ -317,20 +298,21 @@ def reponse_deterministe(question: str, kpis: Dict[str, Any], filters: Dict[str,
             lines.append(f"- **Demande prévue** (articles/mois, MAPE {d.get('demande_mape')} %) — "
                          + ", ".join(f"{p['period']} ≈ {int(p['qte'])}" for p in fc))
         lines.append(f"\n**À faire :** référencer une 2ᵉ source pour réduire la dépendance à {nom1}.")
-        lines.append("\n_Analyse de la demande et du risque fournisseur : l'ERP ne contient pas "
-                     "de stock par référence._")
+        lines.append("\n_Analyse de la demande et du risque fournisseur : aucun relevé de "
+                     "stock par référence n'est disponible._")
 
     else:
-        # Synthèse générale
         lines.append(f"**{fmt(kpis.get('ca_total_ttc'))}** de CA TTC, croissance "
                      f"**{kpis.get('yoy_growth', 0):.1f} %** sur un an, "
                      f"{kpis.get('nb_clients', 0)} clients actifs.")
         lines.append("")
         lines.append(f"- **Encaissement** — DSO {kpis.get('dso_jours', 0):.0f} jours")
-        crit = kpis.get("retards_critiques", 0)
-        lines.append(f"- {'🔴' if crit else '🟢'} **Retards critiques** — {crit} facture(s)")
-        lines.append("\n**À faire :** " + ("traiter les factures critiques en priorité."
-                                           if crit else "aucune action urgente sur ce périmètre."))
+        crit = kpis.get("factures_delai_sup_90j", 0)
+        lines.append(f"- {'🟠' if crit else '🟢'} **Délais accordés > 90 jours** — "
+                     f"{crit} facture(s)")
+        lines.append("\n**À faire :** " + (
+            "revoir les conditions de paiement accordées sur ces factures."
+            if crit else "aucune condition de paiement hors norme sur ce périmètre."))
 
     return "\n".join(lines)
 

@@ -139,11 +139,32 @@ celle du modèle avait été écartée.
 | Contrat d'API stable | `run_briefing` → `{engine, briefing, findings, trace, fiabilite}` | `test_run_briefing_api_contract` |
 | Le copilote dit d'où vient sa réponse | `via` = `rag`, `llm` ou `regles`, posé par le nœud qui a répondu | `test_via_dit_d_ou_vient_la_reponse` |
 | Le copilote suit le même chemin avec ou sans LangGraph | `_run_sequential` rejoue les mêmes nœuds et décisions | `test_le_repli_sequentiel_suit_le_meme_chemin_que_le_graphe` |
+| La flotte confie l'exécution, jamais la décision | `execution` déclaré par chaque constat ; `None` = décision de direction | `test_une_decision_de_direction_n_est_jamais_confiee_d_office`, `test_sur_la_vraie_flotte_chaque_constat_declare_qui_peut_l_executer` |
+| Une alerte n'est jamais confiée deux fois, ni par la flotte ni par le directeur | même clé `origine_titre` que le bouton « Confier » | `test_la_flotte_ne_confie_jamais_deux_fois_la_meme_alerte` |
+| Un seul passage planifié par jour | `delegations_auto.jour_planifie` unique | `test_un_seul_passage_planifie_par_jour` |
 
-## Après le constat : la boucle d'action
+## Après le constat : la boucle d'action et la délégation autonome
 
-La flotte s'arrête au constat. Ce constat devient ensuite une **tâche confiée** à
-un employé, dont le résultat est mesuré puis rapatrié dans l'entrepôt
-(`ml_engine/boucle.py`) : les modèles se confrontent enfin au terrain au lieu de
-prédire sans jamais savoir. Le client, de son côté, agit depuis son espace, ce
-qui crée une tâche à affecter. Voir `docs/BOUCLE_ACTION.md`.
+Le constat devient ensuite une **tâche confiée** à un employé, dont le résultat
+est mesuré puis rapatrié dans l'entrepôt (`ml_engine/boucle.py`) : les modèles
+se confrontent enfin au terrain au lieu de prédire sans jamais savoir. Le
+client, de son côté, agit depuis son espace, ce qui crée une tâche à affecter.
+
+La tâche peut être confiée par le directeur (bouton « Confier ») ou **par la
+flotte elle-même** : chaque constat déclare s'il relève de l'exécution (un
+métier, un type d'action) ou de la direction (`execution: None`), et la
+délégation autonome confie chaque jour le travail d'exécution à l'employé du
+bon métier le moins chargé.
+
+```mermaid
+flowchart LR
+    ARB["⚖️ Arbitre<br/>classement + clients multi-signaux"] --> PLAN["🤖 planifier()<br/>agents/fleet/delegation.py<br/>pur, sans base"]
+    PLAN -->|exécution, gravité haute| SVC["api/services/delegation.py<br/>déjà confiée ? carence ? charge ?"]
+    PLAN -->|décision de direction| DIR["👔 Directeur<br/>« Laissées à votre décision »"]
+    SVC -->|employé du métier, le moins chargé| T[("taches<br/>delegation_auto = vrai")]
+    SVC -->|personne / équipe saturée| AFF["« À affecter »<br/>le directeur tranche"]
+    CRON["⏰ planificateur<br/>(chaque minute : dû ?)"] --> ARB
+    T --> MES["impact par origine<br/>+ export entrepôt"]
+```
+
+Voir `docs/BOUCLE_ACTION.md`, § « La délégation autonome ».

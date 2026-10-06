@@ -1,12 +1,9 @@
-/**
- * Model — conversation avec le copilote FinBot.
- */
 
 export type MsgRole = "user" | "assistant";
 
 export interface Attachment {
   file: File;
-  preview: string | null; // data-URL pour images, null pour autres
+  preview: string | null;
 }
 
 export interface Msg {
@@ -24,7 +21,6 @@ export interface RadarCard {
   montant_label: string;
 }
 
-/** Réponse de /api/copilot et /api/copilot/upload. */
 export interface ReponseCopilote {
   answer?: string;
   via?: Msg["via"];

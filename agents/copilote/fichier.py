@@ -1,10 +1,4 @@
-"""
-agents/copilote/fichier.py
-==========================
-Réponse sur un fichier joint (CSV, PDF textuel), croisée avec les indicateurs
-de la plateforme. La lecture du fichier est faite par l'API
-(`api/services/fichiers.py`) ; ici, seulement le contexte et le modèle.
-"""
+"""Réponse sur un fichier joint (CSV, PDF textuel), croisée avec les indicateurs de la plateforme."""
 
 from __future__ import annotations
 
@@ -18,8 +12,7 @@ from agents.copilote.prompt import prompt_fichier
 
 def analyser_fichier(question: str, extension: str, resume_fichier: str, texte: str,
                      kpis: Dict[str, Any]) -> Optional[str]:
-    """Réponse du modèle de langage, ou None (aucun modèle : l'API répond alors
-    par un résumé du fichier)."""
+    """Réponse du modèle de langage, ou None (aucun modèle : l'API répond alors par un résumé du fichier)."""
     try:
         contexte = build_thematic_context(detect_theme(question), kpis)
     except Exception:

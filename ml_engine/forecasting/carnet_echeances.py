@@ -1,58 +1,4 @@
-"""
-ml_engine/forecasting/carnet_echeances.py
-==========================================
-Prevision d'encaissements par CARNET D'ECHEANCES (methode des facteurs de
-developpement).
-
-Le probleme etait mal pose
--------------------------
-`lstm_cashflow.py` agrege les encaissements attendus en une serie mensuelle, puis
-tente de la PREDIRE — LSTM, Holt-Winters, naifs. Resultat : 23 a 30 % de MAPE,
-insuffisant pour piloter une tresorerie.
-
-Or cette approche jette l'information la plus precieuse du jeu de donnees : **une
-facture emise porte DEJA sa date d'echeance**. Au 31 janvier, les encaissements
-de fevrier ne sont pas a deviner : ils sont pour l'essentiel **inscrits dans le
-carnet**. Les delais accordes vont de 30 a 120 jours, donc les echeances de
-fevrier proviennent de factures emises entre octobre et fevrier — dont quatre
-mois sur cinq sont deja connus.
-
-Predire une serie que l'on peut lire est une erreur de formulation, pas de
-modele. Aucun LSTM ne rattrapera ce handicap.
-
-La methode
-----------
-A l'origine T, pour un horizon h :
-
-    encaissement(T+h) = ACQUIS(T, T+h) + RESTE(T, T+h)
-
-  * ACQUIS  : factures DEJA emises au plus tard en T, dont l'echeance tombe en
-              T+h. Connu EXACTEMENT, sans aucune prediction.
-  * RESTE   : echeances en T+h de factures qui seront emises apres T. Seule
-              partie a estimer.
-
-On estime RESTE par un TAUX DE MATURITE : la part du total d'un mois qui est
-deja acquise h mois a l'avance. Ce taux est stable car il decoule de la
-structure des delais contractuels, pas de la conjoncture.
-
-    taux(h) = mediane sur les origines passees de  ACQUIS(T', T'+h) / TOTAL(T'+h)
-    prevision(T+h) = ACQUIS(T, T+h) / taux(h)
-
-C'est la methode des facteurs de developpement (chain-ladder), standard en
-provisionnement actuariel et en tresorerie. Elle est explicable a un directeur
-financier en deux phrases, et auditable ligne a ligne.
-
-Absence de fuite
-----------------
-A chaque origine T du backtest :
-  * seules les factures d'emission <= T sont lues ;
-  * taux(h) n'est estime que sur des origines T' telles que T'+h <= T, donc sur
-    des mois dont le total etait deja entierement observe en T.
-
-Aucune information posterieure a T n'intervient.
-
-    python -m ml_engine.forecasting.carnet_echeances
-"""
+"""Prevision d'encaissements par CARNET D'ECHEANCES (methode des facteurs de developpement)."""
 
 from __future__ import annotations
 
@@ -62,27 +8,12 @@ from statistics import median
 from typing import Dict, List, Optional, Tuple
 
 REPORTS = Path(__file__).resolve().parents[2] / "reports"
-# L'HORIZON EST BORNE PAR LES CONDITIONS DE PAIEMENT, pas par la methode.
-# Distribution mesuree des delais accordes (echeance - emission) :
-#
-#     0 mois :  1,47 %        3 mois : 0,97 %
-#     1 mois : 50,60 %        4 mois : 0,01 %
-#     2 mois : 46,94 %        -> 99,01 % cumule a 2 mois
-#
-# A l'horizon h, le carnet ne peut contenir que les factures de delai >= h.
-# A h=3 cela represente 0,98 % du volume : le carnet est structurellement
-# aveugle. Un essai a h=3 a bien donne 9,3 % de MAPE, mais en s'appuyant sur
-# TROIS factures atypiques de 425 000 DT — une coincidence, pas une methode.
-#
-# On se limite donc aux horizons que la structure des delais autorise, et
-# `evaluer` REFUSE explicitement ceux qu'elle n'autorise pas.
 HORIZONS = (1, 2)
-PART_MINIMALE_DELAI = 0.05   # sous 5 % de factures a delai >= h, horizon refuse
+PART_MINIMALE_DELAI = 0.05
 N_TEST_DEFAULT = 12
-SEUIL_MULTIPLICATIF = 0.50   # au-dessus, le carnet suffit ; en dessous, additif
+SEUIL_MULTIPLICATIF = 0.50
 
 
-# ── Chargement ──────────────────────────────────────────────────────────────
 def _cle(annee: int, mois: int) -> int:
     """Index mensuel absolu, pour une arithmetique de mois sans piege."""
     return annee * 12 + (mois - 1)
@@ -94,12 +25,7 @@ def _libelle(k: int) -> str:
 
 
 def charger_factures(data_dir: Path | None = None) -> List[Tuple[int, int, float]]:
-    """Rend (mois d'emission, mois d'echeance, TTC) pour les VENTES.
-
-    Les avoirs sont exclus : un avoir n'est pas un encaissement attendu, c'est
-    une dette envers le client. Le signe porte par `ttc` le rendrait negatif et
-    viendrait diminuer un mois auquel il n'appartient pas.
-    """
+    """Rend (mois d'emission, mois d'echeance, TTC) pour les VENTES."""
     from ml_engine.analytics import kpi_engine
     con = kpi_engine._connect(data_dir)
     rows = con.execute("""
@@ -114,7 +40,6 @@ def charger_factures(data_dir: Path | None = None) -> List[Tuple[int, int, float
             for r in rows]
 
 
-# ── Grandeurs de base ───────────────────────────────────────────────────────
 def _acquis(factures, origine: int, cible: int) -> float:
     """Somme deja inscrite au carnet a l'origine, pour le mois cible."""
     return sum(t for em, ech, t in factures if ech == cible and em <= origine)
@@ -126,11 +51,7 @@ def _total(factures, cible: int) -> float:
 
 
 def _taux_maturite(factures, origine: int, h: int, debut: int) -> Optional[float]:
-    """Part du total deja acquise h mois a l'avance, estimee sur le PASSE seul.
-
-    Seules les origines T' telles que T'+h <= origine sont utilisees : leur mois
-    cible etait entierement observe a la date de prevision.
-    """
+    """Part du total deja acquise h mois a l'avance, estimee sur le PASSE seul."""
     parts: List[float] = []
     for t_prime in range(debut, origine - h + 1):
         cible = t_prime + h
@@ -145,12 +66,7 @@ def _taux_maturite(factures, origine: int, h: int, debut: int) -> Optional[float
 
 def _reste_recent(factures, origine: int, h: int, debut: int,
                   k: int = 6) -> Optional[float]:
-    """Part NON acquise, estimee sur les k origines passees les plus recentes.
-
-    Utilisee quand le carnet ne porte presque rien (horizons longs) : diviser
-    par un taux de 3 % amplifierait le bruit d'un facteur trente. On ajoute
-    alors une estimation ADDITIVE du reste a facturer, bien plus stable.
-    """
+    """Part NON acquise, estimee sur les k origines passees les plus recentes."""
     vals: List[float] = []
     for t_prime in range(max(debut, origine - h - k + 1), origine - h + 1):
         cible = t_prime + h
@@ -162,21 +78,12 @@ def _reste_recent(factures, origine: int, h: int, debut: int,
 
 
 def _serie_observable(factures, origine: int, debut: int) -> Dict[int, float]:
-    """Totaux mensuels CONNUS a l'origine, pour les baselines.
-
-    `total(T)` est connu en T : les echeances du mois T proviennent de factures
-    emises en T-4..T, toutes deja emises. `total(T+1)` ne l'est pas encore
-    entierement (0,8 % manquants) — les baselines n'y ont donc pas acces.
-    """
+    """Totaux mensuels CONNUS a l'origine, pour les baselines."""
     return {k: _total(factures, k) for k in range(debut, origine + 1)}
 
 
 def _baselines(z: Dict[int, float], origine: int, h: int) -> Dict[str, float]:
-    """References triviales, evaluees sur la MEME cible et les MEMES origines.
-
-    Sans cela, comparer 1,3 % a un 23 % mesure sur une serie differemment
-    construite n'a aucun sens — c'est l'erreur que cette fonction corrige.
-    """
+    """References triviales, evaluees sur la MEME cible et les MEMES origines."""
     dispo = sorted(k for k in z if z[k] > 0)
     if not dispo:
         return {}
@@ -193,21 +100,7 @@ def _baselines(z: Dict[int, float], origine: int, h: int) -> Dict[str, float]:
 
 def prevoir(factures, origine: int, h: int,
             debut: int) -> Optional[Tuple[float, str, float]]:
-    """Prevision pour `origine + h`. Rend (valeur, methode, taux de maturite).
-
-    Deux regimes, selon ce que le carnet porte reellement :
-
-      * MULTIPLICATIF (chain-ladder) quand le carnet est deja majoritairement
-        constitue. A h=1 le taux atteint 99 % : les encaissements du mois
-        suivant sont pratiquement tous inscrits, il n'y a presque rien a
-        estimer.
-
-      * ADDITIF quand le carnet est quasi vide. Les delais accordes etant
-        surtout de 30 a 60 jours, les echeances de T+3 proviennent de factures
-        qui, pour l'essentiel, ne sont PAS ENCORE EMISES en T. Diviser par un
-        taux de quelques pourcents n'a alors aucun sens : on ajoute au carnet
-        une estimation du reste a facturer.
-    """
+    """Prevision pour `origine + h`."""
     taux = _taux_maturite(factures, origine, h, debut)
     acq = _acquis(factures, origine, origine + h)
     if taux is not None and taux >= SEUIL_MULTIPLICATIF:
@@ -218,7 +111,6 @@ def prevoir(factures, origine: int, h: int,
     return acq + reste, "additif", (taux if taux is not None else 0.0)
 
 
-# ── Backtest walk-forward ───────────────────────────────────────────────────
 def evaluer(n_test: int = N_TEST_DEFAULT,
             horizons=HORIZONS,
             data_dir: Path | None = None) -> Dict:
@@ -229,14 +121,10 @@ def evaluer(n_test: int = N_TEST_DEFAULT,
     echeances = sorted({ech for _, ech, _ in factures})
     emissions = sorted({em for em, _, _ in factures})
     debut = echeances[0]
-    fin_donnees = max(emissions)          # dernier mois d'EMISSION observe
+    fin_donnees = max(emissions)
 
-    # Un mois cible n'est exploitable comme verite terrain que si toutes les
-    # factures qui l'alimentent sont emises. On garde donc une marge d'un mois.
     fin_cible = fin_donnees - 1
 
-    # Part des factures dont le delai atteint chaque horizon : c'est le plafond
-    # theorique de ce que le carnet peut voir.
     n_tot = len(factures)
     part_delai = {}
     for h in horizons:
@@ -255,7 +143,6 @@ def evaluer(n_test: int = N_TEST_DEFAULT,
                     "factures atypiques, pas sur la méthode."),
             }
             continue
-        # Origines de test : les n_test plus recentes dont la cible est complete.
         origines = [t for t in range(debut, fin_cible - h + 1)][-n_test:]
         erreurs_pct, erreurs_abs, carres = [], [], []
         detail, methodes, taux_vus = [], [], []
@@ -269,7 +156,6 @@ def evaluer(n_test: int = N_TEST_DEFAULT,
             if sortie is None:
                 continue
             pred, methode, taux = sortie
-            # Les references sont evaluees sur la MEME cible et la MEME origine.
             z = _serie_observable(factures, t, debut)
             for nom, valeur in _baselines(z, t, h).items():
                 err_baselines.setdefault(nom, []).append(abs(valeur - reel) / reel)
@@ -301,9 +187,6 @@ def evaluer(n_test: int = N_TEST_DEFAULT,
             },
             "detail": detail,
         }
-        # Le carnet n'apporte quelque chose que s'il BAT la meilleure reference
-        # sur la meme cible. A h=3, ou le taux de maturite est nul, il se reduit
-        # a une moyenne mobile : il ne faut alors revendiquer aucun gain.
         b = resultats[f"h{h}"]["baselines_mape_pct"]
         if b:
             meilleure = min(b, key=b.get)
@@ -369,7 +252,7 @@ def rapport_console(res: Dict) -> str:
         "    non soutenus sont refusés explicitement plutôt que servis.",
         "",
         "    PORTÉE. Cette cible est un ÉCHÉANCIER CONTRACTUEL, pas de la",
-        "    trésorerie encaissée : l'ERP ne contient aucune date de paiement",
+        "    trésorerie encaissée : aucune date de paiement n'est enregistrée",
         "    réelle. Ce module dit quand les créances deviennent exigibles, pas",
         "    quand le client paiera.",
     ]
@@ -381,8 +264,6 @@ def main() -> int:
     print(rapport_console(res))
     REPORTS.mkdir(exist_ok=True)
     sortie = REPORTS / "cashflow_carnet_metrics.json"
-    # Le détail par origine est volumineux : conservé, mais c'est lui qui rend
-    # la mesure vérifiable ligne à ligne.
     sortie.write_text(json.dumps(res, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\n    → {sortie}")
     return 0

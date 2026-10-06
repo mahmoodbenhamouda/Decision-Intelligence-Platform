@@ -1,22 +1,4 @@
-"""
-ml_engine/ocr/layoutlm/extracteur.py
-====================================
-Extraction de factures par LayoutLMv3 affiné — branchée en **complément** des
-règles (`parse_invoice`), jamais à leur place :
-
-    1. mots + boîtes du document (texte PDF exact, ou OCR renforcé) ;
-    2. LayoutLMv3 étiquette chaque mot (numéro, date, HT, TVA, TTC, net…) ;
-    3. les règles comblent les champs que le modèle n'a pas trouvés ;
-    4. le contrôle arithmétique (HT + TVA + timbre = TTC) tranche entre
-       les candidats.
-
-Le modèle est optionnel : s'il n'est pas installé (`models/layoutlmv3_factures/`
-absent, ou `transformers` non installé), la plateforme continue avec les règles
-seules — rien ne casse.
-
-Emplacement du modèle : variable `OVERLYNE_LAYOUTLM_DIR`, sinon
-`<projet>/models/layoutlmv3_factures/` (dossier produit par le carnet Colab).
-"""
+"""Extraction de factures par LayoutLMv3 affiné — branchée en **complément** des règles…"""
 from __future__ import annotations
 
 import os
@@ -37,18 +19,7 @@ def dossier_modele() -> Path:
 
 
 def etat() -> Dict[str, Any]:
-    """Pourquoi LayoutLMv3 est-il servi — ou non ?
-
-    « Règles seules » recouvrait trois situations très différentes (modèle
-    absent, dépendances absentes, modèle refusé), qui appellent trois actions
-    différentes. La plus traître est le refus : tout est installé, tout semble
-    normal, et la plateforme lit pourtant les factures avec des règles justes à
-    22 %. Le motif est donc renvoyé avec la réponse.
-
-    Le refus vient du registre des modèles (`ml_engine/registre.py`), qui lit
-    `reports/layoutlmv3_metrics.json`. Rapport absent = non servi : un modèle
-    dont on ne sait rien n'écrit pas dans des données comptables.
-    """
+    """Pourquoi LayoutLMv3 est-il servi — ou non ?"""
     d = dossier_modele()
     if not (d / "config.json").exists():
         return {"disponible": False, "cause": "modele_absent",
@@ -64,7 +35,7 @@ def etat() -> Dict[str, Any]:
     try:
         from ml_engine.registre import etat_modele
         reg = etat_modele("layoutlmv3")
-    except Exception as e:                      # registre illisible : on ne sert pas
+    except Exception as e:
         return {"disponible": False, "cause": "registre_illisible",
                 "motif": f"registre des modèles illisible ({e})"}
     if not reg.get("deploye"):
@@ -130,14 +101,11 @@ def _predire_page(image, mots: List[dict]) -> dict:
     return {"mots": textes,
             "etiquettes": [id2label[int(i)] for i in pr.argmax(1)],
             "probas": pr.max(1).tolist(),
-            # boîtes en pixels : `recoller_milliers` en a besoin pour distinguer
-            # un séparateur de milliers d'un saut de colonne.
             "boites": [[m["x"], m["y"], m["x"] + m["w"], m["y"] + m["h"]] for m in mots]}
 
 
 def extraire(content: bytes, filename: str) -> Optional[Dict[str, Any]]:
-    """Champs lus par LayoutLMv3 (schéma : numero, date, total_ht, total_tva,
-    timbre, total_ttc, net_a_payer, fournisseur, client) ou None si indisponible."""
+    """Champs lus par LayoutLMv3 (schéma : numero, date, total_ht, total_tva, timbre, total_ttc,…"""
     if not disponible():
         return None
     from .mots import pages_du_document
@@ -145,12 +113,7 @@ def extraire(content: bytes, filename: str) -> Optional[Dict[str, Any]]:
 
 
 def lire_facture(content: bytes, filename: str):
-    """Lecture complète d'une facture → (OCRResult, InvoiceFields, moteur).
-
-    Modèle installé : UNE seule lecture du document (OCR renforcé ou texte PDF
-    exact) sert à la fois aux règles et à LayoutLMv3, puis fusion.
-    Sinon : chaîne historique `ocr_document` + `parse_invoice`.
-    """
+    """Lecture complète d'une facture → (OCRResult, InvoiceFields, moteur)."""
     from ml_engine.ocr.engine import OCRResult, clean_text, ocr_document
     from ml_engine.ocr.invoice import parse_invoice
 
@@ -170,25 +133,20 @@ def lire_facture(content: bytes, filename: str):
         fields = parse_invoice(texte)
         lu = decoder([_predire_page(im, mots) for im, mots, _ in pages])
         return res, combiner(fields, lu), "layoutlmv3+regles"
-    except Exception as e:                      # jamais bloquant : repli sur l'historique
+    except Exception as e:
         res = ocr_document(content, filename)
         fields = parse_invoice(res.text)
         fields.avertissements.append(f"LayoutLMv3 indisponible ({e}) : règles seules.")
         return res, fields, "regles"
 
 
-# Correspondance schéma LayoutLMv3 → InvoiceFields (règles)
 _VERS_REGLES = {"numero": "numero", "date": "date_facture", "total_ht": "montant_ht",
                 "total_tva": "montant_tva", "timbre": "timbre_fiscal",
                 "total_ttc": "montant_ttc", "net_a_payer": "net_a_payer"}
 
 
 def message_coherence(f) -> Optional[str]:
-    """Même message que les règles (invoice.py), recalculé sur les valeurs FINALES.
-
-    Le message des règles portait sur leurs propres montants : après fusion il
-    peut décrire des valeurs qui ne sont plus affichées. Le timbre est admis
-    dans l'égalité (HT + TVA + timbre = TTC), comme dans `coherence`."""
+    """Même message que les règles (invoice.py), recalculé sur les valeurs FINALES."""
     ht, tva, ttc = f.montant_ht, f.montant_tva, f.montant_ttc
     if not (ht and tva and ttc):
         return None
@@ -202,11 +160,7 @@ def message_coherence(f) -> Optional[str]:
 
 
 def combiner(fields, lu: Optional[Dict[str, Any]]):
-    """Fusionne la lecture LayoutLMv3 dans un `InvoiceFields` issu des règles.
-
-    Le modèle l'emporte quand il est sûr de lui ; les règles gardent les autres
-    champs ; l'arithmétique départage les montants. Modifie et renvoie `fields`.
-    """
+    """Fusionne la lecture LayoutLMv3 dans un `InvoiceFields` issu des règles."""
     if not lu:
         return fields
     h = fusionner_avec_regles(lu, depuis_regles(fields.to_dict()))
@@ -217,7 +171,7 @@ def combiner(fields, lu: Optional[Dict[str, Any]]):
             fields.champs_confiance[attr] = "layoutlmv3"
     for cle, v in h.get("_rejetes") or []:
         attr = _VERS_REGLES.get(cle)
-        if attr and getattr(fields, attr) == v:   # la valeur absurde venait des règles : on l'efface
+        if attr and getattr(fields, attr) == v:
             setattr(fields, attr, None)
             fields.champs_confiance[attr] = "ecarte"
         montant = f"{float(v):,.3f}".replace(",", " ").replace(".", ",")
@@ -225,8 +179,6 @@ def combiner(fields, lu: Optional[Dict[str, Any]]):
             f"{cle} : {montant} lu par les règles, écarté comme invraisemblable "
             f"face aux autres montants — à saisir.")
     fields.coherence = message_coherence(fields)
-    # Fournisseur et client restent SÉPARÉS : `tiers` (règles) désigne surtout
-    # le client, y glisser le fournisseur mélangeait les deux côtés.
     if lu.get("fournisseur"):
         fields.fournisseur = lu["fournisseur"]
     if lu.get("client"):

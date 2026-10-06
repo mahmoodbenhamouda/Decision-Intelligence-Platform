@@ -1,23 +1,4 @@
-"""
-scripts/tableau_tests.py
-========================
-Génère `docs/TESTS.md` : la synthèse de la suite de tests, en une page.
-
-## Pourquoi ce script existe
-
-Un mémoire ne peut pas énumérer des centaines de tests, et personne ne lirait la liste. Ce
-qu'un jury attend, c'est une réponse à « qu'est-ce que vos tests DÉMONTRENT ? ».
-Le tableau produit ici répond famille par famille : ce qui est prouvé, combien
-de tests le prouvent, et lesquels citer.
-
-Les comptages sont RELUS DANS LA SUITE à chaque exécution (`pytest --collect-only`),
-jamais recopiés à la main : un tableau de qualité qui ment sur son propre nombre
-de tests serait le comble.
-
-Usage :
-    python scripts/tableau_tests.py            # écrit docs/TESTS.md
-    python scripts/tableau_tests.py --afficher # affiche sans écrire
-"""
+"""Génère `docs/TESTS.md` : la synthèse de la suite de tests, en une page."""
 
 from __future__ import annotations
 
@@ -32,23 +13,26 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parents[1]
 SORTIE = BASE / "docs" / "TESTS.md"
 
-#: Ce que chaque fichier démontre — en français, sans jargon de test.
-#: (famille, ce qui est prouvé)
 FAMILLES: dict[str, tuple[str, str]] = {
     "test_auth_rbac.py": (
         "Sécurité et isolation",
-        "Aucun accès sans jeton valide ; un client ne peut pas lire les données "
-        "d'un autre, même en manipulant la requête ; la force brute est bloquée ; "
-        "la déconnexion révoque le jeton immédiatement."),
+        "Aucun accès sans jeton valide ; un employé n'accède qu'à ses tâches, "
+        "jamais aux analyses ; un compte d'un rôle retiré ne se connecte plus ; "
+        "la force brute est bloquée ; la déconnexion révoque le jeton immédiatement."),
     "test_admin_portal.py": (
         "Sécurité et isolation",
-        "Gestion des comptes par le directeur : unicité du code client, "
-        "suppression qui conserve le journal d'audit, cloisonnement des demandes."),
+        "Gestion des comptes de l'équipe par le directeur : deux rôles seulement, "
+        "suppression qui conserve le journal d'audit, dernier directeur protégé."),
     "test_boucle_action.py": (
         "Boucle d'action",
         "De l'alerte au résultat mesuré : un employé ne voit que ses tâches, "
         "une tâche ne se clôture pas sans résultat, une issue perdue ne compte "
         "jamais comme un gain, et les résultats repartent vers les modèles."),
+    "test_delegation.py": (
+        "Boucle d'action",
+        "La flotte confie elle-même le travail d'exécution, jamais une décision "
+        "de direction ; elle ne confie jamais deux fois la même alerte, ménage "
+        "la charge de l'équipe et ne fait qu'un passage planifié par jour."),
     "test_fleet.py": (
         "Flotte d'agents",
         "Les cinq spécialistes produisent des constats chiffrés et sourcés ; la "
@@ -171,10 +155,6 @@ FAMILLES: dict[str, tuple[str, str]] = {
         "La valeur corrigée en production devient la vérité étiquetée, et la "
         "fusion se fait dans une copie du jeu d'entraînement, jamais dans "
         "l'original."),
-    "test_emails.py": (
-        "Comptes",
-        "Les identifiants de connexion dérivés du nom de l'établissement sont "
-        "uniques, sans accent et stables."),
     "test_explication.py": (
         "Explicabilité",
         "La décomposition d'un score linéaire est exacte au flottant près, les "
@@ -193,13 +173,11 @@ FAMILLES: dict[str, tuple[str, str]] = {
 }
 
 
-#: Une ligne par famille pour la vue d'ensemble — sinon le tableau récapitulatif
-#: recopierait la description de chaque fichier et deviendrait illisible.
 RESUME_FAMILLE: dict[str, str] = {
     "Sécurité et isolation":
         "Un client ne peut pas lire les données d'un autre, même en manipulant la requête",
     "Boucle d'action":
-        "De l'alerte au résultat mesuré, avec un cloisonnement strict des rôles",
+        "De l'alerte au résultat mesuré, avec un cloisonnement strict des rôles ; la flotte confie l'exécution, jamais la décision",
     "Flotte d'agents":
         "Cinq spécialistes et un volet fiabilité produisent des constats chiffrés, un agent en panne n'arrête pas le briefing, et le copilote n'affiche aucun montant non sourcé",
     "Modèles — absence de fuite":
@@ -222,7 +200,6 @@ RESUME_FAMILLE: dict[str, str] = {
         "Chaque repli est exercé : le service dégrade au lieu de tomber",
 }
 
-#: Ce que prouve chaque test emblématique, en une phrase citable telle quelle.
 AFFIRMATIONS: dict[str, str] = {
     "test_client_scope_force_sur_dashboard":
         "Le périmètre d'un client est forcé côté serveur : demander les données d'un autre renvoie les siennes",
@@ -256,6 +233,10 @@ AFFIRMATIONS: dict[str, str] = {
         "L'explication affichée reconstitue exactement le score du modèle, au flottant près",
     "test_une_alerte_deja_confiee_ne_se_confie_pas_une_seconde_fois":
         "Une alerte déjà confiée est refusée par le serveur : un client n'est jamais relancé deux fois pour la même raison",
+    "test_une_decision_de_direction_n_est_jamais_confiee_d_office":
+        "La flotte confie l'exécution, jamais la décision : une action qui engage l'entreprise reste au directeur",
+    "test_la_flotte_ne_confie_jamais_deux_fois_la_meme_alerte":
+        "La flotte ne recrée jamais une alerte déjà confiée, par elle-même ou par le directeur",
     "test_via_dit_d_ou_vient_la_reponse":
         "Une réponse du copilote qui cite un montant inventé est écartée, et la source affichée est celle qui a réellement répondu",
     "test_un_avoir_est_deduit_et_un_doublon_compte_une_fois":
@@ -295,7 +276,6 @@ def lisible(nom_test: str) -> str:
 def construire() -> str:
     par_fichier, marques, total = collecte()
 
-    # Regroupement par famille, dans l'ordre de FAMILLES.
     familles: dict[str, list[tuple[str, int, str]]] = {}
     for fichier, (famille, preuve) in FAMILLES.items():
         n = par_fichier.get(fichier, 0)

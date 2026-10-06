@@ -1,34 +1,4 @@
-"""
-scripts/audit_trou_temporel.py
-===============================
-Explique les 27 mois sans facture et l'effondrement de 2020.
-
-Pourquoi c'est important
-------------------------
-Le controle de continuite a signale 27 mois vides A L'INTERIEUR de la periode
-2017-01 -> 2026-04, et une annee 2020 a -100 %. Un distributeur pharmaceutique a
-zero en 2020, annee Covid, est invraisemblable : cette annee-la, l'activite du
-diagnostic in vitro a AUGMENTE.
-
-Deux explications possibles, aux consequences opposees :
-
-  * EXPORT INCOMPLET -- il manque des donnees. Le CA de 274,7 M DT porte alors
-    sur une periode trouee, et toute tendance, saisonnalite ou prevision est
-    faussee. Il faut le dire en soutenance.
-
-  * PERIODE REELLEMENT SANS ACTIVITE -- changement d'ERP, cession de dossier,
-    arret d'etablissement. Le chiffre est juste, mais la periode doit etre
-    documentee.
-
-Ce script tranche, en regardant si les AUTRES fichiers (lignes, achats, devis)
-presentent le meme trou aux memes dates. Si le trou est partout, c'est une
-realite de l'entreprise ; s'il n'est que dans les ventes, c'est un defaut
-d'export.
-
-Ce script ne corrige rien.
-
-    .venv\\Scripts\\python.exe scripts\\audit_trou_temporel.py
-"""
+"""Explique les 27 mois sans facture et l'effondrement de 2020."""
 
 from __future__ import annotations
 
@@ -64,7 +34,6 @@ DATE = ("COALESCE(TRY_STRPTIME({c},'%m/%d/%Y'),"
 def main() -> int:
     con = duckdb.connect(str(STORE_PATH), read_only=True)
 
-    # ── 1. Ce que dit l'entrepot, annee par annee ──────────────────────────
     titre("1. VENTES PAR ANNEE (entrepot corrige)")
     rows = con.execute("""
         SELECT year, count(*) AS n, sum(ttc) AS ca,
@@ -88,7 +57,6 @@ def main() -> int:
         print(f"  {an:<8}{n:>10,}{dt(ca):>18}{mois:>6}/12{part:>7.1f}%{drapeau}"
               .replace(",", " "))
 
-    # ── 2. Quels mois exactement ? ─────────────────────────────────────────
     titre("2. MOIS MANQUANTS A L'INTERIEUR DE LA PERIODE")
     manquants = con.execute("""
         WITH mois AS (
@@ -110,8 +78,6 @@ def main() -> int:
     for i in range(0, len(liste), 8):
         print("    " + "  ".join(liste[i:i + 8]))
 
-    # Regroupement en plages continues : un trou unique et long ne se lit pas
-    # comme une serie de trous isoles.
     if liste:
         plages, debut, prec = [], liste[0], liste[0]
         for m in liste[1:]:
@@ -126,7 +92,6 @@ def main() -> int:
         for d, f in plages:
             print(f"    {d} -> {f}" + ("   (mois isole)" if d == f else ""))
 
-    # ── 3. Le trou est-il present dans les AUTRES sources ? ────────────────
     titre("3. LE MEME TROU EXISTE-T-IL DANS LES AUTRES FICHIERS ?")
     print("  Si oui -> realite de l'entreprise. Si non -> export des ventes incomplet.\n")
 
@@ -153,10 +118,6 @@ def main() -> int:
     for an in annees:
         ligne = "".join(f"{par_annee[lib].get(an, 0):>12,}".replace(",", " ")
                         for lib in par_annee)
-        # Le seul cas reellement suspect est : VENTES vide alors qu'une autre
-        # source contient des donnees -- signe d'un export de ventes tronque.
-        # Qu'un module (les devis) demarre plus tard que les autres n'est pas une
-        # incoherence : c'est une mise en service echelonnee.
         n_ventes = par_annee.get("ventes", {}).get(an, 0)
         autres = sum(n for lib, m in par_annee.items()
                      if lib != "ventes" for a2, n in m.items() if a2 == an)
@@ -168,12 +129,7 @@ def main() -> int:
             drapeau = ""
         print(f"  {an:<8}{ligne}{drapeau}")
 
-    # ── 4. Verdict ─────────────────────────────────────────────────────────
     titre("4. LECTURE")
-    # Une annee est SUSPECTE si elle pese moins de 2 % des factures, sans etre
-    # l'annee en cours. Le critere porte sur le VOLUME et non sur le nombre de
-    # mois : une annee etalee sur douze mois mais ne portant que 400 factures
-    # n'est pas une annee d'activite, c'est un residu.
     suspectes = [an for an, n, _, _ in rows
                  if an != derniere and n / total_factures * 100 < 2]
     toutes = sorted(set(annees) | {r[0] for r in rows})
@@ -203,7 +159,6 @@ def main() -> int:
             print("       trop faibles pour une annee d'exploitation. Trace de")
             print("       migration ou periode de demarrage, pas d'activite reelle.")
 
-    # ── Profondeur d'historique REELLEMENT exploitable ─────────────────────
     pleines = [(an, n, ca) for an, n, ca, mois in rows
                if an != derniere and n / total_factures * 100 >= 2]
     print("\n" + "-" * 78)

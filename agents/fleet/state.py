@@ -7,16 +7,12 @@ from typing import Annotated, Any, Dict, List, TypedDict
 
 
 class FleetState(TypedDict, total=False):
-    """État circulant entre les agents du graphe.
-
-    `findings` et `trace` utilisent le réducteur `operator.add` : quand plusieurs
-    agents s'exécutent en parallèle, leurs listes sont concaténées automatiquement.
-    """
+    """État circulant entre les agents du graphe."""
     question: str
     filters: Dict[str, Any]
-    kpis: Dict[str, Any]                                   # données internes (ERP)
-    modeles: Dict[str, Any]                                # sorties des modèles (passerelle du registre)
-    findings: Annotated[List[Dict[str, Any]], operator.add]   # constats des agents
-    trace: Annotated[List[Dict[str, Any]], operator.add]      # journal d'exécution
-    fiabilite: Dict[str, Any]                              # volet fiabilité (hors arbitrage)
-    briefing: str                                         # synthèse finale (rédacteur)
+    kpis: Dict[str, Any]
+    modeles: Dict[str, Any]
+    findings: Annotated[List[Dict[str, Any]], operator.add]
+    trace: Annotated[List[Dict[str, Any]], operator.add]
+    fiabilite: Dict[str, Any]
+    briefing: str

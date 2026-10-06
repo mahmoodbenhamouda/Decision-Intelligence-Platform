@@ -1,13 +1,4 @@
-"""
-api/auth/journal.py
-===================
-Journal d'audit : qui a fait quoi, quand.
-
-Écrit par la couche qui connaît l'événement : la route pour un accès en
-lecture (`action="access"`), le service pour une action métier (connexion,
-création, modification, refus). Best-effort : une panne du journal ne bloque
-jamais la requête.
-"""
+"""Journal d'audit : qui a fait quoi, quand."""
 
 from __future__ import annotations
 

@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * Copilot — vue du copilote FinBot : en-tête, conversation, suggestions,
- * zone de saisie (texte, voix, pièce jointe). Toute la logique est dans
- * `useCopilote`.
- */
 import {
   Bot, ChevronDown, Mic, Paperclip, Send, Sparkles, Volume2, VolumeX, X,
 } from "lucide-react";
@@ -21,7 +16,6 @@ export default function Copilot({ filterPayload }: { filterPayload: Record<strin
   return (
     <div className="cop-wrap" style={{ gridColumn: "span 12" }}>
 
-      {/* Panneau chat épuré pleine largeur */}
       <div className="cop-chat-panel" style={{ width: "100%" }}>
         <div
           className="cop-chat-header"
@@ -93,7 +87,6 @@ export default function Copilot({ filterPayload }: { filterPayload: Record<strin
             <ChatMessage key={i} msg={m} />
           ))}
 
-          {/* Indicateur de chargement */}
           {(thinking || uploadProgress) && (
             <div className="cop-msg assistant">
               <span className="cop-msg-ava"><Bot size={14} /></span>
@@ -109,7 +102,6 @@ export default function Copilot({ filterPayload }: { filterPayload: Record<strin
           )}
         </div>
 
-        {/* Suggestions */}
         {showSuggestions && (
           <div className="cop-suggestions">
             <button
@@ -140,7 +132,6 @@ export default function Copilot({ filterPayload }: { filterPayload: Record<strin
           </button>
         )}
 
-        {/* Aperçu pièce jointe */}
         {attachment && (
           <div className="cop-attachment-preview">
             {attachment.preview ? (
@@ -158,9 +149,7 @@ export default function Copilot({ filterPayload }: { filterPayload: Record<strin
           </div>
         )}
 
-        {/* Barre de saisie */}
         <div className="cop-input-row">
-          {/* Bouton micro */}
           <button
             className={`cop-mic ${listening ? "on" : ""}`}
             onClick={listen}
@@ -170,7 +159,6 @@ export default function Copilot({ filterPayload }: { filterPayload: Record<strin
             <Mic size={18} />
           </button>
 
-          {/* Bouton upload fichier */}
           <button
             className="cop-attach"
             onClick={() => fileInputRef.current?.click()}
@@ -187,7 +175,6 @@ export default function Copilot({ filterPayload }: { filterPayload: Record<strin
             style={{ display: "none" }}
           />
 
-          {/* Champ texte */}
           <input
             className="cop-input"
             value={input}
@@ -201,7 +188,6 @@ export default function Copilot({ filterPayload }: { filterPayload: Record<strin
             disabled={thinking}
           />
 
-          {/* Bouton envoyer */}
           <button
             className="cop-send"
             onClick={() => send()}
@@ -211,7 +197,6 @@ export default function Copilot({ filterPayload }: { filterPayload: Record<strin
           </button>
         </div>
 
-        {/* Aide formats fichiers */}
         <div className="cop-file-hint">
           <Paperclip size={10} /> CSV · PDF (max 20 Mo) — documents scannés : onglet « Documents &amp; OCR »
         </div>

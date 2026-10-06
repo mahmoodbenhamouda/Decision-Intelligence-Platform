@@ -1,24 +1,4 @@
-"""
-rag/rag_engine.py — Moteur RAG (Retrieval-Augmented Generation) pour FinBot.
-
-Rôle : permettre au copilote de répondre à des questions "externes" (secteur du
-diagnostic médical, marchés publics/TUNEPS, réglementation, notions générales…)
-qui ne se trouvent PAS dans les données ERP internes, en s'appuyant sur une base
-documentaire (PDF / TXT / MD) placée dans rag/documents/.
-
-Pipeline :
-  1. Ingestion des documents (rag/documents/)
-  2. Découpage en chunks (~500 caractères, chevauchement 50)
-  3. Embeddings SÉMANTIQUES (sentence-transformers multilingue) + index FAISS
-     → repli automatique TF-IDF (scikit-learn) si les libs sémantiques ou le
-       modèle ne sont pas disponibles : le RAG fonctionne toujours, même hors ligne.
-  4. Persistance de l'index dans rag/index/
-  5. Recherche des passages les plus pertinents pour une question.
-
-Usage CLI :
-    python -m rag.rag_engine build            # (ré)indexer rag/documents/
-    python -m rag.rag_engine query "question"  # tester une recherche
-"""
+"""rag/rag_engine.py — Moteur RAG (Retrieval-Augmented Generation) pour FinBot."""
 
 from __future__ import annotations
 
@@ -35,13 +15,10 @@ INDEX_DIR = BASE / "index"
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
 TOP_K = 4
-SCORE_THRESHOLD = 0.15          # similarité minimale pour retenir un passage
+SCORE_THRESHOLD = 0.15
 EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. Lecture des documents
-# ─────────────────────────────────────────────────────────────────────────────
 def _read_pdf(path: Path) -> str:
     try:
         from PyPDF2 import PdfReader
@@ -87,13 +64,8 @@ def load_documents(docs_dir: Path = DOCS_DIR) -> List[Dict[str, str]]:
     return docs
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. Découpage en chunks
-# ─────────────────────────────────────────────────────────────────────────────
 def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
-    # Normalisation légère des espaces
     text = re.sub(r"[ \t]+", " ", text)
-    # On coupe d'abord par paragraphes pour garder du sens
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     chunks: List[str] = []
     buff = ""
@@ -103,7 +75,6 @@ def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) 
         else:
             if buff:
                 chunks.append(buff)
-            # Paragraphe trop long → découpage glissant
             if len(p) > size:
                 start = 0
                 while start < len(p):
@@ -117,9 +88,6 @@ def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) 
     return [c for c in chunks if len(c.strip()) > 20]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. Backends d'embeddings (sémantique prioritaire, repli TF-IDF)
-# ─────────────────────────────────────────────────────────────────────────────
 class _SemanticBackend:
     """Embeddings sentence-transformers + index FAISS (cosine via produit scalaire)."""
     kind = "semantic"
@@ -196,15 +164,11 @@ def _make_backend(prefer_semantic: bool = True):
     return _TfidfBackend()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. Index RAG (build / load / search) avec persistance
-# ─────────────────────────────────────────────────────────────────────────────
 class RagIndex:
     def __init__(self) -> None:
         self.backend = None
-        self.chunks: List[Dict[str, str]] = []   # [{source, text}]
+        self.chunks: List[Dict[str, str]] = []
 
-    # -- construction --
     def build(self, docs_dir: Path = DOCS_DIR) -> int:
         docs = load_documents(docs_dir)
         self.chunks = []
@@ -229,7 +193,6 @@ class RagIndex:
             encoding="utf-8",
         )
 
-    # -- chargement --
     def load(self) -> bool:
         manifest = INDEX_DIR / "manifest.json"
         chunks_f = INDEX_DIR / "chunks.pkl"
@@ -248,7 +211,6 @@ class RagIndex:
         except Exception:
             return False
 
-    # -- recherche --
     def search(self, query: str, k: int = TOP_K) -> List[Dict[str, Any]]:
         if not self.chunks or self.backend is None:
             return []
@@ -260,9 +222,6 @@ class RagIndex:
         return results
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. Singleton + fonctions pratiques (import léger côté agent)
-# ─────────────────────────────────────────────────────────────────────────────
 _INDEX: Optional[RagIndex] = None
 
 
@@ -270,7 +229,7 @@ def _get_index() -> RagIndex:
     global _INDEX
     if _INDEX is None:
         _INDEX = RagIndex()
-        _INDEX.load()   # silencieux si pas d'index
+        _INDEX.load()
     return _INDEX
 
 
@@ -295,9 +254,6 @@ def is_available() -> bool:
     return bool(_get_index().chunks)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys
     cmd = sys.argv[1] if len(sys.argv) > 1 else "build"

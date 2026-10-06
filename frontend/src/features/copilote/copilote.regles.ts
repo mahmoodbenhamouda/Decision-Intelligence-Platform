@@ -1,7 +1,4 @@
-/**
- * Model — contenu et règles du copilote : message d'accueil, glossaire,
- * suggestions de questions, détection de l'humeur de l'avatar.
- */
+
 import type { AvatarMood } from "@/shared/avatar/FinBotAvatar";
 import type { Msg, RadarCard } from "./copilote.types";
 
@@ -18,7 +15,6 @@ export const MESSAGE_ACCUEIL: Msg = {
   via: "regles",
 };
 
-/* ── Glossaire termes financiers (tooltips) ───────────────────────────────── */
 export const GLOSSARY_TOOLTIPS: Record<string, string> = {
   "DSO": "Days Sales Outstanding — délai moyen d'encaissement client (jours)",
   "DPO": "Days Payable Outstanding — délai moyen de paiement fournisseur",
@@ -34,7 +30,6 @@ export const GLOSSARY_TOOLTIPS: Record<string, string> = {
   "Pareto": "Loi 80/20 — 20% des clients génèrent 80% du CA",
 };
 
-/* ── Suggestions dynamiques par contexte ─────────────────────────────────── */
 export const GLOBAL_SUGGESTIONS = [
   "Quelles sont mes priorités de recouvrement ?",
   "Quel est mon échéancier du mois prochain ?",
@@ -51,11 +46,6 @@ export const CLIENT_SUGGESTIONS = (clientName: string) => [
   `Quelle action prendre sur ${clientName} ?`,
 ];
 
-/* ── Détection de l'humeur à partir de la réponse + du radar ──────────────
- * Volontairement PEU sensible : dans un contexte financier, « retard » ou
- * « risque » apparaissent dans presque toutes les réponses — l'avatar doit
- * rester neutre/avenant par défaut et ne s'inquiéter que sur un signal fort,
- * sinon il donne l'impression d'être fâché en permanence. */
 const ALERT_WORDS = ["🔴", "très urgent", "tres urgent", "risque élevé", "risque eleve", "alerte", "danger", "impayé", "impaye", "grave"];
 const CONCERN_WORDS = ["retard critique", "attention", "vigilance", "détérior", "deterior", "perte", "litige", "décrochage", "decrochage"];
 const HAPPY_WORDS = ["opportunité", "opportunite", "gain", "amélior", "amelior", "excellent", "positif", "hausse", "croissance", "félicit", "felicit", "bonne nouvelle", "économie", "economie", "solide", "bonne santé", "bonne sante"];
@@ -64,11 +54,10 @@ export function detectMood(text: string, radar: RadarCard[]): AvatarMood {
   const t = text.toLowerCase();
   const radarSev = radar.map(r => (r.severite || "").toLowerCase());
   const hits = (words: string[]) => words.filter(w => t.includes(w)).length;
-  // Alerte : uniquement sur signal explicite FORT (radar critique + mot d'alerte,
-  // ou plusieurs mots d'alerte dans la réponse elle-même).
+
   if (radarSev.some(s => s === "critique") && hits(ALERT_WORDS) >= 1) return "alert";
   if (hits(ALERT_WORDS) >= 2) return "alert";
-  // Préoccupé : plusieurs signaux cumulés, jamais un mot isolé.
+
   if (hits(CONCERN_WORDS) + hits(ALERT_WORDS) >= 2) return "concerned";
   if (hits(HAPPY_WORDS) >= 1) return "happy";
   return "neutral";

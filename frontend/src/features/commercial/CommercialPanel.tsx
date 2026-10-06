@@ -1,33 +1,24 @@
 "use client";
 
-/**
- * CommercialPanel — onglet « Devis & marge ».
- *
- * Trois questions de dirigeant, trois visuels :
- *   · quels devis relancer ?            → barres des ventes probables + nuage montant / chance ;
- *   · quels clients deviennent moins rentables ? → barres de marge menacée, par niveau de risque ;
- *   · quels produits proposer ?         → produits les plus recommandés + cartes client.
- *
- * Aucun terme technique à l'écran : ni méthode, ni seuil, ni score de modèle.
- */
-
 import {
-  Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Scatter, ScatterChart,
-  Tooltip, XAxis, YAxis, ZAxis,
+  Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import {
-  CheckCircle2, FileSignature, Package, Percent, RefreshCw, ShoppingCart,
-  TrendingDown, UserPlus,
+  CheckCircle2, FileSignature, Info, ListChecks, Percent, RefreshCw,
+  ShoppingCart, Target, TrendingDown, UserPlus, Users,
 } from "lucide-react";
-import ConfierTache, { BadgeConfiee } from "@/features/taches/ConfierTache";
-import Pourquoi, { type Raison } from "@/shared/ui/Pourquoi";
+import ConfierTache from "@/features/taches/ConfierTache";
+import PanneauMasque, { BadgeFiltreClients } from "@/shared/ui/PanneauMasque";
+import Pourquoi from "@/shared/ui/Pourquoi";
 import {
-  BLEU, Carte, Grille, INFOBULLE, INK, Legende, RangeeTuiles, TuileChiffre, Vide,
-  fAxe, fMoney, tronquer,
+  BLEU, Carte, Grille, INFOBULLE, INK, RangeeTuiles, TuileChiffre, Vide,
+  fMoney, tronquer,
 } from "@/shared/ui/VisuelKit";
-import { origineDevis, origineReco } from "./commercial.regles";
-import type { MargeLigne } from "./commercial.types";
-import { useCommercial } from "./useCommercial";
+import Pagination from "@/shared/ui/Pagination";
+import DevisOuverts, { CasesProtocole, FiltresDevis } from "./DevisOuverts";
+import NuageDevis from "./NuageDevis";
+import { origineMarge } from "./commercial.regles";
+import { type TriMarge, useCommercial } from "./useCommercial";
 
 const NIVEAUX = [
   { min: 0.6, label: "Risque élevé", couleur: BLEU[4] },
@@ -36,230 +27,457 @@ const NIVEAUX = [
 ];
 const niveau = (p: number) => NIVEAUX.find(n => p >= n.min) || NIVEAUX[2];
 
-/** Justifications des premières lignes d'un classement, sous le graphe.
- *  Le graphe montre QUI est en tête ; ce bloc dit POURQUOI, sans quitter l'écran. */
-function Justifications({ lignes }: {
-  lignes: { cle: string; nom: string; raisons?: Raison[] }[];
+const fPct = (v: number | null | undefined) =>
+  v == null ? "—" : `${v.toFixed(1).replace(".", ",")} %`;
+
+const ROUGE = "#D03B3B";
+const VERT = "#0CA30C";
+
+/**
+ * La trajectoire de marge d'un client, sur l'axe du portefeuille.
+ *
+ * Les quatre repères ne sont pas quatre mesures : ce sont **deux règles et une
+ * trajectoire**, sur un seul axe — celui du taux de marge en %.
+ *
+ *   · le SEUIL et la MÉDIANE sont fixes, identiques pour tous les clients ;
+ *   · 12 MOIS et 3 MOIS appartiennent au client, et c'est l'ÉCART ENTRE EUX qui
+ *     constitue l'alerte.
+ *
+ * La version précédente posait quatre traits de 2 px sans graduation ni
+ * étiquette : on voyait quatre marques sans savoir laquelle était laquelle, ni
+ * dans quel sens lire. Le segment orienté de 12 mois vers 3 mois dit maintenant
+ * la seule chose qui déclenche une décision — ça baisse, et de combien.
+ *
+ * L'échelle est COMMUNE à toutes les lignes (`haut`), sinon deux clients ne se
+ * comparent pas.
+ */
+function Jauge({ actuelle, douze, seuil, mediane, haut }: {
+  actuelle: number; douze: number; seuil: number; mediane: number; haut: number;
 }) {
-  const avecRaisons = lignes.filter(l => (l.raisons || []).length);
-  if (!avecRaisons.length) return null;
+  const pc = (v: number) => Math.max(0, Math.min(100, (v / (haut || 1)) * 100));
+  const xDouze = pc(douze);
+  const xTrois = pc(actuelle);
+  const baisse = actuelle < douze;
+  const couleur = baisse ? ROUGE : VERT;
+  const gauche = Math.min(xDouze, xTrois);
+  const largeur = Math.abs(xTrois - xDouze);
+
   return (
-    <div style={{ marginTop: 12, borderTop: `1px solid ${INK.border}`, paddingTop: 10 }}>
-      <div style={{ fontSize: "0.72rem", fontWeight: 700, color: INK.muted, marginBottom: 7 }}>
-        Pourquoi ces trois-là
+    <div style={{ minWidth: 190, paddingTop: 2 }}>
+      <div style={{ position: "relative", height: 26 }}>
+        {/* L'axe, neutre : il ne porte aucune information, il la situe. */}
+        <div style={{
+          position: "absolute", top: 11, left: 0, right: 0, height: 4,
+          borderRadius: 2, background: "rgba(26,35,72,0.07)",
+        }} />
+
+        {/* Les deux règles, fixes pour tout le portefeuille. */}
+        {[{ v: seuil, c: ROUGE, t: `Seuil de surveillance : ${fPct(seuil)}` },
+          { v: mediane, c: INK.muted, t: `Médiane du portefeuille : ${fPct(mediane)}` }]
+          .map(m => (
+            <span key={m.t} title={m.t} style={{
+              position: "absolute", left: `${pc(m.v)}%`, top: 3, width: 2, height: 20,
+              background: m.c, opacity: 0.75, borderRadius: 1,
+              transform: "translateX(-50%)",
+            }} />
+          ))}
+
+        {/* La trajectoire : le segment porte le sens, la tête porte l'arrivée. */}
+        {largeur > 0.4 && (
+          <div title={`De ${fPct(douze)} sur 12 mois à ${fPct(actuelle)} sur 3 mois`}
+            style={{
+              position: "absolute", top: 11.5, left: `${gauche}%`,
+              width: `${largeur}%`, height: 3, background: couleur,
+              borderRadius: 2, opacity: 0.55,
+            }} />
+        )}
+        {/* Le départ : creux, c'est le passé. */}
+        <span title={`Marge sur 12 mois : ${fPct(douze)}`} style={{
+          position: "absolute", left: `${xDouze}%`, top: 8,
+          width: 9, height: 9, borderRadius: "50%",
+          background: "var(--card-bg, #fff)", border: `2px solid ${BLEU[2]}`,
+          transform: "translateX(-50%)", boxSizing: "border-box",
+        }} />
+        {/* L'arrivée : pleine, plus grande, c'est elle qu'on lit. */}
+        <span title={`Marge sur 3 mois : ${fPct(actuelle)}`} style={{
+          position: "absolute", left: `${xTrois}%`, top: 6.5,
+          width: 13, height: 13, borderRadius: "50%", background: couleur,
+          // 2 px de surface autour de la pastille : elle reste lisible même
+          // posée sur une des deux règles.
+          boxShadow: "0 0 0 2px var(--card-bg, #fff)",
+          transform: "translateX(-50%)",
+        }} />
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-        {avecRaisons.slice(0, 3).map(l => (
-          <div key={l.cle} style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
-            <span style={{ fontSize: "0.8rem", fontWeight: 700, color: INK.primary }}>
-              {tronquer(l.nom, 26)}
-            </span>
-            <Pourquoi raisons={l.raisons} titre={`Pourquoi ${l.nom}`} />
-          </div>
-        ))}
+
+      {/* Les chiffres en clair : une position sur un axe ne se lit pas au pixel. */}
+      <div style={{ fontSize: "0.69rem", color: INK.muted, display: "flex",
+                    gap: 5, alignItems: "baseline", flexWrap: "wrap" }}>
+        <span>12 m <b style={{ color: INK.secondary }}>{fPct(douze)}</b></span>
+        <span style={{ color: couleur, fontWeight: 800 }}>{baisse ? "→" : "↗"}</span>
+        <span>3 m <b style={{ color: couleur }}>{fPct(actuelle)}</b></span>
+        <span style={{ color: couleur, fontWeight: 700 }}>
+          ({actuelle - douze >= 0 ? "+" : "\u2212"}
+          {Math.abs(actuelle - douze).toFixed(1).replace(".", ",")} pt)
+        </span>
       </div>
     </div>
   );
 }
-const fDate = (d?: string) => (d ? new Date(d).toLocaleDateString("fr-FR") : "—");
+
+/** En-tête cliquable : la liste est longue, le tri est la seule façon d'y entrer. */
+function TriMargeBouton({ cle, actif, onTri, label, aide }: {
+  cle: TriMarge; actif: TriMarge; onTri: (t: TriMarge) => void;
+  label: string; aide: string;
+}) {
+  const choisi = actif === cle;
+  return (
+    <button type="button" onClick={() => onTri(cle)}
+      title={`Trier par ${aide}`}
+      style={{
+        background: "none", border: "none", cursor: "pointer", padding: 0,
+        font: "inherit", textTransform: "inherit", textAlign: "inherit",
+        color: choisi ? INK.primary : INK.muted, fontWeight: choisi ? 800 : 600,
+      }}>
+      {label}{choisi ? " ↓" : ""}
+    </button>
+  );
+}
+
+/** Ce que les quatre repères veulent dire — deux règles, une trajectoire. */
+function LireLaJauge({ seuil, mediane, horizon }: {
+  seuil: number; mediane: number; horizon: number;
+}) {
+  const lignes: { couleur: string; quoi: string; nature: string; dit: string }[] = [
+    { couleur: ROUGE, quoi: `Seuil de surveillance (${fPct(seuil)})`,
+      nature: "fixe, le même pour tous",
+      dit: "en dessous, le client est dans les 20 % les moins rentables du portefeuille" },
+    { couleur: INK.muted, quoi: `Médiane du portefeuille (${fPct(mediane)})`,
+      nature: "fixe, point de comparaison",
+      dit: "la moitié de vos clients font mieux que cette marge" },
+    { couleur: BLEU[2], quoi: "Marge sur 12 mois",
+      nature: "propre au client",
+      dit: "sa marge habituelle — le point de départ" },
+    { couleur: ROUGE, quoi: "Marge sur 3 mois",
+      nature: "propre au client",
+      dit: "sa marge récente — le point d'arrivée, et celui qu'on lit" },
+  ];
+  return (
+    <div style={{
+      padding: "12px 14px", borderRadius: 10, marginBottom: 13,
+      background: "rgba(47,91,234,0.04)", border: `1px solid ${INK.border}`,
+      display: "grid", gap: 9,
+    }}>
+      <span style={{ fontSize: "0.78rem", fontWeight: 800, color: INK.primary }}>
+        Comment lire la colonne « Trajectoire de marge »
+      </span>
+      <p style={{ margin: 0, fontSize: "0.75rem", color: INK.secondary, lineHeight: 1.6 }}>
+        Les quatre repères sont <b>sur un seul axe</b>, celui du taux de marge en
+        pourcentage. Deux sont des <b>règles</b> valables pour tout le
+        portefeuille, deux appartiennent au <b>client</b> :
+      </p>
+      <table style={{ borderCollapse: "collapse", fontSize: "0.74rem" }}>
+        <tbody>
+          {lignes.map(l => (
+            <tr key={l.quoi}>
+              <td style={{ padding: "3px 8px 3px 0", whiteSpace: "nowrap", verticalAlign: "top" }}>
+                <span style={{
+                  display: "inline-block", width: 9, height: 9, borderRadius: 2,
+                  background: l.couleur, marginRight: 7,
+                }} />
+                <b style={{ color: INK.primary }}>{l.quoi}</b>
+              </td>
+              <td style={{ padding: "3px 10px 3px 0", color: INK.muted, whiteSpace: "nowrap", verticalAlign: "top" }}>
+                {l.nature}
+              </td>
+              <td style={{ padding: "3px 0", color: INK.secondary, verticalAlign: "top" }}>
+                {l.dit}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p style={{ margin: 0, fontSize: "0.75rem", color: INK.secondary, lineHeight: 1.6 }}>
+        <b style={{ color: INK.primary }}>L&apos;alerte, c&apos;est l&apos;écart entre les deux
+        derniers</b>, pas leur position absolue. Le segment va du rond creux
+        (12 mois) à la pastille pleine (3 mois) : <b style={{ color: ROUGE }}>vers
+        la gauche, la marge se dégrade</b> — c&apos;est ce que le modèle prolonge
+        sur {horizon} mois pour estimer le risque de passer sous le seuil. Un
+        client peut donc être <i>au-dessus</i> de la médiane et tout de même
+        signalé, parce qu&apos;il descend vite.
+      </p>
+    </div>
+  );
+}
 
 export default function CommercialPanel() {
   const {
-    devis, marge, reco, loading, load, d,
+    devis, marge, loading, load, d,
     confier, setConfier, confiees, rechargerConfiees,
+    tri, setTri, protocoleActif, setProtocoleActif,
+    tranche, setTranche, triMarge, setTriMarge,
+    devisChoisi, setDevisChoisi,
+    pDevis, pMarge,
   } = useCommercial();
 
   if (loading && !devis) return <div style={{ gridColumn: "span 12" }}><Vide texte="Chargement…" /></div>;
+  if (devis?.masque) return <Grille><PanneauMasque motif={devis.motif} /></Grille>;
+
+  const reperes = devis?.reperes;
+  const seuilMarge = marge?.seuil_marge_basse_pct ?? 0;
+  const medianeMarge = marge?.marge_mediane_portefeuille_pct ?? 0;
 
   return (
     <Grille>
-      {/* ── Chiffres clés ────────────────────────────────────────────────── */}
+      {devis?.portee === "clients" && (
+        <div style={{ gridColumn: "span 12" }}><BadgeFiltreClients n={devis.n_clients_filtre} /></div>
+      )}
       <RangeeTuiles>
         <TuileChiffre icone={<FileSignature size={16} />} label="Devis ouverts"
-          valeur={`${devis?.n_devis ?? 0}`} detail="émis ces 6 derniers mois, pas encore signés" />
+          valeur={`${devis?.n_devis ?? 0}`}
+          detail={`${fMoney(devis?.montant_ouvert_total_dt)} émis sur ${devis?.horizon_maturation_mois ?? 6} mois, pas encore signés`} />
         <TuileChiffre icone={<ShoppingCart size={16} />} label="Ventes probables"
-          valeur={fMoney(devis?.esperance_totale_dt)} detail="si les devis suivent leur tendance" />
+          valeur={fMoney(devis?.esperance_totale_dt)}
+          detail="somme des montants pondérés par leur chance de signature" />
+        <TuileChiffre icone={<Users size={16} />} label="Clients concernés"
+          valeur={`${devis?.n_clients_concernes ?? 0}`}
+          detail="établissements avec au moins un devis ouvert" />
         <TuileChiffre icone={<TrendingDown size={16} />} label="Marge menacée"
-          valeur={fMoney(d.margeTotale)} detail={`sur ${d.margeTop.length} clients, dans les 3 mois`} accent="#EC835A" />
-        <TuileChiffre icone={<Package size={16} />} label="Potentiel produits"
-          valeur={fMoney(d.potentiel)} detail={`par an, sur ${d.clientsReco.length} clients`} />
+          valeur={fMoney(d.margeTotale)}
+          detail={`sur ${d.margeTop.length} clients, sous ${fPct(seuilMarge)} dans ${marge?.horizon_mois ?? 3} mois`}
+          accent="#EC835A" />
       </RangeeTuiles>
 
-      {/* ── Devis ────────────────────────────────────────────────────────── */}
-      {devis?.servi && d.devisTop.length ? (
-        <>
-          <Carte span={7} titre="Devis à relancer en priorité" icone={<FileSignature size={15} />}
-            sousTitre="Ventes probables par devis : montant du devis pondéré par sa chance de signature"
-            droite={<button className="icon-button" onClick={load} title="Actualiser"><RefreshCw size={15} /></button>}>
-            <ResponsiveContainer width="100%" height={380}>
-              <BarChart layout="vertical" data={d.devisTop.slice(0, 10)} margin={{ top: 0, right: 64, left: 0, bottom: 0 }} barCategoryGap={8}>
-                <CartesianGrid stroke={INK.grid} horizontal={false} />
-                <XAxis type="number" tickFormatter={fAxe} tick={{ fill: INK.secondary, fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis type="category" dataKey="nomCourt" width={170} tick={{ fill: INK.primary, fontSize: 11.5 }} axisLine={false} tickLine={false} />
-                <Tooltip cursor={{ fill: "rgba(47,91,234,0.05)" }} contentStyle={INFOBULLE}
-                  content={({ active, payload }) => {
-                    if (!active || !payload?.length) return null;
-                    const x = payload[0].payload as (typeof d.devisTop)[number];
-                    return (
-                      <div style={INFOBULLE}>
-                        <b>{x.nom || x.client}</b>
-                        <div>Devis de {fMoney(x.montant_ht_dt)} émis le {fDate(x.date)}</div>
-                        <div>Chance de signature : {x.chance} %</div>
-                        <div>Ventes probables : <b>{fMoney(x.esperance_dt)}</b></div>
-                      </div>
-                    );
-                  }} />
-                <Bar dataKey="esperance_dt" fill={BLEU[3]} barSize={16} radius={[0, 4, 4, 0]}
-                  label={{ position: "right", formatter: (v: unknown) => fMoney(Number(v)), fill: INK.secondary, fontSize: 11 }} />
-              </BarChart>
-            </ResponsiveContainer>
-            {/* Relance en un geste sur les trois premiers : le graphe désigne,
-                le bouton engage. */}
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 10, alignItems: "center" }}>
-              <span style={{ fontSize: "0.72rem", color: INK.muted, fontWeight: 700 }}>Relancer :</span>
-              {d.devisTop.slice(0, 3).map(x => {
-                const deja = confiees[origineDevis(x).titre];
-                return deja ? (
-                  <span key={x.piece_no} className="vk-confiee"
-                    title={`${x.nom || x.client} — confiée à ${deja.assigne_nom || "un responsable à désigner"}`}>
-                    <CheckCircle2 size={12} /> {tronquer(x.nom || x.client, 18)}
-                  </span>
-                ) : (
-                  <button key={x.piece_no} className="vk-bouton-mini"
-                    onClick={() => setConfier(origineDevis(x))}>
-                    <UserPlus size={12} /> {tronquer(x.nom || x.client, 18)}
-                  </button>
-                );
-              })}
-            </div>
-            <Justifications
-              lignes={d.devisTop.slice(0, 3).map(x => ({
-                cle: x.piece_no, nom: x.nom || x.client, raisons: x.raisons }))} />
-          </Carte>
-
-          <Carte span={5} titre="Montant et chance de signature" sousTitre="Chaque point est un devis : en haut à droite, les plus intéressants">
-            <ResponsiveContainer width="100%" height={380}>
-              <ScatterChart margin={{ top: 10, right: 16, left: 0, bottom: 10 }}>
-                <CartesianGrid stroke={INK.grid} />
-                <XAxis type="number" dataKey="montant_ht_dt" name="Montant" tickFormatter={fAxe}
-                  tick={{ fill: INK.secondary, fontSize: 11 }} axisLine={false} tickLine={false}
-                  label={{ value: "Montant du devis (DT)", position: "insideBottom", offset: -6, fill: INK.muted, fontSize: 11 }} />
-                <YAxis type="number" dataKey="chance" name="Chance" unit=" %" tick={{ fill: INK.secondary, fontSize: 11 }}
-                  axisLine={false} tickLine={false} width={48} />
-                <ZAxis type="number" dataKey="esperance_dt" range={[60, 420]} />
-                <Tooltip cursor={{ strokeDasharray: "3 3" }}
-                  content={({ active, payload }) => {
-                    if (!active || !payload?.length) return null;
-                    const x = payload[0].payload as (typeof d.devisTop)[number];
-                    return (
-                      <div style={INFOBULLE}>
-                        <b>{x.nom || x.client}</b>
-                        <div>{fMoney(x.montant_ht_dt)} · chance {x.chance} %</div>
-                      </div>
-                    );
-                  }} />
-                <Scatter data={d.devisTop} fill={BLEU[3]} fillOpacity={0.72} stroke="#fff" strokeWidth={2} />
-              </ScatterChart>
-            </ResponsiveContainer>
-          </Carte>
-        </>
-      ) : (
-        <Carte titre="Devis à relancer"><Vide texte={devis?.motif || "Aucun devis ouvert."} /></Carte>
+      {devis?.servi && (devis.protocoles || []).length > 0 && (
+        <Carte span={12} titre="Où passer votre semaine" icone={<ListChecks size={15} />}
+          sousTitre="Les ventes probables, réparties par action à mener — un gros devis improbable ne se traite pas comme un petit devis sûr">
+          <CasesProtocole protocoles={devis.protocoles!} actif={protocoleActif}
+            onActif={setProtocoleActif}
+            seuilGros={devis.seuils?.montant_gros_dt}
+            seuilChance={devis.seuils?.chance_haute_pct} />
+        </Carte>
       )}
 
-      {/* ── Rentabilité ──────────────────────────────────────────────────── */}
-      {marge?.servi && d.margeTop.length ? (
-        <Carte titre="Clients dont la rentabilité va baisser" icone={<Percent size={15} />}
-          sousTitre="Marge menacée dans les 3 prochains mois — la couleur indique le niveau de risque">
-          <ResponsiveContainer width="100%" height={Math.max(280, d.margeTop.length * 30)}>
-            <BarChart layout="vertical" data={d.margeTop} margin={{ top: 0, right: 64, left: 0, bottom: 0 }} barCategoryGap={6}>
-              <CartesianGrid stroke={INK.grid} horizontal={false} />
-              <XAxis type="number" tickFormatter={fAxe} tick={{ fill: INK.secondary, fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis type="category" dataKey="nomCourt" width={190} tick={{ fill: INK.primary, fontSize: 11.5 }} axisLine={false} tickLine={false} />
+      {devis?.servi && (devis.top || []).length ? (
+        <Carte span={12} titre="Liste des devis ouverts" icone={<FileSignature size={15} />}
+          sousTitre={`${d.devisListe.length} devis retenus sur ${devis.n_devis ?? 0} ouverts — filtrez, puis cliquez sur un en-tête pour trier`}
+          droite={<button className="icon-button" onClick={load} title="Actualiser"><RefreshCw size={15} /></button>}>
+          {devisChoisi && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+              padding: "9px 13px", borderRadius: 9, marginBottom: 11,
+              background: "rgba(47,91,234,0.06)", border: `1px solid ${BLEU[1]}`,
+              fontSize: "0.76rem", color: INK.secondary,
+            }}>
+              <span>
+                Liste réduite au devis <b style={{ color: INK.primary }}>{devisChoisi}</b>,
+                choisi dans le nuage. Les deux filtres ci-dessous sont suspendus.
+              </span>
+              <button type="button" onClick={() => setDevisChoisi(null)}
+                style={{
+                  background: "none", border: "none", padding: 0, font: "inherit",
+                  fontWeight: 700, color: BLEU[3], cursor: "pointer",
+                }}>Revenir à la liste complète</button>
+            </div>
+          )}
+          <FiltresDevis
+            protocoleActif={protocoleActif} onProtocole={setProtocoleActif}
+            protocoles={devis.protocoles || []}
+            tranche={tranche} onTranche={setTranche}
+            compteTranche={d.compteTranche}
+            seuilHaut={d.seuilHaut} seuilBas={d.seuilBas} />
+          <DevisOuverts lignes={pDevis.visibles} tri={tri} onTri={setTri}
+            confiees={confiees} onConfier={setConfier}
+            ageMort={devis.seuils?.age_devis_mort_j} />
+          <Pagination p={pDevis} nom="devis" toujours />
+        </Carte>
+      ) : (
+        <Carte titre="Devis ouverts"><Vide texte={devis?.motif || "Aucun devis ouvert."} /></Carte>
+      )}
+
+      {reperes?.par_tranche_de_montant?.length ? (
+        <Carte span={12} titre="Ce qui se signe vraiment, par tranche de montant"
+          icone={<Percent size={15} />}
+          sousTitre={`Taux constaté sur les devis émis il y a plus de ${reperes.maturation_mois ?? 6} mois`}>
+          <ResponsiveContainer width="100%" height={230}>
+            <BarChart data={reperes.par_tranche_de_montant}
+              margin={{ top: 8, right: 14, left: 0, bottom: 0 }} barCategoryGap={18}>
+              <CartesianGrid stroke={INK.grid} vertical={false} />
+              <XAxis dataKey="tranche" tick={{ fill: INK.secondary, fontSize: 11 }}
+                axisLine={false} tickLine={false} />
+              <YAxis unit=" %" tick={{ fill: INK.muted, fontSize: 10 }}
+                axisLine={false} tickLine={false} width={40} />
               <Tooltip cursor={{ fill: "rgba(47,91,234,0.05)" }}
                 content={({ active, payload }) => {
                   if (!active || !payload?.length) return null;
-                  const x = payload[0].payload as MargeLigne;
+                  const t = payload[0].payload as NonNullable<typeof reperes.par_tranche_de_montant>[number];
                   return (
                     <div style={INFOBULLE}>
-                      <b>{x.nom || x.client}</b>
-                      <div>Marge des 3 derniers mois : {x.marge_actuelle_pct.toFixed(1)} %</div>
-                      <div>Marge sur 12 mois : {x.marge_12m_pct.toFixed(1)} %</div>
-                      <div>{niveau(x.probabilite).label} · <b>{fMoney(x.marge_en_jeu_dt)}</b> menacés</div>
+                      <b>{t.tranche}</b>
+                      <div>{t.n_signes} signés sur {t.n_devis} devis</div>
+                      <div>Taux : <b>{fPct(t.taux_pct)}</b></div>
+                      <div>{fMoney(t.montant_dt)} proposés au total</div>
                     </div>
                   );
                 }} />
-              <Bar dataKey="marge_en_jeu_dt" barSize={16} radius={[0, 4, 4, 0]}
-                label={{ position: "right", formatter: (v: unknown) => fMoney(Number(v)), fill: INK.secondary, fontSize: 11 }}>
-                {d.margeTop.map((x, i) => <Cell key={i} fill={niveau(x.probabilite).couleur} />)}
+              <Bar dataKey="taux_pct" barSize={44} radius={[5, 5, 0, 0]}
+                label={{ position: "top", formatter: (v: unknown) => `${Number(v).toFixed(1)} %`,
+                  fill: INK.secondary, fontSize: 11 }}>
+                {reperes.par_tranche_de_montant.map((t, i) => (
+                  <Cell key={i} fill={(t.taux_pct ?? 0) >= 10 ? "#0CA30C"
+                    : (t.taux_pct ?? 0) >= 3 ? "#E0A10F" : "#D03B3B"} />
+                ))}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
-          <Legende items={NIVEAUX.map(n => ({ couleur: n.couleur, label: n.label }))} />
-          <Justifications
-            lignes={d.margeTop.slice(0, 3).map(x => ({
-              cle: x.client, nom: x.nom || x.client, raisons: x.raisons }))} />
+          <div style={{
+            marginTop: 11, padding: "11px 13px", borderRadius: 10,
+            background: "rgba(47,91,234,0.05)", border: `1px solid ${INK.border}`,
+            fontSize: "0.75rem", color: INK.secondary, lineHeight: 1.55,
+            display: "flex", gap: 9,
+          }}>
+            <Info size={15} style={{ color: BLEU[3], flexShrink: 0, marginTop: 1 }} />
+            <span>{reperes.lecture}</span>
+          </div>
+          {reperes.non_jugeables && (
+            <p className="muted-note" style={{ marginTop: 8, fontSize: "0.71rem" }}>
+              {reperes.non_jugeables.n_devis} devis récents ({fMoney(reperes.non_jugeables.montant_dt)})
+              sont exclus de ce taux : {reperes.non_jugeables.motif}
+            </p>
+          )}
+        </Carte>
+      ) : null}
+
+      {devis?.servi && d.devisTop.length ? (
+        <Carte span={12} titre="Montant et chance de signature"
+          icone={<Target size={15} />}
+          sousTitre={"Chaque point est un devis. Les deux pointillés sont les seuils "
+            + "qui définissent les quatre actions : un point se lit d'abord par son quadrant"}>
+          <NuageDevis points={d.devisTop}
+            seuilGros={devis.seuils?.montant_gros_dt ?? 20000}
+            seuilChance={devis.seuils?.chance_haute_pct ?? 25}
+            calibration={devis.calibration}
+            onChoisir={setDevisChoisi} choisi={devisChoisi} />
+        </Carte>
+      ) : null}
+
+      {marge?.servi && d.margeTop.length ? (
+        <Carte span={12} titre="Clients dont la rentabilité va baisser" icone={<Percent size={15} />}
+          sousTitre={marge.menace_definition}>
+          <div style={{
+            padding: "11px 13px", borderRadius: 10, marginBottom: 13,
+            background: "rgba(236,131,90,0.07)", border: "1px solid rgba(236,131,90,0.22)",
+            fontSize: "0.75rem", color: INK.secondary, lineHeight: 1.55,
+            display: "grid", gap: 6,
+          }}>
+            <span><b style={{ color: INK.primary }}>Menacée par rapport à quoi ?</b> {marge.menace_vis_a_vis_de_qui}</span>
+            <span><b style={{ color: INK.primary }}>Pourquoi ça baisse ?</b> {marge.cause_principale}</span>
+            <span><b style={{ color: INK.primary }}>Que vaut le montant ?</b> {marge.marge_en_jeu_definition}</span>
+          </div>
+
+          <LireLaJauge seuil={seuilMarge} mediane={medianeMarge}
+            horizon={marge.horizon_mois ?? 3} />
+
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.79rem" }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: INK.muted, fontSize: "0.7rem" }}>
+                  <th style={{ padding: "6px 8px" }}>
+                    <TriMargeBouton cle="ca" actif={triMarge} onTri={setTriMarge}
+                      label="Client" aide="chiffre d'affaires sur 12 mois" />
+                  </th>
+                  <th style={{ padding: "6px 8px", minWidth: 195 }}>
+                    <TriMargeBouton cle="ecart" actif={triMarge} onTri={setTriMarge}
+                      label="Trajectoire de marge" aide="écart au seuil de surveillance" />
+                  </th>
+                  <th style={{ padding: "6px 8px", textAlign: "right" }}>Taux 3 mois</th>
+                  <th style={{ padding: "6px 8px", textAlign: "right" }}>Part équipement</th>
+                  <th style={{ padding: "6px 8px" }}>
+                    <TriMargeBouton cle="probabilite" actif={triMarge} onTri={setTriMarge}
+                      label="Risque" aide="probabilité de passer sous le seuil" />
+                  </th>
+                  <th style={{ padding: "6px 8px", textAlign: "right" }}>
+                    <TriMargeBouton cle="enjeu" actif={triMarge} onTri={setTriMarge}
+                      label="Marge en jeu" aide="montant de marge menacée" />
+                  </th>
+                  <th style={{ padding: "6px 8px", textAlign: "right" }}>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pMarge.visibles.map(x => {
+                  const n = niveau(x.probabilite);
+                  const origine = origineMarge(x);
+                  const deja = confiees[origine.titre];
+                  return (
+                    <tr key={x.client} style={{ borderTop: `1px solid ${INK.grid}` }}>
+                      <td style={{ padding: "8px" }}>
+                        <div style={{ fontWeight: 600, color: INK.primary }} title={x.nom || x.client}>
+                          {tronquer(x.nom || x.client, 28)}
+                        </div>
+                        <div style={{ fontSize: "0.68rem", color: INK.muted }}>
+                          {fMoney(x.ca_12m_dt)} sur 12 mois
+                        </div>
+                        {!!x.raisons?.length && (
+                          <div style={{ marginTop: 4 }}>
+                            <Pourquoi raisons={x.raisons} titre={`Pourquoi ${x.nom || x.client}`} />
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ padding: "8px" }}>
+                        <Jauge actuelle={x.marge_actuelle_pct} douze={x.marge_12m_pct}
+                          seuil={x.seuil_pct ?? seuilMarge}
+                          mediane={x.mediane_pct ?? medianeMarge}
+                          haut={d.hautMarge} />
+                      </td>
+                      <td style={{
+                        padding: "8px", textAlign: "right", fontWeight: 700,
+                        color: x.deja_sous_le_seuil ? "#D03B3B" : INK.primary,
+                      }}>
+                        {fPct(x.marge_actuelle_pct)}
+                        {x.deja_sous_le_seuil && (
+                          <em style={{ fontStyle: "normal", display: "block", fontSize: "0.66rem", color: "#D03B3B" }}>
+                            déjà sous le seuil
+                          </em>
+                        )}
+                      </td>
+                      <td style={{ padding: "8px", textAlign: "right", color: INK.secondary }}>
+                        {x.part_equipement_pct == null ? "—" : `${x.part_equipement_pct.toFixed(0)} %`}
+                      </td>
+                      <td style={{ padding: "8px" }}>
+                        <span style={{
+                          background: `${n.couleur}44`, color: INK.primary, borderRadius: 6,
+                          padding: "3px 8px", fontSize: "0.7rem", fontWeight: 700, whiteSpace: "nowrap",
+                        }}>{n.label}</span>
+                      </td>
+                      <td style={{ padding: "8px", textAlign: "right", fontWeight: 800, color: INK.primary }}>
+                        {fMoney(x.marge_en_jeu_dt)}
+                      </td>
+                      <td style={{ padding: "8px", textAlign: "right" }}>
+                        {deja ? (
+                          <span className="vk-confiee"
+                            title={`Confiée à ${deja.assigne_nom || "un responsable à désigner"}`}>
+                            <CheckCircle2 size={12} /> Confiée
+                          </span>
+                        ) : (
+                          <button className="vk-bouton-mini" onClick={() => setConfier(origine)}>
+                            <UserPlus size={12} /> Confier
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <Pagination p={pMarge} nom="clients" toujours />
         </Carte>
       ) : (
         <Carte titre="Rentabilité des clients"><Vide texte={marge?.motif || "Aucun client concerné."} /></Carte>
       )}
 
-      {/* ── Produits à proposer ──────────────────────────────────────────── */}
-      {reco?.servi && d.clientsReco.length ? (
-        <>
-          <Carte span={5} titre="Produits les plus demandés à venir" icone={<Package size={15} />}
-            sousTitre={`Nombre de clients à qui le proposer dans les ${reco.horizon_mois ?? 6} mois`}>
-            <ResponsiveContainer width="100%" height={Math.max(260, d.produits.length * 38)}>
-              <BarChart layout="vertical" data={d.produits} margin={{ top: 0, right: 36, left: 0, bottom: 0 }} barCategoryGap={8}>
-                <XAxis type="number" hide allowDecimals={false} />
-                <YAxis type="category" dataKey="produit" width={190} tick={{ fill: INK.primary, fontSize: 11.5 }} axisLine={false} tickLine={false} />
-                <Tooltip cursor={{ fill: "rgba(47,91,234,0.05)" }} contentStyle={INFOBULLE}
-                  formatter={(v) => [`${v} client(s)`, "À proposer à"]}
-                  labelFormatter={(_, p) => (p?.[0]?.payload as { complet?: string })?.complet || ""} />
-                <Bar dataKey="n" fill={BLEU[3]} barSize={16} radius={[0, 4, 4, 0]}
-                  label={{ position: "right", fill: INK.secondary, fontSize: 11 }} />
-              </BarChart>
-            </ResponsiveContainer>
-          </Carte>
-
-          <Carte span={7} titre="Quoi proposer, à qui" icone={<ShoppingCart size={15} />}
-            sousTitre="Produits que ces clients n'ont jamais achetés et qu'ils sont susceptibles d'adopter">
-            <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))" }}>
-              {d.clientsReco.slice(0, 8).map(c => (
-                <div key={c.client} className="vk-carte-action">
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
-                    <span style={{ fontWeight: 800, color: INK.primary, fontSize: "0.86rem" }} title={c.nom}>{tronquer(c.nom, 26)}</span>
-                    <span style={{ fontWeight: 800, color: INK.primary, fontSize: "0.86rem", whiteSpace: "nowrap" }}>{fMoney(c.potentiel_top3_dt)}</span>
-                  </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                    {c.produits.map(p => <span key={p.designation} className="vk-chip" title={p.designation}>{tronquer(p.designation, 26)}</span>)}
-                  </div>
-                  {/* Pourquoi ce produit chez ce client : adoption chez les
-                      établissements comparables, nombre d'acheteurs, montant annuel. */}
-                  <Pourquoi raisons={c.produits[0]?.raisons}
-                    libelle="Pourquoi ce produit ?"
-                    titre={`Pourquoi ${tronquer(c.produits[0]?.designation || "", 30)}`} />
-                  {/* Une proposition qui reste à l'écran ne rapporte rien : elle
-                      part ici en tâche, avec les produits en consigne. */}
-                  {confiees[origineReco(c).titre] ? (
-                    <BadgeConfiee info={confiees[origineReco(c).titre]} />
-                  ) : (
-                    <button className="vk-bouton-mini" style={{ alignSelf: "flex-start" }}
-                      onClick={() => setConfier(origineReco(c))}>
-                      <UserPlus size={12} /> Confier
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-            <p className="muted-note" style={{ marginTop: 10, fontSize: "0.72rem" }}>
-              Le montant indique ce que dépensent en moyenne par an les clients qui achètent déjà ces produits.
-            </p>
-          </Carte>
-        </>
-      ) : (
-        <Carte titre="Produits à proposer"><Vide texte={reco?.motif || "Aucune recommandation disponible."} /></Carte>
-      )}
+      {/* « Produits les plus demandés » et « Quoi proposer, à qui » ont rejoint
+          l'onglet Produits & achats : ils parlent de catalogue et d'adoption de
+          références, pas de pièces commerciales en cours. */}
 
       {confier && (
         <ConfierTache origine={confier} onClose={() => setConfier(null)}

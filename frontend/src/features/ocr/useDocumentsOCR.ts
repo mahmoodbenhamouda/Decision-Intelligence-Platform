@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * ViewModel — « Documents & OCR ».
- *
- * Porte tout le parcours d'un document : choix du mode, lecture, saisie
- * vérifiée champ par champ (les écarts avec la lecture deviennent des
- * corrections), sens achat / vente, enregistrement, rapprochement avec l'ERP,
- * identité de l'entreprise et échéancier des factures enregistrées.
- */
 import { useCallback, useRef, useState } from "react";
 import { useSession } from "@/core/auth/useSession";
 import { API_INJOIGNABLE } from "@/core/config";
@@ -70,7 +62,7 @@ export function useDocumentsOCR() {
       if (!res.ok) { setError(d.detail || `Erreur ${res.status}`); return; }
       if (mode === "facture") {
         setInvoice(d);
-        setSaisie(brouillon(d.facture));          // le brouillon part des valeurs lues
+        setSaisie(brouillon(d.facture));
         const ds = d.sens?.sens;
         setSens(ds === "achat" || ds === "vente" ? ds : "");
       }
@@ -87,8 +79,6 @@ export function useDocumentsOCR() {
     return valeurs;
   };
 
-  /* Enregistrement en base : la lecture seule ne conservait rien, et les
-     montants extraits n'alimentaient aucun indicateur. */
   const importer = async (creerClient: boolean, tiersCode?: string) => {
     if (!invoice || busy) return;
     if (isDirector && !sens) { setError("Précisez s'il s'agit d'un achat ou d'une vente."); return; }
@@ -110,7 +100,7 @@ export function useDocumentsOCR() {
         }
         return;
       }
-      // 409 : lecture réussie mais enregistrement refusé (doublon, tiers ambigu…)
+
       const det = (d.detail && typeof d.detail === "object" ? d.detail : d) as ImportResult;
       if (det?.candidats?.length) setAmbigu(det);
       setError(det?.erreur || (typeof d.detail === "string" ? d.detail : "") || `Erreur ${res.status}`);
@@ -131,7 +121,7 @@ export function useDocumentsOCR() {
     try {
       const d = await rapprocherFacture<Reconciliation>(lectureId, s, valeursSaisies());
       if (d) setInvoice(inv => (inv ? { ...inv, rapprochement: d } : inv));
-    } catch { /* le rapprochement reste celui affiché */ }
+    } catch {  }
   };
 
   const enregistrerIdentite = async () => {

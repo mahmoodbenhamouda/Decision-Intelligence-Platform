@@ -1,17 +1,4 @@
-"""
-agents/copilote/outils.py
-=========================
-Les outils du copilote : les MÊMES briques que le reste de la plateforme.
-
-* indicateurs du périmètre (moteur KPI sur l'entrepôt) ;
-* radar financier (actions prioritaires chiffrées) ;
-* prévision du chiffre d'affaires (régression linéaire sur 12 mois) ;
-* stock réel reconstruit des factures, fin de commercialisation, stock par
-  client ; demande et dépendance fournisseur.
-
-Aucun outil n'importe un module de modèle : les sorties de modèles passent par
-`ml_engine.passerelle`, qui applique les décisions du registre.
-"""
+"""Les outils du copilote : les MÊMES briques que le reste de la plateforme."""
 
 from __future__ import annotations
 
@@ -45,7 +32,6 @@ def dt_montant(v: Any) -> str:
         return "N/D"
 
 
-# ── Indicateurs et radar ─────────────────────────────────────────────────────
 def indicateurs(filters: Dict[str, Any]) -> Dict[str, Any]:
     """Indicateurs du périmètre, calculés sur l'entrepôt."""
     kpis = kpi_engine.compute_dashboard(filters)
@@ -57,7 +43,6 @@ def radar(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
     return kpi_engine.finance_radar({}, filters)
 
 
-# ── Prévision (régression linéaire 12 mois → 3 mois) ─────────────────────
 def prevision_lineaire(monthly: List[Dict[str, Any]], horizon: int = 3) -> List[Dict[str, Any]]:
     """Projection du CA : régression linéaire sur les 12 derniers mois."""
     pts = [float(m.get("revenue") or 0) for m in (monthly or [])][-12:]
@@ -85,16 +70,8 @@ def prevision_lineaire(monthly: List[Dict[str, Any]], horizon: int = 3) -> List[
     return out
 
 
-# ── Stock et approvisionnement ───────────────────────────────────────────────
 def contexte_stock_reel(kpis: Dict[str, Any]) -> Dict[str, Any]:
-    """Réponse aux questions de risque de stock SANS le modèle retiré.
-
-    Le copilote importait `score_stock_risk` directement : un modèle retiré par
-    le registre, dont la cible dépend de dates de péremption simulées. Il passe
-    désormais par la passerelle, qui renvoie la carte du modèle (retiré) et
-    jamais ses scores ; les chiffres viennent des flux RÉELS reconstruits des
-    factures et de la règle de fin de commercialisation.
-    """
+    """Réponse aux questions de risque de stock SANS le modèle retiré."""
     from ml_engine import passerelle as pw
     rs = pw.risque_stock()
     flux = kpis.get("stock_flux_reel") or {}

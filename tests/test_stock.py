@@ -1,21 +1,4 @@
-"""
-tests/test_stock.py
-===================
-Tests du module de stock SIMULÉ.
-
-Deux familles de tests, d'importance égale :
-
-1. **Cohérence du modèle** — la simulation doit respecter les règles de gestion
-   qu'elle prétend appliquer : politique (s,S), stock de sécurité, couverture,
-   reproductibilité par la graine.
-
-2. **Garde-fous d'honnêteté** — le marquage « données simulées » doit être
-   présent partout. Un test qui échoue ici signale un risque de présenter du
-   synthétique comme du réel : c'est le plus important du fichier.
-
-Exécution :
-    python -m pytest tests/test_stock.py -v
-"""
+"""Tests du module de stock SIMULÉ."""
 
 import math
 import os
@@ -37,11 +20,16 @@ besoin_stock = pytest.mark.skipif(
     reason="stock simulé non généré")
 
 
-# ── 1. GARDE-FOUS D'HONNÊTETÉ (les plus importants) ─────────────────────────
 def test_avertissement_dit_simule():
+    """Deux choses doivent être dites : que c'est simulé, et qu'aucun relevé
+    de stock n'existe. La formulation peut évoluer, le fond non — c'est donc
+    le fond qu'on vérifie, pas une phrase au mot près."""
     a = AVERTISSEMENT.upper()
     assert "SIMUL" in a, "l'avertissement doit contenir le mot « simulé »"
-    assert "AUCUNE DONNÉE DE STOCK" in a or "AUCUNE DONNEE DE STOCK" in a
+    assert "AUCUN" in a and "STOCK" in a, (
+        "l'avertissement doit dire qu'aucun relevé de stock n'est disponible")
+    assert "MESURENT AUCUN STOCK" in a or "NE MESURENT" in a, (
+        "l'avertissement doit dire que ces valeurs ne mesurent rien")
 
 
 @besoin_stock
@@ -75,17 +63,7 @@ def test_metadonnees_de_simulation_tracees():
 
 @besoin_stock
 def test_agent_stock_ne_presente_jamais_la_simulation_comme_reelle():
-    """Le constat du briefing ne doit jamais laisser croire à une observation.
-
-    L'ancienne version de ce test attendait un constat marqué `[SIMULATION]`.
-    Elle ne vérifiait plus rien : l'agent ne lit plus du tout le stock simulé,
-    et sans flux réels il se tait — le `if` sautait l'assertion. La garantie
-    est désormais plus forte, et le test l'affirme sans condition :
-
-      * simulation présente en base, flux réels absents → aucun constat ;
-      * flux réels présents → constat marqué `is_simulated = False`, origine
-        des chiffres déclarée (les factures).
-    """
+    """Le constat du briefing ne doit jamais laisser croire à une observation."""
     from agents.fleet.nodes import constat_stock
     sans_reel = constat_stock({"kpis": {"stock_flux_reel": {"disponible": False}}})
     assert not sans_reel.get("findings"), "le volet stock est retombé sur la simulation"
@@ -98,7 +76,6 @@ def test_agent_stock_ne_presente_jamais_la_simulation_comme_reelle():
     assert "factures" in f["origine_des_chiffres"]
 
 
-# ── 2. COHÉRENCE DU MODÈLE ──────────────────────────────────────────────────
 def test_profil_situation_somme_a_1():
     assert sum(PROFIL_SITUATION.values()) == pytest.approx(1.0)
 
@@ -158,14 +135,7 @@ def test_services_exclus_du_stock():
 
 @besoin_stock
 def test_calibrage_sur_la_demande_reelle():
-    """La demande journalière doit provenir des ventes réelles, pas du hasard.
-
-    Le calcul de référence reproduit EXACTEMENT le filtre du générateur
-    (`_collect_demand`) : les années de demande nette nulle ou négative sont
-    écartées AVANT la moyenne. Sans ce filtre, le test comparait deux grandeurs
-    différentes — ce qui restait invisible tant que les quantités étaient toutes
-    positives, et a cessé de l'être avec le passage aux quantités signées.
-    """
+    """La demande journalière doit provenir des ventes réelles, pas du hasard."""
     import duckdb
     con = duckdb.connect(str(STORE_PATH), read_only=True)
     r = con.execute("""
@@ -182,7 +152,6 @@ def test_calibrage_sur_la_demande_reelle():
     con.close()
     assert r, "jointure stock ↔ ventes vide"
     ecarts = [abs(a - b) / max(b, 1e-9) for a, b in r if b > 0]
-    # tolérance large : moyenne annuelle vs somme/années, arrondis
     part = sum(1 for e in ecarts if e < 0.5) / len(ecarts)
     assert part > 0.8, (
         f"seuls {part:.0%} des produits suivent la demande réelle — "
@@ -192,50 +161,45 @@ def test_calibrage_sur_la_demande_reelle():
 
 @besoin_stock
 def test_reproductibilite_de_la_graine():
-    """Même graine → mêmes valeurs. Condition d'un travail scientifique."""
+    """Même graine → mêmes valeurs.
+
+    Le tri porte sur (produit, client), qui est le GRAIN réel de la table : une
+    ligne globale par produit, plus une ligne par couple client × produit. 1 887
+    produits portent ainsi plusieurs lignes. Trié sur `produit` seul, le
+    départage des ex-aequo revenait à l'ordre physique de stockage, qui change
+    après toute reconstruction de l'entrepôt — le test échouait alors sans
+    qu'aucun tirage n'ait bougé. Le générateur, lui, tire par clé
+    (`_rng_pour("global|produit")`), ce que vérifie le test suivant.
+    """
     import duckdb
+
+    requete = ("SELECT produit, coalesce(client, '') AS client, stock_actuel "
+               "FROM stock_simule ORDER BY produit, client LIMIT 40")
     con = duckdb.connect(str(STORE_PATH), read_only=True)
-    avant = con.execute("SELECT produit, stock_actuel FROM stock_simule "
-                        "ORDER BY produit LIMIT 40").fetchall()
+    avant = con.execute(requete).fetchall()
     con.close()
     from ml_engine.stock.generator import generate_stock
     generate_stock(force=True, verbose=False)
     con = duckdb.connect(str(STORE_PATH), read_only=True)
-    apres = con.execute("SELECT produit, stock_actuel FROM stock_simule "
-                        "ORDER BY produit LIMIT 40").fetchall()
+    apres = con.execute(requete).fetchall()
     con.close()
     assert avant == apres, "la génération doit être reproductible (graine fixée)"
 
 
 def test_le_tirage_ne_depend_que_de_la_cle():
-    """Reproductibilité par CONSTRUCTION, et non par chance d'ordonnancement.
-
-    Un flux aléatoire unique partagé par toutes les lignes rendait chaque valeur
-    dépendante de tout ce qui avait été tiré avant elle : deux lignes de même
-    chiffre d'affaires se départageant autrement — ce que SQL ne garantit pas
-    sans clé de tri unique — suffisait à décaler la simulation entière.
-
-    En dérivant le générateur de la graine ET de la clé de la ligne, la valeur
-    d'un produit ne dépend plus que de lui-même. C'est une garantie plus forte
-    qu'un tri stable : elle survit à l'ajout ou au retrait d'un autre produit.
-    """
+    """Reproductibilité par CONSTRUCTION, et non par chance d'ordonnancement."""
     from ml_engine.stock.generator import _rng_pour
 
-    # Même clé → même séquence, à chaque appel.
     a = _rng_pour("global|PRODUIT X").uniform(0, 1, 5).tolist()
     b = _rng_pour("global|PRODUIT X").uniform(0, 1, 5).tolist()
     assert a == b, "une même clé doit toujours donner la même séquence"
 
-    # Clés différentes → séquences indépendantes.
     c = _rng_pour("global|PRODUIT Y").uniform(0, 1, 5).tolist()
     assert a != c, "deux clés distinctes ne doivent pas se superposer"
 
-    # Stable d'un PROCESSUS à l'autre : `hash()` ne l'est pas en Python, la
-    # randomisation des chaînes changerait la simulation à chaque exécution.
     assert _rng_pour("global|PRODUIT X").uniform(0, 1) == pytest.approx(a[0])
 
 
-# ── 3. INDICATEURS ──────────────────────────────────────────────────────────
 @besoin_stock
 def test_indicateurs_globaux_plausibles():
     k = compute_stock_kpis()

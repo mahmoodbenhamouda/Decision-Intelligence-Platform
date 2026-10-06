@@ -1,15 +1,10 @@
 "use client";
 
-/**
- * Vue — briques visuelles du tableau de bord : tuile KPI animée, carte de
- * graphe agrandissable, carte de panneau, tuile d'alerte, jauge.
- */
 import React, { useEffect, useRef, useState } from "react";
 import { PolarAngleAxis, RadialBar, RadialBarChart, ResponsiveContainer } from "recharts";
 import { Maximize2 } from "lucide-react";
 import type { CarteAgrandie } from "../tableauDeBord.types";
 
-/* ── Count-up hook ── */
 function useCountUp(target: number, trigger: unknown) {
   const [val, setVal] = useState(target || 0);
   const ref = useRef(target || 0);
@@ -26,7 +21,6 @@ function useCountUp(target: number, trigger: unknown) {
   return val;
 }
 
-/* ── KPI stat card (with count-up) ── */
 export function Stat({ label, value, format, icon, tone, sub, trigger, title }: {
   label: string; value: number | null; format: (n: number) => string; icon: React.ReactNode; tone: string; sub?: React.ReactNode; trigger: unknown; title?: string;
 }) {
@@ -43,7 +37,6 @@ export function Stat({ label, value, format, icon, tone, sub, trigger, title }: 
   );
 }
 
-/* ── Chart card (expandable) ── */
 export function ChartCard({ title, icon, render, h = 232, span = 6, hint, hidden, onExpand }: {
   title: string; icon: React.ReactNode; render: (h: number) => React.ReactNode; h?: number; span?: number;
   hint?: string; hidden?: boolean; onExpand: (c: CarteAgrandie) => void;
@@ -72,9 +65,7 @@ export function PanelCard({ title, icon, children, span = 6, hidden }: { title: 
     </div>
   );
 }
-/** Tuile d'alerte de la page d'accueil. Cliquable : chaque chiffre mène à
- *  l'onglet qui permet d'agir dessus. Un indicateur qu'on ne peut pas suivre
- *  jusqu'à une action n'a pas sa place sur une page d'accueil. */
+
 export function Alerte({ couleur, icone, titre, valeur, detail, onClick }: {
   couleur: string; icone: React.ReactNode; titre: string;
   valeur: string; detail: string; onClick?: () => void;
@@ -84,7 +75,10 @@ export function Alerte({ couleur, icone, titre, valeur, detail, onClick }: {
       onClick={onClick}
       style={{
         textAlign: "left", cursor: onClick ? "pointer" : "default", width: "100%",
-        border: "1px solid rgba(26,35,72,0.09)", borderLeft: `4px solid ${couleur}`,
+        // Un seul raccourci par propriété : `borderColor` couvre les quatre
+        // côtés, lui adjoindre `borderLeftColor` fait diverger React au rerendu.
+        borderStyle: "solid", borderWidth: "1px 1px 1px 4px",
+        borderColor: `rgba(26,35,72,0.09) rgba(26,35,72,0.09) rgba(26,35,72,0.09) ${couleur}`,
         borderRadius: 13, padding: "13px 15px",
         background: "rgba(255,255,255,0.62)",
         transition: "transform .15s ease, box-shadow .15s ease",

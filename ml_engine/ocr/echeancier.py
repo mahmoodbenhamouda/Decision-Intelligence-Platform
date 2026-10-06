@@ -1,32 +1,4 @@
-"""
-ml_engine/ocr/echeancier.py
-===========================
-Échéancier des factures importées par OCR : ce qu'il faudra PAYER (achats) et
-ENCAISSER (ventes), mois par mois.
-
-Trois règles, chacune pour une erreur précise :
-
-1. Pas de double compte. Une facture retrouvée dans l'ERP (`rapprochee`,
-   `doublon_probable`) y figure déjà : l'ajouter à la trésorerie la compterait
-   deux fois. Seules comptent les factures ABSENTES de l'ERP (introuvable,
-   postérieure à l'export, écart à instruire, non rapprochée).
-
-2. Le montant qui sort réellement de la caisse est le NET À PAYER, pas le TTC :
-   la retenue à la source est versée au fisc, pas au fournisseur. À défaut de
-   net, le TTC.
-
-3. L'échéance est rarement imprimée. Dans l'ordre :
-     - lue sur la facture                          → source « lue »
-     - date + délai HABITUEL de ce tiers dans l'ERP → « delai_tiers »
-       (médiane de ses délais, bornés à 0-365 j : l'export contient 295 achats
-       à délai négatif, erreurs de saisie)
-     - date + délai médian de tous les tiers        → « delai_moyen »
-   La source accompagne chaque ligne : une échéance déduite n'a pas la valeur
-   d'une échéance lue, et l'interface doit le dire.
-
-Une facture réglée sort de l'échéancier (`marquer_reglee`) ; sans cela, tout ce
-qui est échu resterait « en retard » indéfiniment.
-"""
+"""Échéancier des factures importées par OCR : ce qu'il faudra PAYER (achats) et ENCAISSER…"""
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
@@ -35,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from .importer import _assurer_schema, _connect, _table_existe
 
 DEJA_DANS_ERP = ("rapprochee", "doublon_probable")
-DELAI_DEFAUT = 30          # si l'ERP ne permet aucun calcul
+DELAI_DEFAUT = 30
 
 
 def _delais(con) -> Dict[str, Any]:
@@ -96,7 +68,7 @@ def echeancier(aujourd_hui: Optional[date] = None, sens: Optional[str] = None,
             base = d or auj
             echeance = base + timedelta(days=delai)
             if d is None:
-                source += "_sans_date"          # ni échéance ni date : très incertain
+                source += "_sans_date"
         retard = (auj - echeance).days
         lignes.append({
             "id": i, "numero": num, "sens": s, "tiers": tiers, "tiers_code": code,
@@ -133,7 +105,7 @@ def echeancier(aujourd_hui: Optional[date] = None, sens: Optional[str] = None,
         "n_factures": len(lignes),
         "n_echeances_deduites": sum(l["source_echeance"] != "lue" for l in lignes),
         "mois": mois, "factures": lignes,
-        "note": ("Factures lues par OCR, non réglées, ABSENTES de l'ERP (celles qu'il contient "
+        "note": ("Factures scannées, non réglées, ABSENTES de la comptabilité (celles qu'il contient "
                  "déjà sont exclues pour ne pas les compter deux fois). Montant = net à payer. "
                  "Échéance lue sur la facture, ou déduite du délai habituel du tiers."),
     }

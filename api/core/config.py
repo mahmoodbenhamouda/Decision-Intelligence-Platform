@@ -1,16 +1,4 @@
-"""
-api/core/config.py
-==================
-Configuration de l'API, lue dans l'environnement (et le fichier `.env`).
-
-    FRONTEND_ORIGINS  origines autorisées par CORS, séparées par des virgules
-    API_HOST          adresse d'écoute               (défaut 127.0.0.1)
-    API_PORT          port d'écoute                  (défaut 9000)
-    API_RELOAD        rechargement automatique       (défaut 1 ; 0 en démonstration)
-
-Le port 9000 est l'adresse que le frontend appelle (`NEXT_PUBLIC_API_URL`,
-défaut http://localhost:9000).
-"""
+"""Configuration de l'API, lue dans l'environnement (et le fichier `.env`)."""
 
 from __future__ import annotations
 
@@ -46,6 +34,5 @@ def port() -> int:
 
 
 def rechargement() -> bool:
-    """`reload=True` est pratique en développement mais relance tout le
-    chargement à chaque sauvegarde : API_RELOAD=0 pour une démonstration."""
+    """`reload=True` est pratique en développement mais relance tout le chargement à chaque sauvegarde…"""
     return os.environ.get("API_RELOAD", "1") not in ("0", "false", "False")

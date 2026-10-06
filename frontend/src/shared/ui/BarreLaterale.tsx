@@ -1,25 +1,5 @@
 "use client";
 
-/**
- * BarreLaterale — navigation et filtres réunis sur le bord gauche.
- *
- * Pourquoi ce changement : les onglets et la bande de filtres occupaient deux
- * rangées en haut de page. Sur un portable, le premier graphique commençait
- * donc sous la ligne de flottaison, et la liste des filtres actifs était
- * tronquée faute de largeur. En vertical, l'écran retrouve sa hauteur, les
- * onglets tiennent tous sans défilement, et chaque filtre peut enfin afficher
- * ce qui est réellement sélectionné plutôt qu'un simple compteur.
- *
- * Trois états :
- *   · déployée (par défaut) — icône + libellé, filtres visibles ;
- *   · repliée — colonne d'icônes ; les filtres passent derrière un bouton qui
- *     redéploie la barre, car un filtre sans son libellé ne se lit pas ;
- *   · mobile — la barre se superpose au contenu et se ferme au clic extérieur.
- *
- * Le choix déployée/repliée est mémorisé dans le navigateur : c'est une
- * préférence d'affichage, elle n'a pas à être refaite à chaque visite.
- */
-
 import { useEffect, type ReactNode } from "react";
 import {
   ChevronLeft, ChevronRight, LogOut, PanelLeftClose, SlidersHorizontal, Trash2,
@@ -28,19 +8,21 @@ import {
 
 export interface OngletDef { id: string; label: string; icon: ReactNode }
 
+/** Une étape du cycle de gestion, et les écrans qui la servent. */
+export interface GroupeDef { titre: string; aide?: string; onglets: OngletDef[] }
+
 const CLE_REPLI = "finbot_barre_repliee";
 
-/** Lit la préférence d'affichage ; tout échec (navigation privée) → déployée. */
 export function lireRepli(): boolean {
   try { return localStorage.getItem(CLE_REPLI) === "1"; } catch { return false; }
 }
 
 export default function BarreLaterale({
-  onglets, vue, onVue, replie, onReplie, ouverteMobile, onFermerMobile,
-  nomCompte, sousTitreCompte, estClient, onDeconnexion,
+  groupes, vue, onVue, replie, onReplie, ouverteMobile, onFermerMobile,
+  nomCompte, sousTitreCompte, onDeconnexion,
   nFiltresActifs, resumeFiltres, onReinitialiser, filtres,
 }: {
-  onglets: OngletDef[];
+  groupes: GroupeDef[];
   vue: string;
   onVue: (id: string) => void;
   replie: boolean;
@@ -49,19 +31,17 @@ export default function BarreLaterale({
   onFermerMobile: () => void;
   nomCompte: string;
   sousTitreCompte?: string;
-  estClient: boolean;
   onDeconnexion: () => void;
   nFiltresActifs: number;
   resumeFiltres: string;
   onReinitialiser: () => void;
-  /** Les contrôles de filtre, rendus par la page (elle seule connaît son état). */
+
   filtres: ReactNode;
 }) {
   useEffect(() => {
-    try { localStorage.setItem(CLE_REPLI, replie ? "1" : "0"); } catch { /* préférence non mémorisée */ }
+    try { localStorage.setItem(CLE_REPLI, replie ? "1" : "0"); } catch {  }
   }, [replie]);
 
-  // Échap ferme la barre superposée : sur mobile, elle masque tout le contenu.
   useEffect(() => {
     if (!ouverteMobile) return;
     const h = (e: KeyboardEvent) => { if (e.key === "Escape") onFermerMobile(); };
@@ -74,7 +54,6 @@ export default function BarreLaterale({
       {ouverteMobile && <div className="bl-voile" onClick={onFermerMobile} />}
 
       <aside className={`bl${replie ? " replie" : ""}${ouverteMobile ? " ouverte" : ""}`}>
-        {/* ── Marque et repli ─────────────────────────────────────────── */}
         <div className="bl-tete">
           <img src="/overlyne.png" alt="Overlyne" className="bl-logo" />
           {!replie && (
@@ -92,23 +71,29 @@ export default function BarreLaterale({
           </button>
         </div>
 
-        {/* ── Navigation ──────────────────────────────────────────────── */}
+        {/* Les écrans sont groupés par étape du cycle de gestion. Replié, le
+            menu n'affiche que les icônes : les titres de groupe laissent place
+            à un simple séparateur, sans quoi la colonne devient illisible. */}
         <nav className="bl-nav">
-          {!replie && <div className="bl-section">Navigation</div>}
-          {onglets.map(o => (
-            <button key={o.id} title={o.label}
-              className={`bl-item${vue === o.id ? " actif" : ""}`}
-              onClick={() => { onVue(o.id); onFermerMobile(); }}>
-              <span className="bl-icone">{o.icon}</span>
-              {!replie && <span className="bl-libelle">{o.label}</span>}
-            </button>
+          {groupes.map((g, i) => (
+            <div key={g.titre} className="bl-groupe">
+              {replie
+                ? i > 0 && <div className="bl-separateur" />
+                : <div className="bl-section" title={g.aide}>{g.titre}</div>}
+              {g.onglets.map(o => (
+                <button key={o.id} title={replie ? `${g.titre} · ${o.label}` : o.label}
+                  className={`bl-item${vue === o.id ? " actif" : ""}`}
+                  onClick={() => { onVue(o.id); onFermerMobile(); }}>
+                  <span className="bl-icone">{o.icon}</span>
+                  {!replie && <span className="bl-libelle">{o.label}</span>}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
 
-        {/* ── Filtres ─────────────────────────────────────────────────── */}
         {replie ? (
-          // Repliée, un filtre ne montrerait qu'une icône muette : on propose
-          // plutôt de redéployer, en signalant s'il y en a d'actifs.
+
           <button className="bl-item bl-item-filtre" title="Filtres" onClick={() => onReplie(false)}>
             <span className="bl-icone"><SlidersHorizontal size={17} /></span>
             {nFiltresActifs > 0 && <span className="bl-pastille">{nFiltresActifs}</span>}
@@ -129,9 +114,8 @@ export default function BarreLaterale({
           </div>
         )}
 
-        {/* ── Compte ──────────────────────────────────────────────────── */}
         <div className="bl-pied">
-          <span className={`bl-compte ${estClient ? "client" : "interne"}`} title={sousTitreCompte}>
+          <span className="bl-compte interne" title={sousTitreCompte}>
             <UserIcon size={13} />
             {!replie && <span className="bl-compte-nom">{nomCompte}</span>}
           </span>
@@ -144,7 +128,6 @@ export default function BarreLaterale({
   );
 }
 
-/** Bouton d'ouverture, affiché seulement quand la barre est superposée. */
 export function BoutonMenu({ onClick }: { onClick: () => void }) {
   return (
     <button className="bl-burger" onClick={onClick} title="Ouvrir le menu">

@@ -25,7 +25,7 @@ const FloatingCompanion = forwardRef<AvatarHandle, FloatingCompanionProps>(funct
   },
   ref
 ) {
-  // Position du composant (persistance localStorage)
+
   const [pos, setPos] = useState<{ x: number; y: number }>({ x: 40, y: 120 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -33,7 +33,6 @@ const FloatingCompanion = forwardRef<AvatarHandle, FloatingCompanionProps>(funct
   const [mascotType, setMascotType] = useState<MascotType>("astra");
   const [showSpeechBubble, setShowSpeechBubble] = useState(true);
 
-  // États internes synchronisés avec le Copilote (via CustomEvents globaux)
   const [currentMode, setCurrentMode] = useState<AvatarMode>(mode);
   const [currentMood, setCurrentMood] = useState<AvatarMood>(mood);
   const [currentSpeechText, setCurrentSpeechText] = useState<string>(speechText);
@@ -41,7 +40,6 @@ const FloatingCompanion = forwardRef<AvatarHandle, FloatingCompanionProps>(funct
   const mascotRef = useRef<AvatarHandle>(null);
   const companionRef = useRef<HTMLDivElement>(null);
 
-  // Écouteurs d'événements globaux du Copilote
   useEffect(() => {
     const handleState = (e: Event) => {
       const detail = (e as CustomEvent).detail;
@@ -79,21 +77,18 @@ const FloatingCompanion = forwardRef<AvatarHandle, FloatingCompanionProps>(funct
     };
   }, []);
 
-  // Sync props initiales
   useEffect(() => {
     if (mode) setCurrentMode(mode);
     if (mood) setCurrentMood(mood);
     if (speechText) setCurrentSpeechText(speechText);
   }, [mode, mood, speechText]);
 
-  // Transmission du handle
   useImperativeHandle(ref, () => ({
     setViseme: (v: Viseme) => mascotRef.current?.setViseme(v),
     restMouth: () => mascotRef.current?.restMouth(),
     gesture: (g: GestureType) => mascotRef.current?.gesture(g),
   }));
 
-  // Initialisation de la position au chargement
   useEffect(() => {
     try {
       const saved = localStorage.getItem("finbot_companion_pos");
@@ -101,18 +96,17 @@ const FloatingCompanion = forwardRef<AvatarHandle, FloatingCompanionProps>(funct
         const parsed = JSON.parse(saved);
         setPos(parsed);
       } else {
-        // En bas à droite par défaut
+
         setPos({
           x: Math.max(20, window.innerWidth - 220),
           y: Math.max(20, window.innerHeight - 280),
         });
       }
     } catch {
-      // Ignorer les erreurs d'accès au localStorage
+
     }
   }, []);
 
-  // Sauvegarde de la position
   const savePosition = (newPos: { x: number; y: number }) => {
     setPos(newPos);
     try {
@@ -120,9 +114,8 @@ const FloatingCompanion = forwardRef<AvatarHandle, FloatingCompanionProps>(funct
     } catch {}
   };
 
-  // Gestion du Drag & Drop (Souris + Tactile)
   const handlePointerDown = (e: React.PointerEvent) => {
-    // Si on clique sur un bouton intérieur, ne pas démarrer le drag
+
     if ((e.target as HTMLElement).closest("button")) return;
 
     setIsDragging(true);
@@ -155,7 +148,6 @@ const FloatingCompanion = forwardRef<AvatarHandle, FloatingCompanionProps>(funct
     }
   };
 
-  // Basculer la mascotte (Astra Mini-Bot ↔ CyberPet Bleu)
   const cycleMascot = () => {
     const types: MascotType[] = ["astra", "kitsune"];
     const nextIdx = (types.indexOf(mascotType) + 1) % types.length;
@@ -215,7 +207,6 @@ const FloatingCompanion = forwardRef<AvatarHandle, FloatingCompanionProps>(funct
         transition: isDragging ? "none" : "transform 0.1s ease",
       }}
     >
-      {/* Barre d'outils au survol (Drag handle, Changer mascotte, Réduire) */}
       <div
         className="floating-companion-controls"
         style={{
@@ -284,7 +275,6 @@ const FloatingCompanion = forwardRef<AvatarHandle, FloatingCompanionProps>(funct
         </button>
       </div>
 
-      {/* Bulle de dialogue Glassmorphism (Speech Bubble) */}
       {(currentSpeechText || currentMode === "thinking" || currentMode === "speaking") && showSpeechBubble && (
         <div
           className="floating-companion-speech"
@@ -311,7 +301,6 @@ const FloatingCompanion = forwardRef<AvatarHandle, FloatingCompanionProps>(funct
           ) : (
             <span>{currentSpeechText.length > 100 ? currentSpeechText.substring(0, 97) + "..." : currentSpeechText || "À votre écoute !"}</span>
           )}
-          {/* Petite flèche indicatrice de bulle en bas */}
           <div
             style={{
               position: "absolute",
@@ -328,7 +317,6 @@ const FloatingCompanion = forwardRef<AvatarHandle, FloatingCompanionProps>(funct
         </div>
       )}
 
-      {/* Mascotte Mignonne */}
       <CuteMascotRenderer
         ref={mascotRef}
         mode={currentMode}

@@ -1,47 +1,4 @@
-"""
-ml_engine/stock/generator.py
-============================
-Générateur de STOCK SIMULÉ, calibré sur la demande réelle.
-
-⚠️ Les données produites sont **SIMULÉES**, jamais observées. Voir le module
-`ml_engine.stock` et `docs/STOCK_SIMULE.md`.
-
-## Modèle de simulation (entièrement explicite)
-
-Pour chaque produit, la demande réelle observée (`product_sales`, 6 ans)
-détermine tous les paramètres — aucune valeur n'est tirée « au hasard » sans
-ancrage :
-
-1. **Demande journalière moyenne** `d = qté annuelle récente ÷ 365`.
-2. **Variabilité** `σ` : écart-type des volumes mensuels réels, ramené au jour.
-3. **Délai de réapprovisionnement** `L` (jours), selon la famille de produit :
-   - RÉACTIF : 45 j (import, fournisseur unique dominant — Biomérieux 84,6 %)
-   - ÉQUIPEMENT : 75 j (matériel lourd, fabrication à la commande)
-   - CONSOMMABLE / autres : 30 j
-   - SERVICE : sans stock (exclu)
-4. **Stock de sécurité** `SS = z × σ × √L`, avec `z = 1,65` (taux de service
-   visé de 95 %) — formule standard de gestion des stocks.
-5. **Point de commande** `s = d × L + SS`.
-6. **Niveau de recomplètement** `S = s + d × période_de_couverture`
-   (période = 60 j pour les réactifs, 90 j pour les équipements).
-7. **Stock actuel** : tiré dans `[0, S]` selon un profil réaliste — la plupart
-   des produits sont correctement approvisionnés, une minorité est en tension :
-   - 62 % : stock sain, entre `s` et `S`
-   - 18 % : sous le point de commande (réapprovisionnement à déclencher)
-   - 8 %  : rupture ou quasi-rupture (< 20 % du point de commande)
-   - 12 % : surstock (> `S`, immobilisation de trésorerie)
-8. **Péremption** (spécifique au diagnostic in vitro) : les réactifs portent une
-   DLC. Durée de vie 12 à 24 mois selon la famille ; la date de péremption du
-   lot en cours est tirée en cohérence avec la rotation du produit.
-9. **Prix unitaire** : dérivé du **coût de revient réel** (`client_margin`),
-   pour que la valorisation du stock soit cohérente avec la comptabilité.
-
-Tout est reproductible : `SIMULATION_SEED = 42`.
-
-Usage :
-    python -m ml_engine.stock.generator          # génère / régénère
-    python -m ml_engine.stock.generator --stats  # statistiques seulement
-"""
+"""Générateur de STOCK SIMULÉ, calibré sur la demande réelle."""
 
 from __future__ import annotations
 
@@ -57,43 +14,25 @@ SIMULATION_SEED = 42
 
 
 def _rng_pour(cle: str) -> np.random.Generator:
-    """Générateur aléatoire PROPRE à une clé (produit, ou couple client-produit).
-
-    Un flux unique partagé par toutes les lignes rendait chaque valeur
-    dépendante de TOUT ce qui avait été tiré avant elle : il suffisait que deux
-    lignes de même chiffre d'affaires se départagent autrement — ce que SQL
-    n'ordonne pas sans clé de tri unique — pour décaler la séquence entière et
-    changer la simulation, malgré la graine fixée.
-
-    En dérivant un générateur de la graine ET de la clé de la ligne, chaque
-    valeur ne dépend plus que d'elle-même. La simulation devient insensible à
-    l'ordre des lignes, à l'ajout d'un produit ou au retrait d'un autre — ce qui
-    est la condition réelle de la reproductibilité, plus forte qu'un simple tri
-    stable.
-
-    `blake2b` est choisi pour être stable d'une exécution à l'autre, ce que
-    `hash()` n'est pas en Python (randomisation des chaînes par processus).
-    """
+    """Générateur aléatoire PROPRE à une clé (produit, ou couple client-produit)."""
     empreinte = hashlib.blake2b(cle.encode("utf-8"), digest_size=8).digest()
     return np.random.default_rng([SIMULATION_SEED, int.from_bytes(empreinte, "big")])
 
-# Paramètres par famille de produit (délai fournisseur, couverture, durée de vie)
 FAMILY_PARAMS: Dict[str, Dict[str, Any]] = {
     "REACTIF":      {"lead_time": 45, "couverture": 60, "duree_vie_mois": 18, "perissable": True},
     "EQUIPEMENT":   {"lead_time": 75, "couverture": 90, "duree_vie_mois": 0,  "perissable": False},
     "CONSOMMABLE":  {"lead_time": 30, "couverture": 45, "duree_vie_mois": 24, "perissable": True},
     "_DEFAUT":      {"lead_time": 40, "couverture": 60, "duree_vie_mois": 18, "perissable": True},
 }
-FAMILLES_SANS_STOCK = ("SERVICE",)      # SAV, formation… : pas de stock physique
+FAMILLES_SANS_STOCK = ("SERVICE",)
 
-Z_SERVICE_95 = 1.65                     # taux de service visé : 95 %
+Z_SERVICE_95 = 1.65
 
-# Profil de situation de stock (somme = 1.0)
 PROFIL_SITUATION = {
-    "sain":       0.62,   # entre point de commande et niveau cible
-    "a_commander": 0.18,  # sous le point de commande
-    "rupture":    0.08,   # < 20 % du point de commande
-    "surstock":   0.12,   # au-dessus du niveau cible
+    "sain":       0.62,
+    "a_commander": 0.18,
+    "rupture":    0.08,
+    "surstock":   0.12,
 }
 
 
@@ -154,8 +93,6 @@ def _famille_par_produit(con) -> Dict[str, str]:
         familles = [r[0] for r in rows if r[0]]
     except Exception:
         familles = []
-    # L'entrepôt n'associe pas produit → famille directement : on infère depuis
-    # le libellé du produit (les désignations portent le type de matériel).
     mapping: Dict[str, str] = {}
     for f in familles:
         mapping[f.upper()] = f
@@ -178,7 +115,7 @@ def _infer_famille(produit: str, familles: Dict[str, str]) -> str:
     if any(k in p for k in ("CONE", "TUBE", "PIPETTE", "EMBOUT", "PLAQUE",
                             "TIP", "LAME", "GANT", "ACCESSORY")):
         return "CONSOMMABLE"
-    return "REACTIF"        # dominante du catalogue (diagnostic in vitro)
+    return "REACTIF"
 
 
 def _collect_client_demand(con) -> List[Dict[str, Any]]:
@@ -218,14 +155,7 @@ def _collect_client_demand(con) -> List[Dict[str, Any]]:
 
 
 def _signature_demande(con) -> str:
-    """Empreinte de la demande servant de calibrage.
-
-    Résume `product_sales` — nombre de produits, quantités et montants cumulés —
-    de sorte que toute correction de l'entrepôt (passage aux quantités signées,
-    déduplication des lignes…) modifie l'empreinte et déclenche une
-    régénération. Sans cela, le stock reste calibré sur des chiffres périmés
-    sans que rien ne l'indique.
-    """
+    """Empreinte de la demande servant de calibrage."""
     try:
         r = con.execute("""
             SELECT count(*), coalesce(sum(qte), 0), coalesce(sum(ca), 0),
@@ -238,21 +168,9 @@ def _signature_demande(con) -> str:
 
 
 def generate_stock(force: bool = False, verbose: bool = True) -> Dict[str, Any]:
-    """Génère le stock simulé et le matérialise dans l'entrepôt.
-
-    Returns: statistiques de génération (nombre de produits, valorisation…).
-    """
-    # Pas de flux aléatoire global ici : chaque ligne dérive le sien de sa
-    # propre clé (`_rng_pour`), ce qui rend la simulation indépendante de
-    # l'ordre dans lequel les produits sont parcourus.
+    """Génère le stock simulé et le matérialise dans l'entrepôt."""
     con = _connect(read_only=False)
 
-    # Signature de la demande sur laquelle le stock est calibré.
-    # L'ancien test d'idempotence se contentait de « la table existe et n'est
-    # pas vide ». Il ne pouvait donc PAS voir qu'une correction de l'entrepôt
-    # avait changé la demande : le stock restait calibré sur des quantités
-    # périmées, silencieusement. C'est la même faiblesse que celle qui a laissé
-    # passer un CA faux — un contrôle de fraîcheur qui ne contrôle rien.
     signature_demande = _signature_demande(con)
 
     if not force:
@@ -263,7 +181,7 @@ def generate_stock(force: bool = False, verbose: bool = True) -> Dict[str, Any]:
                 sig_stockee = con.execute(
                     "SELECT signature_demande FROM stock_simule_meta LIMIT 1").fetchone()[0]
             except Exception:
-                pass                      # métadonnées d'une version antérieure
+                pass
             if n and sig_stockee == signature_demande:
                 con.close()
                 if verbose:
@@ -281,7 +199,6 @@ def generate_stock(force: bool = False, verbose: bool = True) -> Dict[str, Any]:
         con.close()
         raise RuntimeError("Aucune donnée de vente : impossible de calibrer le stock.")
 
-    # Date d'observation = dernière facture réelle (cohérence avec le reste)
     ref = con.execute("SELECT max(date) FROM sales").fetchone()[0] or date.today()
     if not isinstance(ref, date):
         ref = date.today()
@@ -291,7 +208,6 @@ def generate_stock(force: bool = False, verbose: bool = True) -> Dict[str, Any]:
 
     lignes: List[tuple] = []
 
-    # 1. Génération globale (client = None)
     for p in produits_globaux:
         famille = _infer_famille(p["produit"], familles)
         if famille in FAMILLES_SANS_STOCK:
@@ -307,7 +223,6 @@ def generate_stock(force: bool = False, verbose: bool = True) -> Dict[str, Any]:
         point_commande = d_jour * L + ss
         niveau_cible = point_commande + d_jour * par["couverture"]
 
-        # Flux propre à ce produit : voir `_rng_pour`.
         r = _rng_pour(f"global|{p['produit']}")
         situation = r.choice(situations, p=poids)
         if situation == "sain":
@@ -318,13 +233,6 @@ def generate_stock(force: bool = False, verbose: bool = True) -> Dict[str, Any]:
             stock = r.uniform(0, point_commande * 0.2)
         else:
             stock = r.uniform(niveau_cible, niveau_cible * 1.9)
-        # Un produit tiré comme « sain », « à commander » ou « en surstock » a par
-        # DÉFINITION du stock. L'arrondi à l'entier ramenait pourtant à zéro toute
-        # valeur inférieure à 0,5 — cas fréquent des références à faible rotation,
-        # dont le point de commande vaut moins d'une unité. La simulation
-        # produisait ainsi 856 ruptures sur 1 892 références (45 %) là où son
-        # profil n'en prévoit que 8 %, et le briefing annonçait une pénurie
-        # généralisée qui n'existait que dans l'arrondi.
         stock = round(stock)
         stock = float(max(0.0, stock) if situation == "rupture" else max(1.0, stock))
 
@@ -347,14 +255,12 @@ def generate_stock(force: bool = False, verbose: bool = True) -> Dict[str, Any]:
             date_peremption, str(situation), True,
         ))
 
-    # 2. Génération par client (client = client_name)
     for pc in produits_clients:
         famille = _infer_famille(pc["produit"], familles)
         if famille in FAMILLES_SANS_STOCK:
             continue
         par = _family_params(famille)
 
-        # Quantité annuelle estimée pour CE client sur SES achats
         qte_an = pc["qte_totale"] / max(1, pc["n_annees"])
         d_jour = qte_an / 365.0
         if d_jour <= 0:
@@ -366,7 +272,6 @@ def generate_stock(force: bool = False, verbose: bool = True) -> Dict[str, Any]:
         point_commande = d_jour * L + ss
         niveau_cible = point_commande + d_jour * par["couverture"]
 
-        # Flux propre à ce couple client-produit : voir `_rng_pour`.
         r = _rng_pour(f"client|{pc['client']}|{pc['produit']}")
         situation = r.choice(situations, p=poids)
         if situation == "sain":
@@ -377,13 +282,6 @@ def generate_stock(force: bool = False, verbose: bool = True) -> Dict[str, Any]:
             stock = r.uniform(0, point_commande * 0.2)
         else:
             stock = r.uniform(niveau_cible, niveau_cible * 1.9)
-        # Un produit tiré comme « sain », « à commander » ou « en surstock » a par
-        # DÉFINITION du stock. L'arrondi à l'entier ramenait pourtant à zéro toute
-        # valeur inférieure à 0,5 — cas fréquent des références à faible rotation,
-        # dont le point de commande vaut moins d'une unité. La simulation
-        # produisait ainsi 856 ruptures sur 1 892 références (45 %) là où son
-        # profil n'en prévoit que 8 %, et le briefing annonçait une pénurie
-        # généralisée qui n'existait que dans l'arrondi.
         stock = round(stock)
         stock = float(max(0.0, stock) if situation == "rupture" else max(1.0, stock))
 
@@ -429,7 +327,6 @@ def generate_stock(force: bool = False, verbose: bool = True) -> Dict[str, Any]:
     con.executemany(
         "INSERT INTO stock_simule VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", lignes)
 
-    # Métadonnées de génération (traçabilité de la simulation)
     con.execute("DROP TABLE IF EXISTS stock_simule_meta")
     con.execute("""
         CREATE TABLE stock_simule_meta (
@@ -443,7 +340,7 @@ def generate_stock(force: bool = False, verbose: bool = True) -> Dict[str, Any]:
     """, [SIMULATION_SEED, len(lignes), ref,
           "politique (s,S) : s = d×L + z·σ·√L (z=1.65, service 95%) ; "
           "S = s + d×couverture ; calibrage sur la demande réelle 6 ans",
-          "DONNÉES SIMULÉES — l'ERP ne contient aucune donnée de stock. "
+          "DONNÉES SIMULÉES — aucun relevé de stock n'est disponible. "
           "Ces valeurs démontrent la chaîne de gestion, elles ne mesurent rien.",
           signature_demande])
 

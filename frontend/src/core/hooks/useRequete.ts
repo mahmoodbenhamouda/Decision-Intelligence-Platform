@@ -1,19 +1,5 @@
 "use client";
 
-/**
- * useRequete — brique commune des ViewModels qui chargent des données.
- *
- * Elle remplace le motif répété dans chaque panneau
- *     useEffect(() => { setLoading(true); fetch… }, [])
- * qui modifiait l'état de façon synchrone dans l'effet (rendus en cascade,
- * signalés par ESLint). Ici :
- *   · `chargement` est DÉDUIT : vrai tant que la réponse ne correspond pas à la
- *     clé courante — aucun setState synchrone ;
- *   · les données précédentes restent affichées pendant un rechargement ;
- *   · une réponse arrivée après un changement de clé est ignorée ;
- *   · `recharger()` relance la requête, `muter()` corrige localement les
- *     données après une action (mise à jour optimiste).
- */
 import { useCallback, useEffect, useEffectEvent, useState } from "react";
 
 export interface Requete<T> {

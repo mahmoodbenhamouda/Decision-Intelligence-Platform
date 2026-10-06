@@ -72,6 +72,8 @@ VUES: Dict[str, str] = {
     "client_product_demand": "SELECT * FROM mart_demande_client_produit",
     "client_margin": "SELECT * FROM mart_marge_client_mois",
     "margin_quality": "SELECT * FROM mart_qualite_marge",
+    "margin_category": "SELECT * FROM mart_marge_categorie_mois",
+    "margin_product": "SELECT * FROM mart_marge_produit",
 }
 
 #: Tables de l'ancien entrepôt remplacées par une vue ou devenues sans objet.

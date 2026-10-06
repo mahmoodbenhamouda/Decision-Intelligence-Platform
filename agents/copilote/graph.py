@@ -1,27 +1,4 @@
-"""
-agents/copilote/graph.py
-========================
-Orchestration du copilote FinBot, sur le modèle de la flotte (`agents/fleet/`) :
-un état partagé, des nœuds, un graphe LangGraph — et un repli séquentiel qui
-exécute exactement les mêmes nœuds si LangGraph n'est pas installé.
-
-    START ─> collecte ─> aiguillage ─┬─> documents ─┬───────────────> END
-                                     │              └─> redaction ─┬─> END
-                                     └────────────────> redaction ─┤
-                                                                   └─> repli ─> END
-
-* **collecte** exécute la chaîne d'outils du tableau de bord (indicateurs,
-  risque ML, prévision, anomalies, radar). C'est aussi, seule, la réponse de
-  `tableau_de_bord()`.
-* **aiguillage** détecte les thèmes et décide : base documentaire (question
-  préfixée « doc: », ou sans thème interne) ou données du périmètre.
-* **documents**, **redaction**, **repli** : trois sources de réponse, essayées
-  dans cet ordre ; la première qui répond termine le graphe. `via` dit
-  laquelle a répondu.
-
-Le périmètre client est déjà imposé par l'API (`api/services/perimetre.py`) ;
-le copilote le respecte dans chaque contexte qu'il construit.
-"""
+"""Orchestration du copilote FinBot, sur le modèle de la flotte (`agents/fleet/`) : un état…"""
 
 from __future__ import annotations
 
@@ -83,7 +60,6 @@ def _run_sequential(init: Dict[str, Any]) -> Dict[str, Any]:
 class Copilote:
     """Le copilote FinBot : tableau de bord commenté et questions en langage naturel."""
 
-    # Identité renvoyée avec le tableau de bord (`agent` dans la réponse de l'API).
     name = "Agent Finance"
     role = "superviseur agentique (routage déterministe + LLM hybride thématique)"
     version = "3.0"
@@ -121,5 +97,4 @@ class Copilote:
                 "meta": {**self.meta, "moteur": moteur}}
 
 
-#: Instance partagée, lue par l'API (`api/core/moteurs.py`).
 copilote = Copilote()

@@ -1,23 +1,8 @@
 "use client";
 
-/**
- * VisuelKit — briques visuelles partagées par les onglets Priorités, Devis &
- * marge et Stock.
- *
- * Principes (lisibles par un directeur ou un client, jamais par un ingénieur) :
- *   · un chiffre clé en grand, sa phrase d'explication en petit ;
- *   · une couleur de gravité ne porte JAMAIS le sens seule : elle est toujours
- *     accompagnée d'une icône et d'un libellé ;
- *   · les valeurs et les libellés restent dans les encres du thème, la couleur
- *     n'habille que la marque graphique ;
- *   · une seule teinte (le bleu de la marque) pour les grandeurs, du clair au
- *     foncé ; pas d'arc-en-ciel.
- */
-
 import type { ReactNode } from "react";
 import { AlertOctagon, AlertTriangle, CheckCircle2, Info } from "lucide-react";
 
-/* ── Encres et teintes ──────────────────────────────────────────────────── */
 export const INK = {
   primary: "#16204A",
   secondary: "#5A6A8C",
@@ -26,10 +11,8 @@ export const INK = {
   border: "rgba(26,35,72,0.09)",
 };
 
-/** Rampe séquentielle, une seule teinte (bleu de la marque), clair → foncé. */
 export const BLEU = ["#C9D6FA", "#8FAAF3", "#5580EE", "#2F5BEA", "#2342B8"];
 
-/** Palette de gravité réservée — toujours avec icône + libellé. */
 export const GRAVITE: Record<string, { couleur: string; fond: string; label: string; icone: ReactNode }> = {
   critique: { couleur: "#D03B3B", fond: "rgba(208,59,59,0.10)", label: "Urgent", icone: <AlertOctagon size={13} /> },
   haute: { couleur: "#EC835A", fond: "rgba(236,131,90,0.13)", label: "Prioritaire", icone: <AlertTriangle size={13} /> },
@@ -37,7 +20,6 @@ export const GRAVITE: Record<string, { couleur: string; fond: string; label: str
   faible: { couleur: "#0CA30C", fond: "rgba(12,163,12,0.10)", label: "Sous contrôle", icone: <CheckCircle2 size={13} /> },
 };
 
-/* ── Formats ────────────────────────────────────────────────────────────── */
 export function fMoney(v: number | null | undefined): string {
   if (v == null || Number.isNaN(v)) return "—";
   const a = Math.abs(v);
@@ -56,7 +38,6 @@ export function tronquer(t: string | undefined | null, n = 26): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
-/** Style commun des infobulles de graphe. */
 export const INFOBULLE = {
   borderRadius: 10,
   border: "1px solid rgba(26,35,72,0.12)",
@@ -67,7 +48,6 @@ export const INFOBULLE = {
   padding: "8px 11px",
 } as const;
 
-/* ── Composants ─────────────────────────────────────────────────────────── */
 export function BadgeGravite({ severite }: { severite?: string }) {
   const g = GRAVITE[severite || "moyenne"] || GRAVITE.moyenne;
   return (
@@ -125,7 +105,6 @@ export function Carte({ titre, sousTitre, icone, children, span = 12, droite }: 
   );
 }
 
-/** Légende explicite : chaque couleur est nommée, jamais devinée. */
 export function Legende({ items }: { items: { couleur: string; label: string }[] }) {
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginTop: 8 }}>

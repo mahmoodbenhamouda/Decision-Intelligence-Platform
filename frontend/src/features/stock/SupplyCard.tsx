@@ -1,6 +1,7 @@
 "use client";
 
 import { PackageSearch, AlertTriangle, TrendingUp, Factory } from "lucide-react";
+import PanneauMasque from "@/shared/ui/PanneauMasque";
 import { useApprovisionnement } from "./useApprovisionnement";
 
 const DEP_COLOR: Record<string, string> = {
@@ -8,21 +9,26 @@ const DEP_COLOR: Record<string, string> = {
 };
 
 export default function SupplyCard() {
-  const { data, loading, error } = useApprovisionnement();
+  const { data, loading, error, masque } = useApprovisionnement();
+  if (masque) return <PanneauMasque motif={masque} />;
 
   const dep = (data?.dependance_fournisseur || "").toLowerCase();
   const depColor = DEP_COLOR[dep] || "#64748b";
   const top = data?.fournisseurs_top || [];
   const fc = data?.demande_prevision || [];
+  // Une prévision dont l'erreur dépasse le seuil reste affichée, mais elle ne
+  // se lit pas comme les autres : elle situe, elle ne budgète pas.
+  const fiable = data?.demande_exploitable !== false;
+  const perimetre = data?.perimetre;
 
   return (
     <div style={{ gridColumn: "span 12", padding: 20, borderRadius: 16, background: "var(--surface,#fff)", border: "1px solid var(--border)", boxShadow: "var(--shadow-sm)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800, fontSize: "1rem", color: "var(--text-primary)", marginBottom: 4 }}>
-        <PackageSearch size={18} /> Demande & Approvisionnement
+        <PackageSearch size={18} /> Demande &amp; fournisseurs
       </div>
       <div style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginBottom: 16 }}>
-        Prévision de demande (volume d&apos;articles) et risque de dépendance fournisseur.
-        <em> Analyse de la demande — pas de gestion de stock par référence (données stock ERP indisponibles).</em>
+        Volume d&apos;articles attendu sur les 3 prochains mois et concentration de vos achats
+        {perimetre && perimetre.n_clients > 0 && <> — {perimetre.libelle}</>}.
       </div>
 
       {loading && <p style={{ color: "var(--text-muted)" }}>Calcul en cours…</p>}
@@ -30,7 +36,6 @@ export default function SupplyCard() {
 
       {data && !error && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-          {/* Colonne fournisseurs */}
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
               <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: "0.72rem", fontWeight: 800, padding: "4px 10px", borderRadius: 20, color: "#fff", background: depColor }}>
@@ -61,7 +66,6 @@ export default function SupplyCard() {
             </p>
           </div>
 
-          {/* Colonne demande */}
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
               <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: "0.78rem", fontWeight: 700, color: "var(--text-primary)" }}>
@@ -69,26 +73,54 @@ export default function SupplyCard() {
               </span>
 
             </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              {fc.map((p, i) => (
-                <div key={i} style={{ flex: 1, textAlign: "center", padding: "12px 8px", borderRadius: 12, background: "linear-gradient(160deg, rgba(47,91,234,0.08), rgba(20,194,214,0.06))", border: "1px solid var(--border)" }}>
-                  <div style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>{p.period}</div>
-                  <div style={{ fontSize: "1.1rem", fontWeight: 800, color: "var(--text-primary)" }}>{Math.round(p.qte).toLocaleString("fr-FR")}</div>
-                  {/* Fourchette réellement constatée. Un chiffre unique laisse
-                      croire à une précision que la série ne permet pas. */}
-                  {p.bas != null && p.haut != null && (
-                    <div style={{ fontSize: "0.66rem", color: "var(--text-muted)", marginTop: 2 }}>
-                      {Math.round(p.bas).toLocaleString("fr-FR")} à {Math.round(p.haut).toLocaleString("fr-FR")}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-            <p style={{ marginTop: 10, fontSize: "0.72rem", color: "var(--text-muted)" }}>
-              Estimation fondée sur vos volumes des mois précédents. La marge indiquée
-              correspond à l&apos;écart moyen constaté entre nos prévisions passées et les
-              ventes réelles.
-            </p>
+            {fc.length ? (
+              <div style={{ display: "flex", gap: 10 }}>
+                {fc.map((p, i) => (
+                  <div key={i} style={{
+                    flex: 1, textAlign: "center", padding: "12px 8px", borderRadius: 12,
+                    background: fiable
+                      ? "linear-gradient(160deg, rgba(47,91,234,0.08), rgba(20,194,214,0.06))"
+                      : "rgba(26,35,72,0.035)",
+                    border: "1px solid var(--border)",
+                  }}>
+                    <div style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>{p.period}</div>
+                    <div style={{
+                      fontSize: "1.1rem", fontWeight: 800,
+                      color: fiable ? "var(--text-primary)" : "var(--text-muted)",
+                    }}>{Math.round(p.qte).toLocaleString("fr-FR")}</div>
+                    {p.bas != null && p.haut != null && (
+                      <div style={{ fontSize: "0.66rem", color: "var(--text-muted)", marginTop: 2 }}>
+                        {Math.round(p.bas).toLocaleString("fr-FR")} à {Math.round(p.haut).toLocaleString("fr-FR")}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{ fontSize: "0.76rem", color: "var(--text-muted)" }}>
+                {data.demande_motif || "Prévision indisponible sur ce périmètre."}
+              </p>
+            )}
+
+            {fc.length > 0 && (fiable ? (
+              <p style={{ marginTop: 10, fontSize: "0.72rem", color: "var(--text-muted)" }}>
+                Estimation fondée sur vos volumes des mois précédents. La fourchette
+                correspond à l&apos;écart constaté entre les prévisions passées et les
+                ventes réelles
+                {data.demande_mape != null && <> — {Math.round(data.demande_mape)} % en moyenne</>}.
+              </p>
+            ) : (
+              <div style={{
+                marginTop: 10, padding: "10px 12px", borderRadius: 10,
+                background: "rgba(224,161,15,0.08)", borderWidth: 1, borderStyle: "solid",
+                borderColor: "rgba(224,161,15,0.25)",
+                fontSize: "0.73rem", color: "var(--text-secondary,#5A6A8C)", lineHeight: 1.55,
+                display: "flex", gap: 8,
+              }}>
+                <AlertTriangle size={15} style={{ color: "#E0A10F", flexShrink: 0, marginTop: 2 }} />
+                <span><b>Chiffre à ne pas budgéter.</b> {data.demande_reserve}</span>
+              </div>
+            ))}
           </div>
         </div>
       )}

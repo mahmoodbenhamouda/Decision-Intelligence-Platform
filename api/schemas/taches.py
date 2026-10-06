@@ -1,8 +1,4 @@
-"""
-api/schemas/taches.py
-=====================
-Boucle d'action : confier une tâche, la faire avancer.
-"""
+"""Boucle d'action : confier une tâche, la faire avancer."""
 
 from __future__ import annotations
 
@@ -34,3 +30,10 @@ class TacheUpdate(BaseModel):
     resultat_montant_dt: Optional[float] = None
     resultat_commentaire: Optional[str] = Field(default=None, max_length=2000)
     commentaire: Optional[str] = Field(default=None, max_length=500)
+
+
+class DelegationReglages(BaseModel):
+    """Réglages de la délégation autonome (directeur)."""
+    active: Optional[bool] = None
+    heure: Optional[str] = Field(default=None, max_length=5,
+        description="Heure du passage quotidien, HH:MM (heure du serveur).")

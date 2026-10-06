@@ -1,15 +1,4 @@
-"""
-agents/copilote/noeuds.py
-=========================
-Les nœuds du graphe du copilote. Chacun lit l'état, fait UNE chose, et renvoie
-ce qu'il ajoute à l'état (dont ses lignes de trace).
-
-    collecte      intention, indicateurs, risque ML, prévision, anomalies, radar
-    aiguillage    thèmes de la question ; base documentaire ou données ?
-    documents     réponse tirée de la base documentaire (RAG)
-    redaction     réponse du modèle de langage, montants contrôlés
-    repli         réponse déterministe par thème
-"""
+"""Les nœuds du graphe du copilote."""
 
 from __future__ import annotations
 
@@ -30,7 +19,6 @@ def _etape(tool: str, label: str, status: str = "ok", t0: float | None = None) -
             "ms": int((time.time() - t0) * 1000) if t0 else 0}
 
 
-# ── Collecte : la chaîne d'outils du tableau de bord ────────────────────────
 def collecte(etat: EtatCopilote) -> Dict[str, Any]:
     filters = etat.get("filters") or {}
     trace: List[Dict[str, Any]] = []
@@ -38,17 +26,14 @@ def collecte(etat: EtatCopilote) -> Dict[str, Any]:
     mode, scope = classer(filters, etat.get("question"))
     trace.append(_etape("router", f"Intention : {mode} · périmètre {scope}"))
 
-    # Outil KPIs (toujours requis)
     t0 = time.time()
     kpis = outils.indicateurs(filters)
-    trace.append(_etape("sql_kpis", "Outil SQL — KPIs calculés sur l'entrepôt DuckDB", t0=t0))
+    trace.append(_etape("sql_kpis", "Indicateurs calculés sur vos factures", t0=t0))
 
-    # DÉCISION : périmètre client → comparaisons inter-clients désactivées
     if scope == "client":
         trace.append(_etape("router", "Décision : périmètre client → analyses inter-clients "
                                       "désactivées", status="info"))
 
-    # DÉCISION : scoring ML seulement si le modèle est entraîné
     if kpis.get("risk_model_active"):
         trace.append(_etape("ml_risque", f"Outil ML — risque crédit "
                                          f"({kpis.get('nb_clients_risque_predit')} clients à risque élevé)"))
@@ -56,7 +41,6 @@ def collecte(etat: EtatCopilote) -> Dict[str, Any]:
         trace.append(_etape("ml_risque", "Décision : modèle de risque non entraîné → étape ignorée",
                             status="skip"))
 
-    # DÉCISION : prévision seulement si l'historique est suffisant (>= 3 mois)
     monthly = kpis.get("monthly_sales") or []
     if len(monthly) >= 3:
         t0 = time.time()
@@ -69,9 +53,6 @@ def collecte(etat: EtatCopilote) -> Dict[str, Any]:
 
     trace.append(_etape("anomalies", f"Outil Anomalies — {kpis.get('anomalies_detectees', 0)} détectée(s)"))
 
-    # RADAR FINANCIER — alimenté par les SEULES données internes. La veille
-    # externe (appels d'offres, taux de change, budget santé) a été retirée :
-    # sa qualité ne pouvait pas être auditée comme celle de l'ERP.
     try:
         radar = outils.radar(filters)
         kpis["finance_radar"] = radar
@@ -85,10 +66,8 @@ def collecte(etat: EtatCopilote) -> Dict[str, Any]:
     return {"mode": mode, "scope": scope, "kpis": kpis, "trace": trace}
 
 
-# ── Aiguillage ──────────────────────────────────────────────────────────────
 def aiguillage(etat: EtatCopilote) -> Dict[str, Any]:
-    """Base documentaire si la question commence par « doc: » (échappatoire
-    explicite) ou ne relève d'aucun thème des données internes."""
+    """Base documentaire si la question commence par « doc: » (échappatoire explicite) ou ne relève…"""
     q = etat["question"]
     force, requete = requete_documentaire(q)
     documentaire = force or not has_internal_theme(q)
@@ -103,7 +82,6 @@ def apres_aiguillage(etat: EtatCopilote) -> str:
     return "documents" if etat.get("documentaire") else "redaction"
 
 
-# ── Réponses ────────────────────────────────────────────────────────────────
 def documents(etat: EtatCopilote) -> Dict[str, Any]:
     t0 = time.time()
     texte = reponse_documentaire(etat["requete_documentaire"])

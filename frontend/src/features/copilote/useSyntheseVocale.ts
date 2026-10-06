@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * ViewModel — la voix de FinBot : synthèse vocale française et synchro
- * labiale de l'avatar (visème par caractère, diffusé à la mascotte flottante
- * par des événements `finbot:avatar-*`). Sans son, la bouche bouge quand même.
- */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { visemeForChar, type AvatarHandle } from "@/shared/avatar/FinBotAvatar";
 import { pickFrenchVoice } from "./voix";
@@ -14,7 +9,6 @@ export function useSyntheseVocale(voiceOn: boolean) {
   const avatarRef = useRef<AvatarHandle>(null);
   const lipSyncRaf = useRef<number | null>(null);
 
-  // Préchargement des voix (asynchrone sur Chrome : "voiceschanged")
   useEffect(() => {
     try {
       window.speechSynthesis?.getVoices();
@@ -22,13 +16,11 @@ export function useSyntheseVocale(voiceOn: boolean) {
     } catch { }
   }, []);
 
-  // Nettoyage voix + synchro labiale
   useEffect(() => () => {
     try { window.speechSynthesis?.cancel(); } catch { }
     if (lipSyncRaf.current != null) cancelAnimationFrame(lipSyncRaf.current);
   }, []);
 
-  /* ── Synthèse vocale + synchro labiale ────────────────────────────────── */
   const stopLipSync = useCallback(() => {
     if (lipSyncRaf.current != null) {
       cancelAnimationFrame(lipSyncRaf.current);

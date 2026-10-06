@@ -1,15 +1,4 @@
-"""
-tests/test_payment_scenario.py
-==============================
-Tests du module de scénarios d'encaissement.
-
-Ce module ne prédit rien : il calcule l'effet d'hypothèses explicites. Les
-tests vérifient donc la COHÉRENCE ARITHMÉTIQUE et la présence des garde-fous
-qui empêchent de présenter une hypothèse comme un fait constaté.
-
-Exécution :
-    python -m pytest tests/test_payment_scenario.py -v
-"""
+"""Tests du module de scénarios d'encaissement."""
 
 import os
 import sys
@@ -28,11 +17,9 @@ besoin_entrepot = pytest.mark.skipif(not os.path.exists(STORE),
                                      reason="entrepôt DuckDB absent")
 
 
-# ── Formule du DSO simulé ───────────────────────────────────────────────────
 def test_dso_simule_formule():
     """DSO simulé = délai accordé + retard × part concernée."""
     sc = PaymentScenario("Test", retard_moyen_jours=30, part_en_retard_pct=20.0)
-    # 44 + 30 × 0.20 = 50
     assert sc.dso_reel_estime(44.0) == pytest.approx(50.0)
 
 
@@ -55,7 +42,6 @@ def test_scenarios_par_defaut_ordonnes():
     assert o <= c < p
 
 
-# ── Garde-fous d'honnêteté ──────────────────────────────────────────────────
 def test_avertissement_explicite():
     """L'avertissement doit dire que ce n'est PAS une prédiction."""
     a = AVERTISSEMENT.upper()
@@ -79,14 +65,12 @@ def test_sortie_contient_avertissement_et_champs_manquants():
         assert s["hypothese"], "chaque scénario expose son hypothèse"
 
 
-# ── Cohérence sur données réelles ───────────────────────────────────────────
 @besoin_entrepot
 def test_calcul_sur_donnees_reelles():
     res = compute_scenarios({})
     assert not res.get("error")
     assert len(res["scenarios"]) == 3
     assert res["dso_accorde_jours"] > 0
-    # Le DSO simulé ne peut jamais être inférieur au délai accordé
     for s in res["scenarios"]:
         assert s["dso_simule_jours"] >= s["dso_accorde_jours"]
         assert s["encours_estime_dt"] >= 0
@@ -123,7 +107,7 @@ def test_scenario_personnalise():
     assert len(res["scenarios"]) == 1
     s = res["scenarios"][0]
     assert s["scenario"] == "Sur mesure"
-    assert s["surcout_dso_jours"] == pytest.approx(7.5, abs=0.1)   # 15 × 0.5
+    assert s["surcout_dso_jours"] == pytest.approx(7.5, abs=0.1)
 
 
 @besoin_entrepot

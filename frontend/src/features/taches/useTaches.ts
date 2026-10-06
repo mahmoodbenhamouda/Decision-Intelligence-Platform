@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * ViewModel — onglet « Suivi des actions ».
- *
- * Charge les tâches (filtrables par employé pour le directeur), l'impact
- * mesuré et l'état de la boucle de retour ; prépare les colonnes du tableau de
- * travail et les séries des deux graphes ; expose `patch` pour faire avancer
- * une tâche puis recharger.
- */
 import { useMemo, useState } from "react";
 import { useRequete } from "@/core/hooks/useRequete";
 import { BLEU, GRAVITE } from "@/shared/ui/VisuelKit";

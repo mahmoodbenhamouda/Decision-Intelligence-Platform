@@ -1,23 +1,10 @@
-"""
-api/core/moteurs.py
-===================
-Chargement des deux moteurs dont dépendent les services, sans jamais empêcher
-l'API de démarrer.
-
-* le moteur KPI DuckDB (`ml_engine.analytics.kpi_engine`) ;
-* le copilote FinBot, chef d'orchestre à outils (`agents.copilote`).
-
-Si l'un d'eux ne se charge pas, l'API démarre quand même : les services
-basculent sur leur repli (moteur direct, puis calcul pandas), et
-`GET /api/health` expose la cause. Les services lisent ces attributs au moment
-de l'appel (`moteurs.copilote`), jamais par copie à l'import.
-"""
+"""Chargement des deux moteurs dont dépendent les services, sans jamais empêcher l'API de démarrer."""
 
 from __future__ import annotations
 
 from api.core.demarrage import journal
 
-journal("chargement du moteur KPI (DuckDB)…")
+journal("chargement du moteur d'indicateurs…")
 try:
     from ml_engine.analytics import kpi_engine
     MOTEUR_OK = True

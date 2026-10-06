@@ -1,17 +1,4 @@
-"""
-api/auth/database.py
-====================
-Connexion SQLAlchemy à la base d'authentification.
-
-- PRODUCTION : PostgreSQL, via la variable d'environnement `AUTH_DATABASE_URL`
-  (ex. `postgresql+psycopg2://finance:***@localhost:5432/finance_auth`).
-- DÉMO / TESTS : repli automatique sur SQLite (`output/auth.db`) si l'URL n'est
-  pas définie — le schéma est identique (SQLAlchemy portable), la migration vers
-  PostgreSQL se fait en changeant uniquement l'URL.
-
-La base d'authentification est volontairement SÉPARÉE de l'entrepôt analytique
-DuckDB : les identités/rôles d'un côté, les données métier de l'autre.
-"""
+"""Connexion SQLAlchemy à la base d'authentification."""
 
 from __future__ import annotations
 
@@ -26,23 +13,47 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 logger = logging.getLogger("auth.db")
 
 _BASE_DIR = Path(__file__).resolve().parents[2]
-_DEFAULT_SQLITE = f"sqlite:///{(_BASE_DIR / 'output' / 'auth.db').as_posix()}"
+
+_SANS_URL = (
+    "AUTH_DATABASE_URL n'est pas défini. Cette application exige PostgreSQL ; "
+    "il n'existe aucun repli.\n"
+    "  Exemple : AUTH_DATABASE_URL="
+    "postgresql+psycopg2://finance:MOTDEPASSE@localhost:5432/finance_auth\n"
+    "  Renseignez-le dans le fichier .env (voir .env.example)."
+)
+
+_MAUVAIS_MOTEUR = (
+    "AUTH_DATABASE_URL vaut « {url} », qui n'est pas une URL PostgreSQL.\n"
+    "  Seul PostgreSQL est supporté : les types, les contraintes et le "
+    "comportement transactionnel diffèrent d'un moteur à l'autre, et une "
+    "application validée sur un autre moteur n'est pas validée.\n"
+    "  Attendu : postgresql://… ou postgresql+psycopg2://…"
+)
+
+
+class ConfigurationBaseInvalide(RuntimeError):
+    """Configuration de base de données absente ou incompatible."""
 
 
 def _database_url() -> str:
-    # Charge .env (utile quand on lance `python -m api.auth.seed` directement)
+    """URL PostgreSQL de la base d'authentification, ou erreur explicite.
+
+    Aucun repli SQLite. L'ancien comportement démarrait sur un fichier local
+    quand la variable manquait : l'application semblait fonctionner, sur une base
+    vide et un moteur différent de celui de production.
+    """
     try:
         from dotenv import load_dotenv
         load_dotenv(override=False)
     except Exception:  # pragma: no cover
         pass
+
     url = os.environ.get("AUTH_DATABASE_URL", "").strip()
-    if url:
-        return url
-    logger.warning(
-        "AUTH_DATABASE_URL non défini — repli SQLite (%s). "
-        "En production, utilisez PostgreSQL.", _DEFAULT_SQLITE)
-    return _DEFAULT_SQLITE
+    if not url:
+        raise ConfigurationBaseInvalide(_SANS_URL)
+    if not url.startswith("postgresql"):
+        raise ConfigurationBaseInvalide(_MAUVAIS_MOTEUR.format(url=url))
+    return url
 
 
 class Base(DeclarativeBase):
@@ -58,23 +69,15 @@ def get_engine():
     global _engine, _SessionLocal
     if _engine is None:
         url = _database_url()
-        kwargs = {"pool_pre_ping": True}
-        if url.startswith("sqlite"):
-            (_BASE_DIR / "output").mkdir(parents=True, exist_ok=True)
-            kwargs["connect_args"] = {"check_same_thread": False}
-        elif url.startswith("postgresql"):
-            # Échec RAPIDE si le serveur PostgreSQL n'est pas joignable
-            # (sinon la connexion TCP peut bloquer le démarrage sans message).
-            kwargs["connect_args"] = {"connect_timeout": 4}
-        _engine = create_engine(url, **kwargs)
-        _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
+        _engine = create_engine(
+            url, pool_pre_ping=True, connect_args={"connect_timeout": 4})
+        _SessionLocal = sessionmaker(bind=_engine, autoflush=False,
+                                     expire_on_commit=False)
     return _engine
 
 
 def init_db() -> None:
-    """Crée les tables si absentes (idempotent) + micro-migration additive :
-    les colonnes ajoutées aux modèles (ex. `full_name`, `phone`) sont créées
-    par ALTER TABLE sur une base existante (SQLite et PostgreSQL)."""
+    """Crée les tables si absentes (idempotent) + micro-migration additive : les colonnes ajoutées aux…"""
     from . import models  # noqa: F401 — enregistre les modèles
     engine = get_engine()
     Base.metadata.create_all(engine)
@@ -114,7 +117,13 @@ def get_db() -> Iterator[Session]:
 
 
 def reset_for_tests(url: str) -> None:
-    """Ré-initialise le moteur sur une URL donnée (utilisé par la suite de tests)."""
+    """Ré-initialise le moteur sur une URL PostgreSQL donnée.
+
+    Refuse toute URL non PostgreSQL, y compris depuis les tests : des tests qui
+    passent sur un autre moteur ne disent rien du moteur réellement servi.
+    """
+    if not url.startswith("postgresql"):
+        raise ConfigurationBaseInvalide(_MAUVAIS_MOTEUR.format(url=url))
     global _engine, _SessionLocal
     if _engine is not None:
         _engine.dispose()
@@ -122,3 +131,14 @@ def reset_for_tests(url: str) -> None:
     _engine = None
     _SessionLocal = None
     init_db()
+
+
+def verifier_connexion() -> None:
+    """Ouvre une connexion et échoue bruyamment si PostgreSQL est injoignable.
+
+    Appelée au démarrage : une application qui annonce « startup complete » puis
+    renvoie 500 au premier login n'a pas démarré, elle a différé son échec.
+    """
+    from sqlalchemy import text
+    with get_engine().connect() as con:
+        con.execute(text("SELECT 1"))

@@ -1,20 +1,4 @@
-"""
-tests/test_ocr_import.py
-========================
-Extraction de facture et import en base.
-
-Ces tests partent d'un cas RÉEL qui échouait : la facture Forevermo
-F-2026-00003 (10 000 HT / 1 900 TVA / 11 900 TTC / 1 timbre / 11 901 net) était
-lue avec un HT de 6 300 et une TVA de 6 300 — la même valeur pour les deux
-champs — et sans tiers.
-
-Cause : l'en-tête de tableau « DÉSIGNATION | QTÉ | TVA % | P.U. HT | TOTAL HT »
-contient à la fois « TVA » et « HT ». Les deux recherches y répondaient et
-prenaient le montant de la première ligne d'article.
-
-Exécution :
-    python -m pytest tests/test_ocr_import.py -v
-"""
+"""Extraction de facture et import en base."""
 
 import os
 import sys
@@ -26,7 +10,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ml_engine.ocr.importer import _norm, _similarite, rapprocher_client
 from ml_engine.ocr.invoice import parse_invoice
 
-# Texte OCR de la facture Forevermo, mise en page à colonnes conservée.
 FACTURE_FOREVERMO = """FOREVERMO GROUP
 Espace Tunis BH3
 1073 Montplaisir
@@ -57,7 +40,6 @@ def facture():
     return parse_invoice(FACTURE_FOREVERMO)
 
 
-# ── 1. Les champs de la facture réelle ─────────────────────────────────────
 @pytest.mark.parametrize("champ,attendu", [
     ("numero", "F-2026-00003"),
     ("tiers", "ling and consulting"),
@@ -78,8 +60,7 @@ def test_champs_de_la_facture_reelle(facture, champ, attendu):
 
 
 def test_ht_et_tva_ne_sont_jamais_identiques(facture):
-    """Le défaut d'origine : un même nombre alimentait les deux champs.
-    Une TVA égale au HT supposerait un taux de 100 %."""
+    """Le défaut d'origine : un même nombre alimentait les deux champs."""
     assert facture.montant_ht != facture.montant_tva
 
 
@@ -94,16 +75,13 @@ def test_taux_de_tva_coherent_avec_les_montants(facture):
 
 
 def test_net_a_payer_distinct_du_ttc(facture):
-    """En Tunisie, net à payer = TTC + timbre fiscal. Les confondre décalait le
-    TTC d'un dinar et faisait échouer le contrôle HT + TVA = TTC."""
+    """En Tunisie, net à payer = TTC + timbre fiscal."""
     assert facture.net_a_payer == pytest.approx(facture.montant_ttc + facture.timbre_fiscal, abs=0.01)
     assert facture.net_a_payer != facture.montant_ttc
 
 
-# ── 2. L'en-tête de tableau ne doit plus être pris pour un total ───────────
 def test_entete_de_tableau_ignore():
-    """Un document réduit à son en-tête et une ligne d'article ne doit produire
-    ni HT ni TVA : il n'y a aucun total dans ce texte."""
+    """Un document réduit à son en-tête et une ligne d'article ne doit produire ni HT ni TVA : il n'y a…"""
     inv = parse_invoice(
         "DESIGNATION   QTE   TVA %   P.U. HT   TOTAL HT\n"
         "Prestation   1.000   19%   6 500,000   6 500,000\n")
@@ -123,7 +101,6 @@ def test_ttc_deduit_du_net_si_aucun_total_ttc():
     assert inv.net_a_payer == pytest.approx(1191.0, abs=0.01)
 
 
-# ── 3. Normalisation et rapprochement du tiers ────────────────────────────
 @pytest.mark.parametrize("a,b", [
     ("Ling & Consulting S.A.R.L.", "LING AND CONSULTING SARL"),
     ("Société Delice", "DELICE"),
@@ -148,10 +125,8 @@ def test_tiers_vide_ne_cree_pas_de_client():
     assert rapprocher_client("")["statut"] == "inconnu"
 
 
-# ── 4. Séparation ERP / OCR ───────────────────────────────────────────────
 def test_les_imports_ne_touchent_pas_la_table_sales():
-    """Garde-fou d'architecture : `sales` est l'export ERP, la seule source
-    vérifiable. Un montant lu à 70 % de confiance n'y entre jamais."""
+    """Garde-fou d'architecture : `sales` est l'export ERP, la seule source vérifiable."""
     source = (open(os.path.join(os.path.dirname(__file__), "..", "ml_engine",
                                 "ocr", "importer.py"), encoding="utf-8").read())
     assert "INSERT INTO sales" not in source

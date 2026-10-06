@@ -1,21 +1,15 @@
 "use client";
 
-/**
- * ViewModel — onglet « Stock ».
- *
- * Charge le stock réel (éventuellement filtré sur un client) et prépare ce que
- * les graphes affichent : ruptures classées par budget, répartition par
- * urgence, capital immobilisé, pertes probables, produits en fin de vie. La vue
- * ne fait plus aucun calcul.
- */
 import { useMemo } from "react";
+import { cleFiltres, useFiltresActifs } from "@/core/filtres/contexteFiltres";
 import { useRequete } from "@/core/hooks/useRequete";
 import { tronquer } from "@/shared/ui/VisuelKit";
 import { URGENCE } from "./stock.constantes";
 import { chargerStock } from "./stock.service";
 
-export function useStock(selectedClient?: string) {
-  const r = useRequete(() => chargerStock(selectedClient), selectedClient ?? "");
+export function useStock() {
+  const filtres = useFiltresActifs();
+  const r = useRequete(() => chargerStock(filtres), cleFiltres(filtres));
   const data = r.donnees ?? null;
   const flux = data?.flux_reel;
 

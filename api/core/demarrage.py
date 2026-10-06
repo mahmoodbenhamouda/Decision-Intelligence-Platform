@@ -1,17 +1,4 @@
-"""
-api/core/demarrage.py
-=====================
-Journal de démarrage, affiché UNE SEULE FOIS, et contrôle des modèles.
-
-Le module principal est chargé plusieurs fois : `python api/main.py` l'exécute
-comme `__main__`, puis `uvicorn.run("api.main:app")` le RÉIMPORTE ; en mode
-reload, un processus superviseur et un worker le chargent chacun. Sans
-garde-fou, le journal s'affiche 2 à 4 fois. La marque passe par
-l'environnement, partagé entre le réimport et les processus enfants.
-
-Ce module n'importe rien de lourd : il doit pouvoir écrire avant le chargement
-des librairies, qui prend 30 à 60 s au premier lancement.
-"""
+"""Journal de démarrage, affiché UNE SEULE FOIS, et contrôle des modèles."""
 
 from __future__ import annotations
 
@@ -29,9 +16,7 @@ def journal(message: str) -> None:
 
 
 def verifier_modeles(racine: Path) -> None:
-    """Alerte si un modèle a été entraîné avec une AUTRE version de
-    scikit-learn : le rechargement peut alors produire des résultats invalides.
-    Silencieux si tout est conforme."""
+    """Alerte si un modèle a été entraîné avec une AUTRE version de scikit-learn : le rechargement peut…"""
     try:
         import warnings
         import joblib

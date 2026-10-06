@@ -1,19 +1,4 @@
-"""
-tests/test_copilot_stock_client.py
-==================================
-Deux défauts constatés en usage réel sur la question
-« top 5 clients qui n'ont pas de risque sur le stock » :
-
-1. Le copilote répondait « donnée non disponible » alors que chaque ligne de
-   stock porte un client — l'information existait, rien ne l'agrégeait.
-2. Il citait « exposition secteur public 30 396 136 DT », un montant qui ne
-   correspond à AUCUN indicateur (exposition récente réelle : 11,2 M DT).
-
-Ces tests verrouillent les deux corrections.
-
-Exécution :
-    python -m pytest tests/test_copilot_stock_client.py -v
-"""
+"""Deux défauts constatés en usage réel sur la question « top 5 clients qui n'ont pas de risque sur…"""
 
 import os
 import sys
@@ -31,7 +16,6 @@ besoin_stock = pytest.mark.skipif(
     reason="stock non généré — lancer `python -m ml_engine.stock.generator`")
 
 
-# ── 1. Routage de la question ──────────────────────────────────────────────
 @pytest.mark.parametrize("question", [
     "parle moi des top 5 client qui n'ont pas de rique sur le stock",
     "top 5 clients sans risque sur le stock",
@@ -40,10 +24,7 @@ besoin_stock = pytest.mark.skipif(
     "quels sont mes principaux clients en rupture de stock ?",
 ])
 def test_question_client_et_stock_route_vers_le_bon_theme(question):
-    """Une question qui classe des CLIENTS et parle de STOCK porte sur le
-    croisement des deux. Sans ce thème, elle tombait sur `palmares` (via
-    « top 5 ») ou `approvisionnement` (via « stock »), et la réponse parlait
-    de chiffre d'affaires ou de fournisseurs."""
+    """Une question qui classe des CLIENTS et parle de STOCK porte sur le croisement des deux."""
     assert "risque_stock_client" in detect_theme(question)
 
 
@@ -53,12 +34,10 @@ def test_question_client_et_stock_route_vers_le_bon_theme(question):
     "quels réactifs risquent de périmer ?",
 ])
 def test_pas_de_declenchement_abusif(question):
-    """Le thème croisé ne doit pas absorber les questions qui ne portent que
-    sur les clients, que sur les fournisseurs, ou que sur les produits."""
+    """Le thème croisé ne doit pas absorber les questions qui ne portent que sur les clients, que sur…"""
     assert "risque_stock_client" not in detect_theme(question)
 
 
-# ── 2. Agrégation du stock par client ──────────────────────────────────────
 @besoin_stock
 def test_agregation_par_client_est_exploitable():
     r = classer_clients_par_risque(limit=5)
@@ -92,8 +71,7 @@ def test_comptages_coherents_par_client():
 
 @besoin_stock
 def test_seuil_de_references_ecarte_les_clients_non_significatifs():
-    """Un client à une seule référence saine n'est pas un « client sans
-    risque » : c'est un client sans données."""
+    """Un client à une seule référence saine n'est pas un « client sans risque » : c'est un client sans…"""
     assert all(c["n_references"] >= 8
                for c in classer_clients_par_risque(limit=5, min_references=8)["top_par_valeur"])
 
@@ -124,9 +102,7 @@ def test_provenance_du_stock_reste_signalee():
 
 @besoin_stock
 def test_code_client_sans_libelle_est_marque_comme_tel():
-    """Certains comptes n'ont aucun libellé dans l'ERP : le code est alors leur
-    seul identifiant. L'affichage doit le dire au lieu de laisser croire à une
-    donnée manquante."""
+    """Certains comptes n'ont aucun libellé dans l'ERP : le code est alors leur seul identifiant."""
     tous = (classer_clients_par_risque(limit=50)["top_par_valeur"]
             + classer_clients_par_risque(limit=50)["clients_sans_risque"])
     for c in tous:
@@ -135,7 +111,6 @@ def test_code_client_sans_libelle_est_marque_comme_tel():
             assert c["client"] == c["code"]
 
 
-# ── 3. Traçabilité des montants cités ──────────────────────────────────────
 def test_montant_fabrique_est_detecte():
     """Le cas réel : 30 396 136 DT ne figure nulle part dans le contexte."""
     ctx = "Exposition récente >60j : 11.22 M DT\ndont critique : 2.83 M DT"

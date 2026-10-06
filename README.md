@@ -7,20 +7,24 @@ un système de multi-agents IA, une architecture Data Warehouse robuste. Passer 
 pip install -r requirements.txt
 cp .env.example .env              # renseigner JWT_SECRET_KEY (et AUTH_DATABASE_URL pour PostgreSQL)
 python -m etl.construire          # construit l'entrepôt de données (≈ 6 s, automatique ensuite)
-python -m api.auth.seed           # crée directeur@overlyne.tn + comptes clients (codes ERP réels)
+python -m api.auth.seed           # crée le directeur et les trois comptes employés
 python api/main.py                # API :9000
 cd frontend && npm install && npm run dev   # UI :4000 → écran /login
 ```
 
-Rôles : `directeur` (vue globale), `employe` (uniquement les tâches qui lui sont
-confiées, aucun accès aux tableaux de bord) et `client` (isolation stricte de ses
-données, forcée côté serveur). Détails : `docs/SECURITY.md`.
+**Deux rôles, et seulement deux** : `directeur` (vue globale, décide) et
+`employe` (uniquement les tâches qui lui sont confiées, aucun accès aux tableaux
+de bord). Un rôle `client` a existé puis a été retiré — les acheteurs d'Overlyne
+sont des hôpitaux publics qui n'ont pas demandé de portail, et l'écran exposait
+au client les analyses internes le concernant (sa probabilité de décrochage, la
+marge réalisée sur lui). Le retrait porte sur la connexion, l'affichage et la
+base : `docs/SECURITY.md` §2.
 
 La plateforme ne s'arrête pas au constat : une alerte devient une **tâche
-confiée**, le client **agit** depuis son espace, et le résultat obtenu est mesuré
-puis renvoyé vers les modèles — voir `docs/BOUCLE_ACTION.md`.
+confiée**, un employé **agit**, et le résultat obtenu est mesuré puis renvoyé
+vers les modèles — voir `docs/BOUCLE_ACTION.md`.
 
-Identifiants de démonstration (dérivés du nom de l'établissement) :
+Identifiants de démonstration :
 
 | Compte | Identifiant | Mot de passe |
 |---|---|---|
@@ -28,9 +32,39 @@ Identifiants de démonstration (dérivés du nom de l'établissement) :
 | Recouvrement (employé) | `recouvrement@overlyne.tn` | `Employe#2026` |
 | Commercial (employé) | `commercial@overlyne.tn` | `Employe#2026` |
 | Logistique (employé) | `logistique@overlyne.tn` | `Employe#2026` |
-| Hôpital Militaire de Tunis | `hopital-militaire-de-tunis@overlyne.tn` | `Client#20261` |
-| C.H.U. Charles Nicolle | `chu-charles-nicolle@overlyne.tn` | `Client#20262` |
-| C.H.U. Habib Bourguiba | `chu-habib-bourguiba@overlyne.tn` | `Client#20263` |
+
+## Ce que la plateforme vaut, en dinars
+
+La plateforme **ne génère aucun encaissement** : elle identifie et elle
+priorise. Chaque poste publie son montant mesuré, le taux de conversion
+**supposé**, la justification de ce taux, et ce que le chiffre ne dit pas.
+
+| Poste | Identifié | Hypothèse | Récupérable |
+|---|---:|---:|---:|
+| Créances à terme long priorisées | 10 948 315 DT | 15 % | 1 642 247 DT |
+| Chiffre d'affaires menacé par le décrochage | 4 895 100 DT | 20 % | 979 020 DT |
+| Trésorerie immobilisée en stock excédentaire | 5 943 821 DT | 10 % | 594 382 DT |
+| Marge menacée par la dégradation de la rentabilité | 2 875 835 DT | 25 % | 718 959 DT |
+| Stock qui ne sera pas écoulé avant péremption | 212 117 DT | 40 % | 84 847 DT |
+| **Total** | **24 875 188 DT** | — | **4 019 455 DT** |
+
+**Et, à part, 15 800 000 DT** : le chiffre d'affaires publié était surévalué de
+5,44 % — avoirs additionnés au lieu d'être déduits, 1 324 factures comptées deux
+fois. Ce montant **ne s'additionne pas** aux précédents : rien n'est à
+encaisser. C'est une décision faussée qui ne le sera plus, et c'est le seul
+chiffre du projet qui ne repose sur **aucune** hypothèse.
+
+Un seul taux du tableau est appuyé sur une mesure directe : sur les 10 % de
+devis les mieux classés hors période, le taux de signature observé est **2,49
+fois** celui d'une relance dans l'ordre d'arrivée.
+
+Chiffre à citer = celui de la commande, jamais celui de ce tableau :
+`python -m ml_engine.analytics.impact` · écran : onglet **Enjeu financier** ·
+méthode, hypothèses et limites : **`docs/IMPACT_FINANCIER.md`**.
+
+> Ces montants sont **internes** : des requêtes sur nos données, pondérées par
+> nos hypothèses. Aucun ne prouve qu'un dinar a été gagné. Ce qui le prouverait
+> est la grille de `docs/VALIDATION_METIER.md`, remplie par l'entreprise.
 
 ## Déploiement conteneurisé (stack complète)
 
@@ -91,6 +125,7 @@ archives locales `_sauvegarde_*.zip` faites avant chaque refonte.
 - `frontend/ARCHITECTURE.md` — **architecture MVVM du frontend** : Model (types, services, règles), ViewModel (hooks), View (composants), organisation par fonctionnalité
 - `docs/DATA_WAREHOUSE.md` — **entrepôt de données (Kimball)** : faits au grain déclaré, dimensions conformes, marts, vues de présentation, contrôles ; ETL `etl/` (`python -m etl.construire`)
 - `docs/ARCHITECTURE_API.md` — **architecture en couches de l'API** : routes (HTTP), services (logique, sans FastAPI), accès aux données ; règles vérifiées par les tests
+- `docs/IMPACT_FINANCIER.md` — **ce que la plateforme vaut en dinars** : chaque poste, son taux de conversion supposé, la justification de ce taux, la réserve, et le détail par client
 - `docs/KPI_FORMULES.md` — **formule exacte de chaque KPI** (fidèle au code), limites assumées, valeurs de référence
 - `docs/DONNEES_MANQUANTES.md` — absence de dates de règlement : preuve, impact par indicateur, scénarios en réponse, demande technique à l'entreprise
 - `docs/DEMO.md` — **kit de soutenance** : scénario minuté, plans B, questions/réponses du jury
@@ -99,13 +134,14 @@ archives locales `_sauvegarde_*.zip` faites avant chaque refonte.
 - `docs/SECURITY.md` — authentification (bcrypt, JWT, rate limiting), schéma BDD, RBAC & preuves d'isolation
 - `docs/AVATAR_3D.md` — avatar 3D Ready Player Me/Three.js (visèmes, émotions, replis)
 - `docs/ARCHITECTURE_AGENTS.md` — schéma de la flotte d'agents et **quel agent consomme quel modèle**
+- `docs/architecture/` — **quatre schémas** pour le mémoire : architecture logique et physique du projet, architecture logique et physique des agents
 - `docs/XAI.md` — **explicabilité** : pourquoi ce client, ce devis, ce produit — décomposition exacte, SHAP, règles, et ce que le module refuse de faire
-- `docs/TESTS.md` — **ce que les tests démontrent** : une famille par ligne, et les 20 tests à citer (`python -m pytest -m vitrine`)
+- `docs/TESTS.md` — **ce que les tests démontrent** : une famille par ligne, et les 22 tests à citer (`python -m pytest -m vitrine`)
 - `docs/SCRIPTS.md` — à quoi sert chacun des scripts : trois commandes au quotidien, le reste étant des pièces justificatives
-- `docs/BOUCLE_ACTION.md` — **la boucle d'action** : tâches confiées, actions des clients, mesure de l'impact et retour des résultats vers les modèles
+- `docs/BOUCLE_ACTION.md` — **la boucle d'action** : tâches confiées, actions des clients, mesure de l'impact et retour des résultats vers les modèles ; **délégation autonome** : la flotte confie elle-même le travail d'exécution, jamais les décisions de direction
 - `docs/DEEP_LEARNING.md` — **recommandation de produits par réseau Wide & Deep (PyTorch)** : protocole, résultats, décision
-- `reports/METRICS_REPORT.md` — métriques ML consolidées (méthodologie, CV, ablations, limites, **accuracy §0 bis**, **deep learning §8**)
-- Tests : `python -m pytest -q` — **642 tests** (intégrité, entrepôt, sémantique ERP, modèles, passerelle agents ↔ modèles, flotte, copilote, stock, OCR, auth/RBAC, admin/portail, boucle d'action). Synthèse lisible : `docs/TESTS.md`. Démonstration rapide : `python -m pytest -m vitrine -v` (20 tests emblématiques, moins d'une minute).
+- `reports/METRICS_REPORT.md` — métriques ML consolidées (méthodologie, CV, ablations, limites, **accuracy §0 bis**, **deep learning §8**, **calibration §8 bis**, **de l'AUC au dinar §9**)
+- Tests : `python -m pytest -q` — **666 tests** (intégrité, entrepôt, sémantique ERP, modèles, passerelle agents ↔ modèles, flotte, copilote, stock, OCR, auth/RBAC, admin/portail, boucle d'action, délégation autonome). Synthèse lisible : `docs/TESTS.md`. Démonstration rapide : `python -m pytest -m vitrine -v` (22 tests emblématiques, moins d'une minute).
 - Deep learning : `python -m ml_engine.deep.recommandation` (PyTorch requis pour mesurer le Wide & Deep ; l'API n'en dépend pas)
 - Avant une démo : `python scripts/preflight_demo.py` (contrôle tous les points de panne)
 - Après une mise à jour de scikit-learn : `python scripts/retrain_all.py` (ré-aligne les modèles **et rapatrie les résultats du terrain** dans l'entrepôt)

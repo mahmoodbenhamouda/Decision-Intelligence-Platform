@@ -1,10 +1,4 @@
-"""API OCR : lire une fois, corriger, enregistrer du bon côté.
-
-Application réduite au seul routeur OCR, avec la traduction des erreurs
-métier en codes HTTP ; authentification, lecture du document et
-rapprochement (appelés par le service OCR) sont remplacés par des doublures.
-L'entrepôt est TEMPORAIRE : la base réelle n'est jamais touchée.
-"""
+"""API OCR : lire une fois, corriger, enregistrer du bon côté."""
 import json
 import os
 import tempfile
@@ -15,9 +9,12 @@ import pytest
 
 pytest.importorskip("duckdb")
 pytest.importorskip("fastapi")
-os.environ.setdefault("AUTH_DATABASE_URL",
-                      f"sqlite:///{Path(tempfile.mkdtemp()).as_posix()}/auth.db")
-os.environ.setdefault("JWT_SECRET_KEY", "secret-de-test-uniquement")
+os.environ.setdefault(
+    "AUTH_DATABASE_URL",
+    os.environ.get("AUTH_TEST_DATABASE_URL")
+    or "postgresql+psycopg2://postgres:postgres@localhost:5432/finance_auth_test")
+os.environ.setdefault("JWT_SECRET_KEY",
+                      "secret-de-test-uniquement-assez-long-pour-hs256")
 
 import duckdb  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
@@ -37,7 +34,7 @@ PDF = b"%PDF-1.4 facture de test"
 
 def _champs():
     return InvoiceFields(numero="FV-2026-0142", date_facture="2026-09-14",
-                         montant_ht=1995.0, montant_tva=356.25,        # TVA partielle : l'erreur type
+                         montant_ht=1995.0, montant_tva=356.25,
                          montant_ttc=2360.65, timbre_fiscal=1.0, net_a_payer=2337.043,
                          fournisseur="ATELIER NOVALUX", client="POLYMER SERVICE PROVIDER",
                          tiers="POLYMER SERVICE PROVIDER", is_invoice=True)
@@ -66,7 +63,6 @@ def api(tmp_path, monkeypatch):
                 _champs(), "layoutlmv3+regles")
 
     monkeypatch.setattr(service, "lire_facture", lire)
-    # le rapprochement renvoie le sens dans lequel on l'a appelé, et le TTC reçu
     monkeypatch.setattr(service, "reconcile_invoice", lambda f, client_code=None, sens="vente", **k: {
         "statut": f"test-{sens}", "candidats": [], "ttc_vu": f.get("montant_ttc"), "portee": client_code})
     monkeypatch.setattr(service, "audit", lambda *a, **k: None)
@@ -102,15 +98,15 @@ def test_flux_complet_achat_corrige_sans_relire(api):
     assert imp["sens"] == "achat" and imp["tiers_code"] == "OCR-F-0001"
     assert imp["statut_validation"] == "corrigee"
     assert imp["corrections"] == {"montant_tva": {"lu": 356.25, "valide": 364.65}}
-    assert api.lectures["n"] == 1                               # le document n'a PAS été relu
-    assert r.json()["facture"]["coherence"].startswith("HT + TVA = TTC")   # recalculée
+    assert api.lectures["n"] == 1
+    assert r.json()["facture"]["coherence"].startswith("HT + TVA = TTC")
     con = duckdb.connect(str(api.store), read_only=True)
     assert con.execute("SELECT count(*) FROM sales_augmentee WHERE source='ocr'").fetchone()[0] == 0
     con.close()
 
 
 def test_sens_inconnu_refuse_plutot_que_devine(api):
-    lu = _lire(api)                                             # aucune identité configurée
+    lu = _lire(api)
     assert lu["sens"]["sens"] == "inconnu"
     r = api.c.post("/api/ocr/invoice/import", data={
         "lecture_id": lu["lecture_id"], "facture": json.dumps(lu["facture"])})
@@ -118,17 +114,6 @@ def test_sens_inconnu_refuse_plutot_que_devine(api):
     r = api.c.post("/api/ocr/invoice/import", data={
         "lecture_id": lu["lecture_id"], "facture": json.dumps(lu["facture"]), "sens": "vente"})
     assert r.status_code == 200 and r.json()["import"]["statut_validation"] == "validee_telle_quelle"
-
-
-def test_compte_client_force_vente_et_son_code(api):
-    lu = _lire(api)
-    api.qui["u"] = SimpleNamespace(role="client", client_code="CP001", username="cli")
-    r = api.c.post("/api/ocr/invoice/import", data={
-        "lecture_id": lu["lecture_id"], "facture": json.dumps(lu["facture"]),
-        "sens": "achat", "tiers_code": "F999", "client_code": "CP777"})
-    assert r.status_code == 200, r.text
-    imp = r.json()["import"]
-    assert imp["sens"] == "vente" and imp["client_code"] == "CP001"
 
 
 def test_identifiant_de_lecture_malveillant(api):
@@ -160,12 +145,12 @@ def test_imports_liste_le_sens(api):
 
 
 def test_rapprochement_suit_le_sens(api):
-    lu = _lire(api)                                     # identité non configurée : sens inconnu
+    lu = _lire(api)
     assert lu["rapprochement"]["statut"] == "sens_a_choisir"
     r = api.c.post("/api/ocr/rapprocher", data={
         "lecture_id": lu["lecture_id"], "sens": "achat",
         "facture": json.dumps({"montant_ttc": "2 360,650"})}).json()
-    assert r["statut"] == "test-achat" and r["ttc_vu"] == 2360.65      # sur la valeur corrigée
+    assert r["statut"] == "test-achat" and r["ttc_vu"] == 2360.65
     imp = api.c.post("/api/ocr/invoice/import", data={
         "lecture_id": lu["lecture_id"], "facture": json.dumps(lu["facture"]), "sens": "achat"}).json()
     assert imp["rapprochement"]["statut"] == "test-achat"
@@ -174,19 +159,12 @@ def test_rapprochement_suit_le_sens(api):
     assert len(liste["factures"]) == 1
 
 
-def test_rapprocher_compte_client_reste_dans_son_perimetre(api):
-    lu = _lire(api)
-    api.qui["u"] = SimpleNamespace(role="client", client_code="CP001", username="cli")
-    r = api.c.post("/api/ocr/rapprocher", data={"lecture_id": lu["lecture_id"], "sens": "achat"}).json()
-    assert r["statut"] == "test-vente" and r["portee"] == "CP001"
-
-
 def test_echeancier_et_reglement(api):
     lu = _lire(api)
     r = api.c.post("/api/ocr/invoice/import", data={
         "lecture_id": lu["lecture_id"], "facture": json.dumps(lu["facture"]), "sens": "achat"}).json()
     e = api.c.get("/api/ocr/echeancier").json()
-    assert e["n_factures"] == 1 and e["a_payer_dt"] == 2337.043        # net, pas le TTC
+    assert e["n_factures"] == 1 and e["a_payer_dt"] == 2337.043
     assert e["factures"][0]["source_echeance"].startswith("delai_moyen")
     fid = r["import"]["id"]
     assert api.c.post(f"/api/ocr/imports/{fid}/reglement", data={"le": "2026-09-20"}).status_code == 200

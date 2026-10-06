@@ -1,50 +1,4 @@
-"""
-ml_engine/analytics/marge_client.py
-====================================
-Érosion de marge client à 3 mois — un problème de pricing, pas de volume.
-
-La question, et pourquoi elle est bien posée
--------------------------------------------
-    la marge réalisée sur ce client au cours des 3 prochains mois
-    va-t-elle tomber dans le bas de la distribution ?
-
-Trois raisons de préférer cette formulation à « prédire la marge d'une facture » :
-
-1. **Ce n'est pas une prédiction de ce qui est déjà connu.** Au moment de facturer,
-   l'entreprise connaît son coût de revient : prédire la marge d'une facture
-   existante ne prédirait rien. Ici, la cible porte sur un trimestre à venir, dont
-   ni le mix ni les négociations ne sont encore joués.
-
-2. **C'est une question de comportement, pas de volume.** Toutes les formulations
-   de volume de ce projet ont échoué, et pour une raison mesurée : la série de
-   demande n'a pas de signal exploitable au-delà des méthodes naïves. On ne
-   retente donc pas. L'érosion de marge relève de la même famille que le
-   décrochage client — seul modèle supervisé accepté jusqu'ici.
-
-3. **Elle porte une décision.** Un client dont la marge s'érode appelle une
-   révision tarifaire ou un changement de mix, pas une relance. Aucun autre module
-   de la plateforme ne répond à cette question.
-
-Ce que la découverte de `MTCRSIGNE` a rendu possible
----------------------------------------------------
-Le coût de revient était réputé absent. Il figure dans les lignes de vente, et sa
-découverte a corrigé la marge affichée de 77 % à **28,3 %** — la vraie. Sans lui,
-ce module n'existerait pas : on ne modélise pas une marge qu'on ne sait pas
-calculer.
-
-Et la **famille produit** (`ARTICLE_LIBELLE_FAM_STAT1`, renseignée à 99,9 %)
-fournit le mécanisme économique : un équipement et un réactif n'ont pas la même
-marge. Un client qui glisse de l'un vers l'autre voit sa rentabilité changer sans
-qu'aucun prix n'ait bougé. C'est ce que le mix mesure.
-
-Aucune donnée simulée. Cible observée, seuil déclaré sur le seul jeu
-d'entraînement.
-
-Sorties : `models/marge_client.joblib` + `reports/marge_client_metrics.json`
-
-Lancement :
-    python -m ml_engine.analytics.marge_client
-"""
+"""Érosion de marge client à 3 mois — un problème de pricing, pas de volume."""
 
 from __future__ import annotations
 
@@ -69,13 +23,8 @@ REPORTS_DIR = BASE / "reports"
 SEED = 42
 HORIZON_MOIS = 3
 
-# Part de la distribution considérée comme « marge basse ». Déclarée ici, et le
-# seuil correspondant est calculé sur le SEUL jeu d'entraînement : le déduire de
-# l'ensemble des données ferait entrer dans le train une information sur le test.
 QUANTILE_MARGE_BASSE = 0.20
 
-# Un client doit avoir un minimum d'activité pour que son mix et sa marge aient un
-# sens. En deçà, la marge d'un trimestre est le fait d'une seule facture.
 MIN_FACTURES_12M = 3
 MIN_MOIS_HISTORIQUE = 12
 DEBUT_EXPLOITABLE = "2019-01-01"
@@ -99,25 +48,16 @@ REGLAGES: Dict[str, List[Dict[str, Any]]] = {
     ],
 }
 
-# ── Variables ───────────────────────────────────────────────────────────────
-#
-# La MARGE passée du client. C'est la référence à battre, et donc la famille la
-# plus susceptible de rendre le modèle inutile : si la marge d'hier prédit celle
-# de demain, aucun modèle n'est nécessaire.
 VARIABLES_MARGE = [
     "marge_3m_pct", "marge_6m_pct", "marge_12m_pct",
     "tendance_marge", "volatilite_marge",
 ]
 
-# Le MIX produit — le pari de ce module. Un client qui glisse de l'équipement vers
-# le réactif voit sa marge changer sans qu'aucun prix n'ait bougé, et aucune marge
-# passée ne porte cette information avant qu'elle se réalise.
 VARIABLES_MIX = [
     "part_equipement_3m", "part_reactif_3m", "part_service_3m",
     "variation_part_equipement", "n_familles_3m",
 ]
 
-# L'ACTIVITÉ du client, qui conditionne son pouvoir de négociation.
 VARIABLES_ACTIVITE = [
     "log_ca_12m", "n_factures_12m", "panier_moyen", "recence_j",
     "anciennete_mois", "tendance_ca", "delai_median_accorde_j",
@@ -130,8 +70,6 @@ FEATURES = (VARIABLES_MARGE + VARIABLES_MIX
 
 JEUX_DE_VARIABLES: Dict[str, List[str]] = {
     "tout": FEATURES,
-    # Mis en concurrence pour trancher « le mix produit apporte-t-il une
-    # information que la marge passée ne porte pas ? » — sur validation interne.
     "sans_mix": VARIABLES_MARGE + VARIABLES_ACTIVITE + VARIABLES_CONTEXTE,
 }
 
@@ -152,12 +90,7 @@ def _connect():
 
 
 def charger_brut(con=None) -> pd.DataFrame:
-    """Agrégat client × mois : montants, coûts et mix par famille produit.
-
-    Tout est agrégé au mois pour une raison de fond : la marge d'une facture isolée
-    est bruitée — une remise ponctuelle, un article d'appel — alors que la marge
-    d'un mois décrit une politique tarifaire. C'est celle-ci qui se pilote.
-    """
+    """Agrégat client × mois : montants, coûts et mix par famille produit."""
     fermer = con is None
     con = con or _connect()
     try:
@@ -168,7 +101,7 @@ def charger_brut(con=None) -> pd.DataFrame:
                     CAST(date_trunc('month', date) AS DATE)  AS mois,
                     montant,
                     cout,
-                    -- La famille ERP, regroupée sur ses préfixes réels :
+                    -- La famille de produit, regroupée sur ses préfixes réels :
                     -- REACTIF · SERVICE DIVERS · SERVICE SAV · EQUIPEMENT.
                     -- La pollution « fournitures d'art » tombe en `autre`, elle
                     -- n'est pas devinée.
@@ -229,13 +162,7 @@ def _delais_par_client(con=None) -> pd.DataFrame:
 def construire_panel(brut: Optional[pd.DataFrame] = None,
                      delais: Optional[pd.DataFrame] = None,
                      pour_prediction: bool = False) -> pd.DataFrame:
-    """Un client × un mois = une ligne. Cible sur ]m, m+3].
-
-    Prévention de fuite, appliquée sans exception : chaque variable est une
-    fonction des mois ≤ m, la cible une fonction des mois > m. `shift(-k)`
-    n'apparaît que dans la construction de la cible, et un test le vérifie
-    mécaniquement.
-    """
+    """Un client × un mois = une ligne."""
     con = _connect()
     try:
         if brut is None:
@@ -257,8 +184,6 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
     else:
         df["delai_median"] = np.nan
 
-    # Grille client × mois complète : un mois SANS facture est une information
-    # (activité nulle), et le supprimer masquerait les creux d'activité.
     mois_tous = pd.DataFrame({"mois": pd.date_range(df["mois"].min(),
                                                     df["mois"].max(), freq="MS")})
     clients = df[["client"]].drop_duplicates()
@@ -276,11 +201,6 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
     df["rang"] = df.groupby("client", sort=False).cumcount() + 1
     df["anciennete_mois"] = df["rang"].astype(float)
 
-    # ── Marge glissante ─────────────────────────────────────────────────────
-    #
-    # Calculée comme un RATIO DE SOMMES, jamais comme une moyenne de ratios : un
-    # mois à 300 DT de chiffre pèserait autant qu'un mois à 300 000 DT, et la
-    # marge d'un client serait dictée par ses plus petits mois.
     for f in (3, 6, 12):
         som_m = par_client("montant").transform(
             lambda s, f=f: s.rolling(f, min_periods=1).sum())
@@ -293,7 +213,6 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
     df["volatilite_marge"] = par_client("marge_3m_pct").transform(
         lambda s: s.rolling(12, min_periods=3).std()).fillna(0.0)
 
-    # ── Mix produit ─────────────────────────────────────────────────────────
     for nom, col in (("equipement", "m_equipement"), ("reactif", "m_reactif"),
                      ("service", "m_service")):
         num = par_client(col).transform(lambda s: s.rolling(3, min_periods=1).sum())
@@ -311,7 +230,6 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
     df["n_familles_3m"] = par_client("n_familles").transform(
         lambda s: s.rolling(3, min_periods=1).max())
 
-    # ── Activité ────────────────────────────────────────────────────────────
     ca_12m = par_client("montant").transform(
         lambda s: s.rolling(12, min_periods=1).sum())
     df["log_ca_12m"] = np.log1p(ca_12m.clip(lower=0))
@@ -334,22 +252,12 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
 
     df["mois_calendaire"] = df["mois"].dt.month.astype(float)
 
-    # ── Cible : marge du trimestre SUIVANT ──────────────────────────────────
-    #
-    # `shift(-k)` n'apparaît qu'ici. Le ratio est de nouveau un ratio de sommes sur
-    # la fenêtre, jamais une moyenne de marges mensuelles.
     fut_m = sum(par_client("montant").shift(-k) for k in range(1, HORIZON_MOIS + 1))
     fut_c = sum(par_client("cout").shift(-k) for k in range(1, HORIZON_MOIS + 1))
     df["marge_future_pct"] = np.where(
         fut_m.abs() > _EPS, (fut_m - fut_c) / fut_m * 100.0, np.nan)
     df["_horizon_observe"] = fut_m.notna()
 
-    # ── Le client doit être ACTIF, sinon la question ne se pose pas ──────────
-    #
-    # Sans cette condition, le panneau contiendrait des clients dormants dont la
-    # marge future est indéfinie ou tenue par une facture unique. Le modèle
-    # apprendrait à reconnaître l'inactivité — vrai, inutile, et flatteur pour
-    # l'AUC. Même précaution que « client ENCORE ACTIF » dans le décrochage.
     df = df[(df["n_factures_12m"] >= MIN_FACTURES_12M)
             & (df["rang"] >= MIN_MOIS_HISTORIQUE)
             & (df["_actif"] == 1)]
@@ -361,29 +269,20 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
 
 
 def seuil_marge_basse(train: pd.DataFrame) -> float:
-    """Seuil de marge basse, calculé sur le SEUL jeu d'entraînement.
-
-    Le déduire de l'ensemble des données ferait entrer dans le train une
-    information sur la distribution du test — une fuite discrète, qui ne se voit
-    dans aucune matrice de confusion.
-    """
+    """Seuil de marge basse, calculé sur le SEUL jeu d'entraînement."""
     return float(train["marge_future_pct"].quantile(QUANTILE_MARGE_BASSE))
 
 
 def _references_triviales(te: pd.DataFrame) -> Dict[str, float]:
-    """Une variable, aucun apprentissage. Directions posées a priori."""
+    """Une variable, aucun apprentissage."""
     from sklearn.metrics import roc_auc_score
 
     refs = {
         "classe_majoritaire": 0.5,
-        # LA référence à battre : la marge d'hier prédit-elle celle de demain ?
         "inverse_marge_3m": -te["marge_3m_pct"],
         "inverse_marge_12m": -te["marge_12m_pct"],
-        # Une marge qui baisse déjà continue de baisser.
         "inverse_tendance_marge": -te["tendance_marge"],
-        # Un gros client négocie mieux, donc rogne la marge.
         "taille_client": te["log_ca_12m"],
-        # L'équipement se vend à marge plus faible que le réactif.
         "part_equipement": te["part_equipement_3m"],
     }
     out: Dict[str, float] = {}
@@ -474,19 +373,6 @@ def selectionner(tr: pd.DataFrame) -> Dict[str, Any]:
 
     meilleur = max(eligibles, key=lambda e: e["auc_valid_interne"])
 
-    # ══ PARCIMONIE APPLIQUÉE AUSSI AU JEU DE VARIABLES ══
-    #
-    # Le projet préférait déjà le modèle le plus simple à performance équivalente,
-    # mais n'appliquait cette règle qu'à la FAMILLE d'algorithme. Un jeu de
-    # variables est pourtant lui aussi de la complexité : plus de colonnes à
-    # produire, à surveiller, et à voir dériver.
-    #
-    # L'incohérence n'était pas neutre. Ici, « tout » devançait « sans_mix » de
-    # 0,0035 — sous le seuil de parcimonie de 0,01 — et le rapport en concluait
-    # pourtant que « le mix produit apporte une information ». C'était surinterpréter
-    # un écart que le projet lui-même juge non significatif ailleurs.
-    #
-    # Ordre d'application : jeu le plus petit d'abord, puis famille la plus simple.
     for e in eligibles:
         if (e["variables"] == "sans_mix"
                 and e["famille"] == meilleur["famille"]
@@ -537,7 +423,6 @@ def evaluer(panel: pd.DataFrame) -> Dict[str, Any]:
         return {"applicable": False,
                 "motif": f"train={len(tr)} test={len(te)} — effectifs insuffisants"}
 
-    # Le seuil est fixé sur le TRAIN, puis appliqué tel quel au test.
     seuil = seuil_marge_basse(tr)
     tr = tr.assign(y=(tr["marge_future_pct"] < seuil).astype(int))
     te = te.assign(y=(te["marge_future_pct"] < seuil).astype(int))
@@ -570,16 +455,12 @@ def evaluer(panel: pd.DataFrame) -> Dict[str, Any]:
     pred_dec = (p >= seuil_dec).astype(int)
     prec_dec = float(precision_score(te["y"], pred_dec, zero_division=0))
 
-    # ── Walk-forward : la même exigence, sur davantage d'observations ────────
     walk: Dict[str, Any] = {"applicable": False, "motif": "non calculé"}
     if fabrique is not None:
         refs: List[np.ndarray] = []
 
         def _ajuster_et_predire(tr_i: pd.DataFrame,
                                 te_i: pd.DataFrame) -> np.ndarray:
-            # Seuil ET réglage refixés sur le train de CHAQUE pli : réutiliser
-            # ceux du découpage global ferait entrer dans un pli une information
-            # issue de périodes qu'il ne doit pas connaître.
             s_i = seuil_marge_basse(tr_i)
             a = tr_i.assign(y=(tr_i["marge_future_pct"] < s_i).astype(int))
             b = te_i.assign(y=(te_i["marge_future_pct"] < s_i).astype(int))
@@ -597,9 +478,6 @@ def evaluer(panel: pd.DataFrame) -> Dict[str, Any]:
             refs.append(np.asarray(fabrique(b), dtype=float))
             return proba
 
-        # La cible du walk-forward est recalculée pli par pli ; on fournit donc un
-        # panneau doté d'une colonne `y` provisoire, uniquement pour que le
-        # découpeur puisse vérifier que chaque pli contient les deux classes.
         panel_wf = panel.assign(
             y=(panel["marge_future_pct"] < seuil).astype(int))
         wf = walk_forward(panel_wf, "mois", _ajuster_et_predire,
@@ -635,8 +513,6 @@ def evaluer(panel: pd.DataFrame) -> Dict[str, Any]:
         "auc": round(auc, 4),
         "average_precision": round(float(average_precision_score(te["y"], p)), 4),
         "brier": round(float(brier_score_loss(te["y"], p)), 4),
-        # Métriques homogènes entre modèles : accuracy, balanced accuracy, MCC,
-        # spécificité — au seuil 0,5 et au seuil choisi sur l'entraînement seul.
         "classification": metriques_classification(
             te["y"], p, y_train=tr["y"], p_train=p_tr),
         "surapprentissage_interne": choix["surapprentissage"],
@@ -698,12 +574,12 @@ def train() -> Dict[str, Any]:
             "nouveau. La cible porte donc sur un trimestre à venir, dont ni le "
             "mix ni les négociations ne sont encore joués."),
         "ce_qui_a_rendu_ce_module_possible": (
-            "Deux colonnes réputées absentes : `MTCRSIGNE`, le coût de revient, "
+            "Deux informations réputées absentes : le coût de revient, "
             "qui a corrigé la marge affichée de 77 % à 28,3 % — sans lui on ne "
             "modélise pas une marge qu'on ne sait pas calculer ; et "
-            "`ARTICLE_LIBELLE_FAM_STAT1`, la famille produit renseignée à 99,9 %, "
+            "la famille produit renseignée à 99,9 %, "
             "qui fournit le mécanisme économique du mix."),
-        "donnees": "100 % réelles — lignes de vente, coûts de revient, familles ERP",
+        "donnees": "100 % réelles — vos lignes de vente, coûts de revient et familles de produits",
         "horizon_mois": HORIZON_MOIS,
         "determinisme": etat_determinisme(),
         "n_observations": int(len(panel)),
@@ -811,13 +687,73 @@ def _ecrire(metriques: Dict[str, Any]) -> None:
                               encoding="utf-8"), indent=2, ensure_ascii=False)
 
 
-def predire(limite: int = 15) -> Dict[str, Any]:
-    """Clients dont la marge va s'éroder, si le registre l'autorise.
+def _raisons(paquet: Dict[str, Any], top: pd.DataFrame, panel: pd.DataFrame):
+    """Attributions locales des clients affichés, et compte rendu de la méthode.
 
-    Classé par **marge en jeu** — probabilité × chiffre d'affaires 12 mois — et non
-    par probabilité : un petit client à marge fragile n'appelle pas de révision
-    tarifaire, un gros client oui.
+    L'échec était auparavant avalé par un `except` muet : l'encart « Pourquoi »
+    disparaissait de l'écran sans que rien n'indique pourquoi, et la cause la plus
+    probable — `shap` non installé — restait invisible.
     """
+    features = paquet["features"]
+    X = top[features].to_numpy(dtype=float)
+    reference = {v: panel[v].to_numpy(dtype=float) for v in features
+                 if v in panel.columns}
+    vide = [[] for _ in range(len(top))]
+
+    from ml_engine.explication import (contributions_lineaires,
+                                       contributions_shap,
+                                       extraire_pipeline_lineaire,
+                                       fidelite_suppression)
+
+    lin = extraire_pipeline_lineaire(paquet["modele"])
+    if lin is not None:
+        attributions = (((X - np.asarray(lin["moyennes"]))
+                         / np.asarray(lin["ecarts"])) * np.asarray(lin["coefficients"]))
+        raisons = [contributions_lineaires(lin["coefficients"], lin["moyennes"],
+                                           lin["ecarts"], X[i], features,
+                                           reference=reference)
+                   for i in range(len(top))]
+        methode = "attribution linéaire exacte"
+    else:
+        try:
+            import shap
+        except ImportError as e:
+            return vide, {"disponible": False, "methode_visee": "TreeSHAP",
+                          "motif": (f"la librairie shap n'est pas installée "
+                                    f"({e.name}) — pip install -r requirements.txt")}
+        try:
+            valeurs = np.asarray(
+                shap.TreeExplainer(paquet["modele"]).shap_values(X))
+            if valeurs.ndim == 3:
+                valeurs = valeurs[:, :, -1]
+        except Exception as e:
+            return vide, {"disponible": False, "methode_visee": "TreeSHAP",
+                          "motif": f"{type(e).__name__} : {str(e)[:120]}"}
+        attributions = valeurs
+        raisons = [contributions_shap(valeurs[i], X[i], features,
+                                      reference=reference)
+                   for i in range(len(top))]
+        methode = "TreeSHAP (shap.TreeExplainer)"
+
+    rapport: Dict[str, Any] = {
+        "disponible": True,
+        "methode": methode,
+        "n_clients_expliques": int(len(top)),
+    }
+    try:
+        rapport["fidelite"] = fidelite_suppression(
+            lambda A: paquet["modele"].predict_proba(
+                pd.DataFrame(A, columns=features))[:, 1],
+            X, attributions, panel[features].mean().to_numpy(dtype=float),
+            k_max=5)
+    except Exception as e:
+        rapport["fidelite"] = {"mesuree": False,
+                               "motif": f"{type(e).__name__} : {str(e)[:120]}"}
+    return raisons, rapport
+
+
+def predire(limite: int = 15, clients: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Clients dont la marge va s'éroder, si le registre l'autorise."""
     from ml_engine.registre import est_deploye
 
     if not est_deploye("marge_client"):
@@ -830,11 +766,19 @@ def predire(limite: int = 15) -> Dict[str, Any]:
     try:
         import joblib
         paquet = joblib.load(chemin)
-        panel = construire_panel(pour_prediction=True)
+        from ml_engine.cache_panel import panel as _panel_en_cache
+        panel = _panel_en_cache("marge_client",
+                                lambda: construire_panel(pour_prediction=True),
+                                construire_panel, charger_brut)
         if panel.empty:
             return {"servi": False, "motif": "panneau indisponible"}
 
         dernier = panel.sort_values("mois").groupby("client", as_index=False).tail(1)
+        if clients is not None:
+            dernier = dernier[dernier["client"].astype(str).isin({str(c) for c in clients})]
+            if dernier.empty:
+                return {"servi": True, "n_clients": 0, "top": [],
+                        "motif": "aucun client du filtre n'a d'historique suffisant"}
         p = paquet["modele"].predict_proba(dernier[paquet["features"]])[:, 1]
         dernier = dernier.assign(probabilite=p)
         dernier["ca_12m_dt"] = np.expm1(dernier["log_ca_12m"])
@@ -844,50 +788,55 @@ def predire(limite: int = 15) -> Dict[str, Any]:
 
         top = dernier.sort_values("marge_en_jeu_dt", ascending=False).head(limite)
 
-        # ── Pourquoi CE client voit sa marge s'éroder ───────────────────────
-        #
-        # Le modèle servi est un gradient boosting : ses centaines d'arbres
-        # n'ont pas de coefficient lisible. On calcule donc des valeurs de
-        # Shapley (SHAP, TreeExplainer) — la seule attribution dont la somme
-        # égale l'écart à la prédiction moyenne.
-        #
-        # Le calcul est limité aux lignes AFFICHÉES : expliquer les 1 100
-        # clients coûterait cher pour un écran qui en montre quinze. Et si
-        # `shap` n'est pas installé, le classement sort SANS justification
-        # plutôt qu'avec une justification approximée en silence.
-        raisons_par_client: List[List[Dict[str, Any]]] = [[] for _ in range(len(top))]
-        try:
-            import shap  # dépendance optionnelle
-
-            from ml_engine.explication import contributions_shap
-            X = top[paquet["features"]].to_numpy(dtype=float)
-            valeurs = shap.TreeExplainer(paquet["modele"]).shap_values(X)
-            valeurs = np.asarray(valeurs)
-            if valeurs.ndim == 3:            # (n, features, classes) → classe positive
-                valeurs = valeurs[:, :, -1]
-            raisons_par_client = [
-                contributions_shap(valeurs[i], X[i], paquet["features"])
-                for i in range(len(top))]
-        except Exception:
-            # `shap` absent ou en erreur : le classement sort sans justification,
-            # jamais avec une justification approximée en silence.
-            raisons_par_client = [[] for _ in range(len(top))]
-
+        raisons_par_client, explication = _raisons(paquet, top, panel)
         top = top.assign(_raisons=raisons_par_client)
+        seuil = float(paquet["seuil_marge_basse_pct"])
+        # Taux de marge médian du portefeuille : sans lui, « marge menacée » ne
+        # se compare à rien. Le seuil dit où commence le dernier quintile, la
+        # médiane dit à quoi ressemble un client ordinaire.
+        mediane = round(float(panel["marge_12m_pct"].median()), 1)
         return {
             "servi": True,
+            "explication": explication,
             "nature": "modele_appris",
             "horizon_mois": HORIZON_MOIS,
-            "seuil_marge_basse_pct": paquet["seuil_marge_basse_pct"],
+            "seuil_marge_basse_pct": seuil,
+            "marge_mediane_portefeuille_pct": mediane,
             "n_clients": int(len(dernier)),
+            "menace_definition": (
+                f"Le modèle estime la probabilité qu'un client passe sous "
+                f"{seuil:.1f} % de taux de marge dans les {HORIZON_MOIS} "
+                f"prochains mois. Ce seuil est celui du dernier quintile du "
+                f"portefeuille : les 20 % de clients les moins rentables. "
+                f"Référence : un client ordinaire dégage {mediane:.1f} %."),
+            "menace_vis_a_vis_de_qui": (
+                "Du portefeuille d'Overlyne, pas d'une norme extérieure. Le "
+                "seuil est recalculé à chaque entraînement : si l'ensemble des "
+                "marges se dégrade, il descend avec elles."),
+            "marge_en_jeu_definition": (
+                "probabilité × chiffre d'affaires des 12 derniers mois × taux "
+                "de marge actuel. C'est la marge que ce client rapporte "
+                "aujourd'hui, pondérée par le risque qu'elle s'effondre — pas "
+                "une perte déjà constatée."),
+            "cause_principale": (
+                "La part d'équipement dans les achats récents est la variable "
+                "la plus explicative. Un automate se vend autour de 7 % de "
+                "marge, un réactif autour de 29 % : un client qui bascule vers "
+                "l'équipement voit son taux fondre mécaniquement, sans que "
+                "personne n'ait changé un prix."),
             "top": [{
                 "client": r["client"],
                 "probabilite": round(float(r["probabilite"]), 3),
                 "marge_actuelle_pct": round(float(r["marge_3m_pct"]), 1),
                 "marge_12m_pct": round(float(r["marge_12m_pct"]), 1),
+                "seuil_pct": seuil,
+                "mediane_pct": mediane,
+                "ecart_au_seuil_pct": round(float(r["marge_3m_pct"]) - seuil, 1),
                 "part_equipement_pct": round(float(r["part_equipement_3m"]), 1),
+                "part_reactif_pct": round(float(r["part_reactif_3m"]), 1),
                 "ca_12m_dt": round(float(r["ca_12m_dt"]), 0),
                 "marge_en_jeu_dt": round(float(r["marge_en_jeu_dt"]), 0),
+                "deja_sous_le_seuil": bool(float(r["marge_3m_pct"]) < seuil),
                 "raisons": r["_raisons"],
             } for _, r in top.iterrows()],
             "lecture_du_classement": (

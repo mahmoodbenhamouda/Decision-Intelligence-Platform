@@ -1,16 +1,4 @@
-"""
-tests/test_ocr.py
-=================
-Tests du service OCR transversal : parsing de montants/dates, extraction
-structurée de facture, contrôle de cohérence, rapprochement ERP.
-
-Le parsing est testé SANS Tesseract (on injecte du texte) : les tests restent
-donc verts en CI, où le binaire OCR n'est pas installé. Les tests qui exigent
-réellement Tesseract sont marqués `skipif`.
-
-Exécution :
-    python -m pytest tests/test_ocr.py -v
-"""
+"""Tests du service OCR transversal : parsing de montants/dates, extraction structurée de facture,…"""
 
 import os
 import sys
@@ -37,13 +25,12 @@ Net a payer                            14280,000 DT
 """
 
 
-# ── Montants ────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("raw,attendu", [
-    ("14280,000", 14280.0),        # format tunisien : 3 décimales (millimes)
-    ("330,000", 330.0),            # ⚠ 330 dinars, PAS 330 000
-    ("1 234,567", 1234.567),       # espace = séparateur de milliers
-    ("1.234,56", 1234.56),         # format européen
-    ("1,234,567", 1234567.0),      # format anglo-saxon (plusieurs virgules)
+    ("14280,000", 14280.0),
+    ("330,000", 330.0),
+    ("1 234,567", 1234.567),
+    ("1.234,56", 1234.56),
+    ("1,234,567", 1234567.0),
     ("14280.00", 14280.0),
     ("980", 980.0),
     ("", None),
@@ -58,7 +45,6 @@ def test_parse_amount_corrige_les_erreurs_ocr():
     assert parse_amount("l42OO,00") == 14200.0
 
 
-# ── Dates ───────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("raw,iso", [
     ("Date : 12/03/2026", "2026-03-12"),
     ("le 5-1-26", "2026-01-05"),
@@ -76,7 +62,6 @@ def test_parse_date_invalide():
     assert parse_date("aucune date") is None
 
 
-# ── Extraction de facture ───────────────────────────────────────────────────
 def test_parse_invoice_champs_complets():
     inv = parse_invoice(FACTURE_TND)
     assert inv.is_invoice is True
@@ -105,8 +90,7 @@ def test_coherence_signale_une_incoherence():
 
 
 def test_montants_en_colonnes_separees_par_une_ligne_vide():
-    """Cas RÉEL de Tesseract : quand les colonnes sont éloignées, le montant
-    tombe 2 lignes plus bas que son libellé."""
+    """Cas RÉEL de Tesseract : quand les colonnes sont éloignées, le montant tombe 2 lignes plus bas…"""
     texte = ("FACTURE N° X-1\nDate : 01/02/2026\n\nTotal HT\n\n11250.000\n\n"
              "TVA\n\n235.200\n\nNet a payer 11485.200 DT")
     inv = parse_invoice(texte)
@@ -124,15 +108,11 @@ def test_libelle_suivant_ne_vole_pas_le_montant():
 
 
 def test_confiance_des_champs_documentee():
-    """Cette facture ne porte AUCUNE ligne « Total TTC » : seul le net à payer
-    est écrit. Le TTC en est donc déduit (net − timbre), et l'origine annoncée
-    doit le dire — la version précédente le présentait comme « explicite », ce
-    qui laissait croire à une valeur lue alors qu'elle était reconstruite."""
+    """Cette facture ne porte AUCUNE ligne « Total TTC » : seul le net à payer est écrit."""
     inv = parse_invoice(FACTURE_TND)
     assert inv.champs_confiance.get("montant_ttc") == "calcule"
     assert inv.net_a_payer == pytest.approx(14280.0, abs=0.01)
-    assert inv.montant_ttc == pytest.approx(14280.0, abs=0.01)   # pas de timbre ici
-    # Un champ réellement lu sur le document reste marqué « explicite ».
+    assert inv.montant_ttc == pytest.approx(14280.0, abs=0.01)
     assert inv.champs_confiance.get("montant_ht") == "explicite"
 
 
@@ -158,7 +138,6 @@ def test_document_non_facture():
     assert inv.is_invoice is False
 
 
-# ── Nettoyage OCR ───────────────────────────────────────────────────────────
 def test_clean_text_preserve_les_montants_et_accents():
     out = clean_text("Facture n°12\n~~~~~\nTotal : 1 234,56 €\n\n\n\nÉchéance")
     assert "1 234,56 €" in out
@@ -166,7 +145,6 @@ def test_clean_text_preserve_les_montants_et_accents():
     assert "~~~~~" not in out
 
 
-# ── Rapprochement ───────────────────────────────────────────────────────────
 def test_similarite_de_noms():
     assert _name_similarity("C.H.U. CHARLES NICOLLE", "CHU Charles Nicolle") > 0.9
     assert _name_similarity("HOPITAL MILITAIRE", "CLINIQUE EL AMEN") == 0.0
@@ -207,7 +185,6 @@ def test_reconcile_retrouve_une_facture_reelle():
     assert res["candidats"] and res["candidats"][0]["ecart_montant"] < 0.01
 
 
-# ── Disponibilité du moteur ─────────────────────────────────────────────────
 def test_ocr_available_ne_plante_jamais():
     assert isinstance(ocr_available(), bool)
 

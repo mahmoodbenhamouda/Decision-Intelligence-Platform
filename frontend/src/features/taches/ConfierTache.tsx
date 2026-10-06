@@ -1,33 +1,22 @@
 "use client";
 
-/**
- * ConfierTache — la fenêtre qui transforme une alerte en travail confié.
- *
- * Elle s'ouvre depuis n'importe quel écran (Priorités, Devis & marge, Stock) et
- * arrive PRÉ-REMPLIE : l'intitulé de l'alerte, le domaine, le client et le
- * montant en jeu sont repris tels quels. Le directeur n'a donc qu'à choisir la
- * personne et, s'il le souhaite, la date — c'est ce qui fait la différence
- * entre un tableau de bord qu'on regarde et un tableau de bord qui fait agir.
- *
- * Le type d'action est proposé automatiquement à partir du domaine de l'alerte
- * (un impayé appelle une relance, une rupture appelle une commande), mais reste
- * modifiable : la machine suggère, l'humain décide.
- */
-
-import { CheckCircle2, Send, UserPlus, X } from "lucide-react";
+import { Bot, CheckCircle2, Send, UserPlus, X } from "lucide-react";
 import { BLEU, GRAVITE, INK, fMoney } from "@/shared/ui/VisuelKit";
 import { TYPES } from "./taches.regles";
 import type { Confiee, Origine } from "./taches.types";
 import { useConfierTache } from "./useConfierTache";
 
-/** Ce qui remplace le bouton une fois l'action confiée. */
 export function BadgeConfiee({ info, compact = false }: { info: Confiee; compact?: boolean }) {
   const qui = info.assigne_nom || "un responsable à désigner";
   const quand = info.echeance
     ? new Date(info.echeance).toLocaleDateString("fr-FR") : null;
+  const titre = [
+    info.par_la_flotte ? "Confiée d'office par la flotte d'agents" : null,
+    quand ? `À traiter avant le ${quand}` : null,
+  ].filter(Boolean).join(" · ");
   return (
-    <span className="vk-confiee" title={quand ? `À traiter avant le ${quand}` : undefined}>
-      <CheckCircle2 size={12} />
+    <span className="vk-confiee" title={titre || undefined}>
+      {info.par_la_flotte ? <Bot size={12} /> : <CheckCircle2 size={12} />}
       {compact ? "Confiée" : `Confiée à ${qui}`}
     </span>
   );
@@ -59,7 +48,7 @@ export default function ConfierTache({ origine, onClose, onCree }: {
             borderRadius: 10, padding: "10px 12px",
           }}>
             <div style={{ fontSize: "0.72rem", fontWeight: 700, color: INK.secondary }}>
-              {origine.categorie || "Alerte"}{origine.client_nom ? ` · ${origine.client_nom}` : ""}
+              {origine.libelle || origine.categorie || "Alerte"}{origine.client_nom ? ` · ${origine.client_nom}` : ""}
             </div>
             <div style={{ fontSize: "0.88rem", fontWeight: 700, color: INK.primary, marginTop: 2 }}>
               {origine.titre}

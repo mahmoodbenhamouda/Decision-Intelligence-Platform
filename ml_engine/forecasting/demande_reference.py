@@ -1,71 +1,4 @@
-"""
-ml_engine/forecasting/demande_reference.py
-==========================================
-Prévision de la demande **par référence** — le chaînon qui manquait entre le
-volume agrégé et une commande.
-
-Pourquoi ce module
-------------------
-`demande_hybride` prévoit le volume TOTAL d'articles du mois prochain. Son
-propre rapport le dit : « le volume agrégé n'est pas un plan de
-réapprovisionnement, il ne dit rien de la répartition par référence ». On ne
-commande pas 8 290 articles, on commande 40 kits de TSH et 12 de D-Dimères.
-
-Une première tentative par produit existe (`ml_engine/models/demand_forecast.py`,
-`docs/CRISP_DM_STOCK.md`). Ses modèles gagnaient en validation puis perdaient sur
-un bloc final de six mois. Ce module en est la suite, et corrige ce qui avait
-fait échouer l'autre :
-
-  * un seul bloc de test de six mois  → 18 origines mensuelles en walk-forward ;
-  * un modèle qui apprenait l'écart à un socle choisi en validation, et héritait
-    de sa faiblesse quand le socle a changé sur le test → modèles globaux qui
-    apprennent la demande directement, saisonnalité en variable ;
-  * ni méthodes de demande intermittente, ni test de significativité → Croston,
-    SBA, TSB, et intervalle bootstrap apparié par référence ;
-  * décision rangée dans son propre rapport → entrée du registre central.
-
-Protocole (fixé AVANT de regarder le test)
-------------------------------------------
-  * Cible : quantité vendue nette des retours, par référence et par mois,
-    ramenée à zéro quand les retours dépassent les ventes. Famille REACTIF
-    (90 % du chiffre d'affaires) : les services et les équipements ne se
-    réapprovisionnent pas sur prévision.
-  * Période exploitable : 2021-01 → dernier mois complet, comme `demande_hybride`
-    (le trou 2018-08 → 2020-10 est la bascule d'ERP).
-  * Validation : 12 origines — sert à TOUT choisir (méthode, réglages).
-    Test : les 18 derniers mois, jamais regardés avant la décision — la même
-    fenêtre que le modèle agrégé.
-  * Éligibilité, décidée à l'origine avec le seul passé : au moins 6 mois de
-    vente sur les 24 derniers, et au moins une vente sur les 12 derniers.
-  * Métrique principale : WAPE à 1 mois, Σ|y−ŷ| / Σy sur les couples éligibles.
-    La MAPE est indéfinie par référence (37 % de mois à zéro).
-  * Règle de déploiement : un modèle appris n'est servi que s'il bat la
-    meilleure règle simple CHOISIE EN VALIDATION d'au moins 2 points de WAPE sur
-    le test, avec un IC95 bootstrap (rééchantillonnage des références) de
-    l'écart entièrement positif. Sinon la règle est servie, et le rapport dit
-    pourquoi.
-
-Résultat de l'étude (26/09/2026 — `reports/demande_reference_comparaison.json`)
-------------------------------------------------------------------------------
-Trente et une méthodes mesurées : règles simples, Croston/SBA/TSB, ETS, Theta,
-ADIDA, IMAPA, régression de Poisson, LightGBM, XGBoost, CatBoost (réglés par
-Optuna), MLP, N-HiTS, DeepAR, et la médiane des trois meilleurs.
-
-  * Validation : LightGBM (perte L1) 31,46 % contre 31,99 % pour la médiane des
-    12 derniers mois — +0,54 point, intervalle [−0,34 ; +1,47].
-  * Test : médiane 38,31 %, LightGBM 39,87 % — −1,57 point, intervalle
-    [−2,29 ; −0,73]. **La règle simple est servie.**
-  * Pourquoi : décembre 2025 a été exceptionnel (18 861 articles contre 11 341
-    en novembre). Le modèle a reporté ce pic sur janvier (+50 % de prévision) ;
-    la médiane, par construction, l'a ignoré. Hors janvier 2026, les deux font
-    jeu égal (38,68 % contre 38,61 %) : le modèle appris n'a pas d'avantage à
-    faire valoir, et il a un point de rupture que la règle n'a pas.
-  * La borne haute P80, calibrée sur la validation par groupe de demande,
-    couvre 80,3 % des mois de test à 1 mois et 78,9 % des cumuls à 3 mois.
-
-Lancement :
-    python -m ml_engine.forecasting.demande_reference
-"""
+"""Prévision de la demande **par référence** — le chaînon qui manquait entre le volume agrégé et…"""
 
 from __future__ import annotations
 
@@ -94,22 +27,18 @@ try:
 except Exception:  # pragma: no cover
     STORE = BASE / "output" / "analytics_store.duckdb"
 
-# ── Protocole ───────────────────────────────────────────────────────────────
 DEBUT_EXPLOITABLE = "2021-01"
 FAMILLE = "REACTIF"
 HORIZONS = (1, 2, 3)
 N_VALIDATION = 12
 N_TEST = 18
 MIN_MOIS_ACTIFS_24 = 6
-SEUIL_GAIN_PTS = 2.0          # points de WAPE
+SEUIL_GAIN_PTS = 2.0
 N_BOOTSTRAP = 2000
-RAFRAICHISSEMENT = 3          # mois entre deux réentraînements d'un modèle appris
+RAFRAICHISSEMENT = 3
 SEED = 42
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 1. Données
-# ═══════════════════════════════════════════════════════════════════════════
 REQUETE_LIGNES = """
     SELECT trim(reference) AS reference, upper(trim(designation)) AS designation,
            famille, client, date_trunc('month', date)::DATE AS mois,
@@ -129,16 +58,15 @@ REQUETE_DEVIS = """
 @dataclass
 class Donnees:
     """Tout ce que le module lit, sous une forme indépendante de la source."""
-    lignes: pd.DataFrame                  # référence × client × mois
-    positions: pd.DataFrame               # cle (désignation) × mois : entrées, position
-    clients: pd.DataFrame                 # client_code, client_name
-    devis: Optional[pd.DataFrame] = None  # client × mois : nombre et montant HT des devis
+    lignes: pd.DataFrame
+    positions: pd.DataFrame
+    clients: pd.DataFrame
+    devis: Optional[pd.DataFrame] = None
     source: str = ""
 
 
 def _lire_parquet(chemin: Path) -> pd.DataFrame:
-    """Lecture par DuckDB, déjà requis par la plateforme : pandas exigerait
-    pyarrow, qui n'est pas une dépendance du projet."""
+    """Lecture par DuckDB, déjà requis par la plateforme : pandas exigerait pyarrow, qui n'est pas une…"""
     import duckdb
     con = duckdb.connect()
     try:
@@ -159,11 +87,7 @@ def ecrire_parquet(df: pd.DataFrame, chemin: Path) -> None:
 
 
 def charger(store: Optional[Path] = None, extrait: Optional[Path] = None) -> Donnees:
-    """Lit l'entrepôt (production) ou un extrait parquet (expérimentation).
-
-    Les deux chemins produisent exactement les mêmes tables : l'extrait est
-    fabriqué par les mêmes requêtes (`exporter_extrait`).
-    """
+    """Lit l'entrepôt (production) ou un extrait parquet (expérimentation)."""
     if extrait is not None:
         e = Path(extrait)
         lignes = _lire_parquet(e / "ventes_ref_client_mois.parquet")
@@ -213,10 +137,9 @@ def exporter_extrait(dossier: Path, store: Optional[Path] = None) -> None:
 
 
 def classer_etablissement(nom: Optional[str]) -> str:
-    """Même typologie que `ml_engine/models/demand_features.py` : un hôpital
-    public achète par marché annuel, un laboratoire privé au fil de l'eau."""
+    """Même typologie que `ml_engine/models/demand_features.py` : un hôpital public achète par marché…"""
     u = (nom or "").upper()
-    if est_hopital_public(nom):          # règle commune : ml_engine/typologie.py
+    if est_hopital_public(nom):
         return "HOPITAL_PUBLIC"
     if any(k in u for k in ("CLINIQUE", "POLYCLINIQUE")):
         return "CLINIQUE_PRIVEE"
@@ -230,35 +153,28 @@ TYPES_ETAB = ("HOPITAL_PUBLIC", "CLINIQUE_PRIVEE", "LABORATOIRE", "AUTRE")
 
 @dataclass
 class Panel:
-    """La demande sous forme matricielle : une ligne par référence, une colonne
-    par mois. Toutes les variables se calculent par tranches de cette matrice,
-    ce qui rend l'antidatation impossible par construction : à l'origine `o`,
-    on ne lit que les colonnes `≤ o`."""
+    """La demande sous forme matricielle : une ligne par référence, une colonne par mois."""
     refs: List[str]
     mois: pd.DatetimeIndex
-    Y: np.ndarray                               # demande (≥ 0)
-    montant: np.ndarray                         # chiffre d'affaires
-    clients_type: Dict[str, np.ndarray]         # demande par type d'établissement
-    hhi: np.ndarray                             # concentration client du mois
-    n_clients: np.ndarray                       # clients acheteurs du mois
-    entrees: np.ndarray                         # achats (quantités entrées)
-    position: np.ndarray                        # position de stock fin de mois (minorant)
-    gamme: List[str]                            # plateforme / gamme (1er mot)
-    designation: List[str]                      # libellé dominant
-    C: np.ndarray = None                        # couple (référence, client) × mois : quantités
-    couple_ref: np.ndarray = None               # référence de chaque couple
-    couple_client: np.ndarray = None            # client de chaque couple
-    D: np.ndarray = None                        # client × mois : montant HT des devis
-    designations: Dict[str, List[str]] = field(default_factory=dict)  # référence → libellés
+    Y: np.ndarray
+    montant: np.ndarray
+    clients_type: Dict[str, np.ndarray]
+    hhi: np.ndarray
+    n_clients: np.ndarray
+    entrees: np.ndarray
+    position: np.ndarray
+    gamme: List[str]
+    designation: List[str]
+    C: np.ndarray = None
+    couple_ref: np.ndarray = None
+    couple_client: np.ndarray = None
+    D: np.ndarray = None
+    designations: Dict[str, List[str]] = field(default_factory=dict)
     exclus: Dict[str, Any] = field(default_factory=dict)
 
 
 def construire_panel(d: Donnees, fin: Optional[str] = None) -> Panel:
-    """Matrice référence × mois sur la période exploitable.
-
-    `fin` : dernier mois inclus (AAAA-MM). Par défaut, le dernier mois des
-    données est écarté comme incomplet — même règle que `demande_hybride`.
-    """
+    """Matrice référence × mois sur la période exploitable."""
     L = d.lignes
     L = L[(L["famille"] == FAMILLE) & L["reference"].notna() & (L["reference"] != "")]
     dernier = L["mois"].max()
@@ -277,7 +193,6 @@ def construire_panel(d: Donnees, fin: Optional[str] = None) -> Panel:
     montant = (L.groupby(["reference", "mois"])["montant"].sum()
                .unstack(fill_value=0.0).reindex(index=refs, columns=mois, fill_value=0.0).values)
 
-    # Structure client du mois
     noms = dict(zip(d.clients["client_code"].astype(str), d.clients["client_name"]))
     Lc = L.assign(type_etab=L["client"].astype(str).map(lambda c: classer_etablissement(noms.get(c))))
     qc = Lc.groupby(["reference", "mois", "client", "type_etab"])["qte"].sum().clip(lower=0).reset_index()
@@ -294,7 +209,6 @@ def construire_panel(d: Donnees, fin: Optional[str] = None) -> Panel:
             hhi[idx[r], col[m]] = g["part2"].sum()
             ncl[idx[r], col[m]] = int((g["qte"] > 0).sum())
 
-    # Désignation dominante et gamme
     des = (L.groupby(["reference", "designation"])["qte"].sum().reset_index()
            .sort_values(["reference", "qte"], ascending=[True, False])
            .drop_duplicates("reference").set_index("reference")["designation"])
@@ -303,8 +217,6 @@ def construire_panel(d: Donnees, fin: Optional[str] = None) -> Panel:
     freq = pd.Series(premiers).value_counts()
     gamme = [p if freq.get(p, 0) >= 5 else "AUTRE" for p in premiers]
 
-    # Achats et positions : la table de stock est indexée par désignation.
-    # Chaque désignation est rattachée à la référence qui l'a le plus vendue.
     rattache = (L.groupby(["designation", "reference"])["qte"].sum().reset_index()
                 .sort_values(["designation", "qte"], ascending=[True, False])
                 .drop_duplicates("designation").set_index("designation")["reference"])
@@ -316,10 +228,6 @@ def construire_panel(d: Donnees, fin: Optional[str] = None) -> Panel:
     pos = (P.groupby(["reference", "mois"])["position_fin"].sum().unstack()
            .reindex(index=refs, columns=mois).values)
 
-    # Couples (référence, client) : la mémoire d'achat de chaque client. Un
-    # hôpital sous marché annuel recommande à date fixe ; savoir QUI a acheté
-    # l'an dernier, et qui n'a pas encore racheté, est une information que la
-    # série agrégée d'une référence ne contient pas.
     cq = qc.groupby(["reference", "client", "mois"])["qte"].sum()
     couples = cq.reset_index()[["reference", "client"]].drop_duplicates().reset_index(drop=True)
     cidx = {(r, c): i for i, (r, c) in enumerate(zip(couples["reference"], couples["client"]))}
@@ -349,42 +257,27 @@ def construire_panel(d: Donnees, fin: Optional[str] = None) -> Panel:
                          "dernier_mois_retenu": str(fin_ts.date())})
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 2. Éligibilité et découpage
-# ═══════════════════════════════════════════════════════════════════════════
 def eligibles(p: Panel, o: int) -> np.ndarray:
-    """Masque des références prévues à l'origine `o` (colonne du dernier mois
-    observé). Décidé avec le seul passé : ≥ 6 mois actifs sur 24, ≥ 1 vente
-    sur 12."""
+    """Masque des références prévues à l'origine `o` (colonne du dernier mois observé)."""
     fen24 = p.Y[:, max(0, o - 23):o + 1]
     fen12 = p.Y[:, max(0, o - 11):o + 1]
     return ((fen24 > 0).sum(axis=1) >= MIN_MOIS_ACTIFS_24) & ((fen12 > 0).sum(axis=1) >= 1)
 
 
 def origines(p: Panel) -> Dict[str, List[int]]:
-    """Indices d'origine (dernier mois observé) pour la validation et le test.
-
-    Le test prévoit à h=1 les N_TEST derniers mois ; la validation les
-    N_VALIDATION mois d'avant. Une origine `o` prévoit les mois `o+1..o+3`.
-    """
+    """Indices d'origine (dernier mois observé) pour la validation et le test."""
     T = p.Y.shape[1]
     test = list(range(T - 1 - N_TEST, T - 1))
     val = list(range(test[0] - N_VALIDATION, test[0]))
     return {"validation": val, "test": test}
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 3. Règles simples (aucun apprentissage)
-# ═══════════════════════════════════════════════════════════════════════════
 def _croston(y: np.ndarray, alpha: float, variante: str) -> float:
-    """Croston (1972), SBA (Syntetos-Boylan 2005) ou TSB (Teunter-Syntetos-
-    Babai 2011) sur une série, prévision plate pour tous les horizons."""
+    """Croston (1972), SBA (Syntetos-Boylan 2005) ou TSB (Teunter-Syntetos- Babai 2011) sur une série,…"""
     nz = np.flatnonzero(y > 0)
     if len(nz) == 0:
         return 0.0
     if variante == "tsb":
-        # Initialisation sur la fenêtre elle-même : fréquence d'achat et taille
-        # moyenne d'une commande.
         prob, taille = float((y > 0).mean()), float(y[nz].mean())
         for t in range(len(y)):
             occ = 1.0 if y[t] > 0 else 0.0
@@ -414,8 +307,6 @@ def regles(p: Panel, o: int, h: int, masque: np.ndarray) -> Dict[str, np.ndarray
     for a in (0.1, 0.2, 0.3):
         for v in ("croston", "sba", "tsb"):
             out[f"{v}_{a:.1f}"] = np.array([_croston(y, a, v) for y in hist])
-    # Saisonnier « lissé » : même mois l'an dernier, à l'échelle du niveau
-    # récent. Utile quand la demande croît d'une année sur l'autre.
     if s >= 0:
         prec = p.Y[masque, max(0, o - 23):o - 11].mean(axis=1)
         rec = Y[:, -12:].mean(axis=1)
@@ -426,32 +317,11 @@ def regles(p: Panel, o: int, h: int, masque: np.ndarray) -> Dict[str, np.ndarray
     return out
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 4. Variables des modèles appris
-# ═══════════════════════════════════════════════════════════════════════════
-# Variables construites au niveau du client (rachat attendu, activité de devis).
-# Testées puis ÉCARTÉES sur la validation : avec le réglage retenu pour LightGBM,
-# WAPE à 1 mois 31,82 avec elles contre 31,46 sans (32,99 → 33,10 à 2 mois).
-# Le rachat attendu client par client n'apporte rien que le mois équivalent de
-# l'an dernier ne contienne déjà au niveau de la référence. Le code reste, testé,
-# pour que l'hypothèse puisse être rejouée quand l'historique s'allongera.
 VARIABLES_ETENDUES = False
 
 
 def variables_clients(p: Panel, o: int, h: int, masque: np.ndarray) -> Dict[str, np.ndarray]:
-    """Deux signaux construits au niveau du client, puis ramenés à la référence.
-
-    reachat_attendu
-        Quantité achetée autour du même mois l'an dernier (± 1 mois) par les
-        clients qui n'ont PAS racheté la référence depuis. C'est le naïf
-        saisonnier, mais client par client : un hôpital qui a déjà renouvelé son
-        marché ne recommandera pas une seconde fois.
-    devis_clients_relatif
-        Activité de devis des 3 derniers mois des clients de la référence,
-        rapportée à leur rythme habituel (12 mois précédents), pondérée par leur
-        poids dans la référence. Un devis précède une commande ; le montant d'un
-        devis est connu à sa date, pas son issue, qui n'est jamais lue ici.
-    """
+    """Deux signaux construits au niveau du client, puis ramenés à la référence."""
     n_ref = len(p.refs)
     s = o + h - 12
     reachat = np.zeros(n_ref)
@@ -460,7 +330,6 @@ def variables_clients(p: Panel, o: int, h: int, masque: np.ndarray) -> Dict[str,
         depuis = p.C[:, s + 2:o + 1].sum(axis=1) if s + 2 <= o else np.zeros(len(q))
         garde = (q > 0) & (depuis == 0)
         reachat = np.bincount(p.couple_ref[garde], weights=q[garde], minlength=n_ref)
-    # poids de chaque client dans la référence, sur les 12 derniers mois
     v12 = p.C[:, max(0, o - 11):o + 1].sum(axis=1)
     tot = np.bincount(p.couple_ref, weights=v12, minlength=n_ref)
     w = np.where(tot[p.couple_ref] > 0, v12 / np.maximum(tot[p.couple_ref], 1e-9), 0.0)
@@ -476,8 +345,7 @@ def variables_clients(p: Panel, o: int, h: int, masque: np.ndarray) -> Dict[str,
 
 def variables(p: Panel, o: int, h: int, masque: np.ndarray,
               etendues: Optional[bool] = None) -> pd.DataFrame:
-    """Variables à l'origine `o` pour l'horizon `h`, strictement rétrospectives
-    (colonnes ≤ o), sauf le MOIS CALENDAIRE de la cible, qui est connu."""
+    """Variables à l'origine `o` pour l'horizon `h`, strictement rétrospectives (colonnes ≤ o), sauf le…"""
     Y = p.Y[masque, :o + 1]
     n = len(Y)
     f: Dict[str, Any] = {}
@@ -499,10 +367,8 @@ def variables(p: Panel, o: int, h: int, masque: np.ndarray,
                                   f["moy_12"] / np.maximum(f["moy_12_precedente"], 1e-9), np.nan)
     actifs = Y > 0
     jamais = ~actifs.any(axis=1)
-    # mois écoulés depuis la dernière vente (0 = vendu le mois de l'origine)
     f["mois_depuis_derniere_vente"] = np.where(
         jamais, float(Y.shape[1]), np.argmax(actifs[:, ::-1], axis=1).astype(float))
-    # mois écoulés depuis la première vente de la période exploitable
     f["anciennete"] = np.where(jamais, 0.0, (Y.shape[1] - np.argmax(actifs, axis=1)).astype(float))
     f["mois_actifs_24"] = (Y[:, -24:] > 0).sum(axis=1)
     h24 = Y[:, -24:]
@@ -511,7 +377,6 @@ def variables(p: Panel, o: int, h: int, masque: np.ndarray,
     mnz = np.where(nzc > 0, (h24 * (h24 > 0)).sum(axis=1) / np.maximum(nzc, 1), 0.0)
     vnz = np.array([np.var(r[r > 0]) if (r > 0).sum() > 1 else np.nan for r in h24])
     f["cv2"] = np.where(mnz > 0, vnz / np.maximum(mnz, 1e-9) ** 2, np.nan)
-    # Structure client sur 12 mois
     tot12 = sum(p.clients_type[t][masque, max(0, o - 11):o + 1].sum(axis=1) for t in TYPES_ETAB)
     for t in TYPES_ETAB:
         v = p.clients_type[t][masque, max(0, o - 11):o + 1].sum(axis=1)
@@ -523,20 +388,16 @@ def variables(p: Panel, o: int, h: int, masque: np.ndarray,
             warnings.simplefilter("ignore", RuntimeWarning)
             f["hhi_12"] = np.nanmean(fen_hhi, axis=1)
     f["n_clients_max_mensuel_12"] = p.n_clients[masque, max(0, o - 11):o + 1].max(axis=1)
-    # Prix
     ca12 = p.montant[masque, max(0, o - 11):o + 1].sum(axis=1)
     q12 = Y[:, -12:].sum(axis=1)
     f["prix_moyen_12"] = np.where(q12 > 0, ca12 / np.maximum(q12, 1e-9), np.nan)
-    # Approvisionnement (réel, factures d'achat)
     f["achats_3"] = p.entrees[masque, max(0, o - 2):o + 1].sum(axis=1)
     f["achats_12"] = p.entrees[masque, max(0, o - 11):o + 1].sum(axis=1)
     f["position_fin"] = p.position[masque, o]
-    # Marché total (toutes références) — un signal que chaque série seule ignore
     tot = p.Y.sum(axis=0)
     f["marche_dernier_mois"] = np.full(n, tot[o])
     f["marche_meme_mois_an_passe"] = np.full(n, tot[o + h - 12] if o + h - 12 >= 0 else np.nan)
     f["marche_moy_12"] = np.full(n, tot[max(0, o - 11):o + 1].mean())
-    # Calendrier de la cible
     m_cible = (p.mois[o] + pd.DateOffset(months=h)).month
     f["mois_cible"] = np.full(n, m_cible)
     f["horizon"] = np.full(n, h)
@@ -554,16 +415,13 @@ COLONNES_QUANTITE = [f"lag_{k}" for k in range(12)] + [
 
 
 def echelle(X: pd.DataFrame) -> np.ndarray:
-    """Échelle d'une série : moyenne des 12 derniers mois, bornée par le bas.
-    Sert aux variantes normalisées, où chaque référence est ramenée à son
-    propre niveau pour que le modèle global apprenne des FORMES de demande."""
+    """Échelle d'une série : moyenne des 12 derniers mois, bornée par le bas."""
     return np.maximum(X["moy_12"].values, 0.5)
 
 
 def jeu(p: Panel, origines_: Sequence[int], h: int, avec_cible: bool = True
         ) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray]:
-    """Empile les variables de plusieurs origines. Renvoie X, y, indices de
-    référence et origine de chaque ligne."""
+    """Empile les variables de plusieurs origines."""
     Xs, ys, rs, os_ = [], [], [], []
     T = p.Y.shape[1]
     for o in origines_:
@@ -582,9 +440,6 @@ def jeu(p: Panel, origines_: Sequence[int], h: int, avec_cible: bool = True
     return X, np.concatenate(ys), np.concatenate(rs), np.concatenate(os_)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 5. Métriques
-# ═══════════════════════════════════════════════════════════════════════════
 def wape(y: np.ndarray, yhat: np.ndarray) -> float:
     s = float(np.sum(y))
     return float(100 * np.sum(np.abs(y - yhat)) / s) if s > 0 else float("nan")
@@ -597,12 +452,7 @@ def biais(y: np.ndarray, yhat: np.ndarray) -> float:
 
 def ecart_bootstrap(y: np.ndarray, a: np.ndarray, b: np.ndarray, refs: np.ndarray,
                     n: int = N_BOOTSTRAP, graine: int = SEED) -> Dict[str, Any]:
-    """IC95 de WAPE(a) − WAPE(b) par rééchantillonnage des RÉFÉRENCES.
-
-    Les erreurs d'une même référence sont corrélées d'un mois à l'autre : tirer
-    des lignes indépendantes sous-estimerait l'incertitude. On tire donc des
-    références entières, avec remise. Positif = b meilleur que a.
-    """
+    """IC95 de WAPE(a) − WAPE(b) par rééchantillonnage des RÉFÉRENCES."""
     rng = np.random.default_rng(graine)
     u, inv = np.unique(refs, return_inverse=True)
     k = len(u)
@@ -620,9 +470,6 @@ def ecart_bootstrap(y: np.ndarray, a: np.ndarray, b: np.ndarray, refs: np.ndarra
             "significatif": bool(bas > 0 or haut < 0), "n_references": int(k)}
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 6. Évaluation des règles en walk-forward
-# ═══════════════════════════════════════════════════════════════════════════
 def predictions_regles(p: Panel, origines_: Sequence[int], h: int
                        ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
     T = p.Y.shape[1]
@@ -646,16 +493,6 @@ def choisir_regle(p: Panel, h: int = 1) -> Tuple[str, Dict[str, float]]:
     return min(scores, key=scores.get), scores
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 7. Le challenger issu de la comparaison, et sa mise en concurrence
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# La comparaison complète (`evaluation_demande/comparer_modeles.py`) a mis en
-# concurrence vingt-cinq règles et modèles. Ses choix, faits sur la validation
-# seule, sont figés ici : la règle de référence et le meilleur candidat appris,
-# avec ses réglages. À chaque réentraînement, `train()` rejoue leur duel sur les
-# 18 derniers mois — la décision reste donc vivante quand l'historique
-# s'allonge, sans rouvrir la recherche de réglages.
 REGLE_DE_REFERENCE = "mediane_12"
 CHALLENGER: Dict[str, Any] = {
     "famille": "lightgbm",
@@ -713,9 +550,7 @@ def walk_forward_appris(p: Panel, origines_: Sequence[int], h: int,
                         predire: Callable[[Any, int, np.ndarray], np.ndarray],
                         rafraichissement: int = RAFRAICHISSEMENT
                         ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Walk-forward d'un modèle appris : réentraîné tous les `rafraichissement`
-    mois sur le seul passé, et interrogé à chaque origine avec des variables à
-    jour. Aucune origine ne voit une cible postérieure à elle."""
+    """Walk-forward d'un modèle appris : réentraîné tous les `rafraichissement` mois sur le seul passé,…"""
     T = p.Y.shape[1]
     modele, depuis = None, None
     yh, ys, rs, os_ = [], [], [], []
@@ -757,8 +592,7 @@ def _cumul(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def classe_demande(y: np.ndarray) -> str:
-    """Classe de demande de Syntetos & Boylan (2005) : ADI (intervalle moyen
-    entre deux ventes) et CV² (variabilité des quantités vendues)."""
+    """Classe de demande de Syntetos & Boylan (2005) : ADI (intervalle moyen entre deux ventes) et CV²…"""
     nz = y[y > 0]
     if len(nz) < 2:
         return "insuffisante"
@@ -770,18 +604,7 @@ def classe_demande(y: np.ndarray) -> str:
 
 
 def groupe_de_calibration(p: Panel, r: int, o: int) -> str:
-    """« reguliere » ou « autre », d'après les 24 mois précédant l'origine.
-
-    Pourquoi deux groupes et pas un seul quantile
-    ---------------------------------------------
-    Avec un quantile unique, la borne couvrait 95 % des mois des références
-    régulières (83 % du volume : marge inutilement large) et 67 % des autres
-    (marge insuffisante là où la demande est la plus heurtée) — mesuré en
-    calibrant sur la première moitié de la validation et en vérifiant sur la
-    seconde. Deux groupes ramènent les deux vers 80 %. Quatre groupes (les
-    quatre classes) fragmentaient trop la calibration : une classe s'effondrait
-    à 63 %.
-    """
+    """« reguliere » ou « autre », d'après les 24 mois précédant l'origine."""
     return "reguliere" if classe_demande(p.Y[r, max(0, o - 23):o + 1]) == "reguliere" else "autre"
 
 
@@ -796,9 +619,7 @@ def _ecarts(p: Panel, sub: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.nda
 
 
 def calibrer_borne(p: Panel, df: pd.DataFrame, niveau: float = 0.8) -> Dict[str, Dict[str, float]]:
-    """Quantiles conformes de l'écart normalisé (y − ŷ) / échelle, par groupe,
-    à 1 mois et sur le cumul de 3 mois. L'échelle est la moyenne des 12
-    derniers mois de la référence : une borne en unités, adaptée à son niveau."""
+    """Quantiles conformes de l'écart normalisé (y − ŷ) / échelle, par groupe, à 1 mois et sur le cumul…"""
     out: Dict[str, Dict[str, float]] = {}
     for cle, sub in (("h1", df[df.h == 1]), ("cumul_3_mois", _cumul(df))):
         e, _, g = _ecarts(p, sub)
@@ -818,14 +639,9 @@ def couverture(p: Panel, df: pd.DataFrame, qs: Dict[str, Dict[str, float]]) -> D
     return out
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 8. Entraînement : duel, décision, rapport
-# ═══════════════════════════════════════════════════════════════════════════
 def train(store: Optional[Path] = None, extrait: Optional[Path] = None,
           ecrire: bool = True) -> Dict[str, Any]:
-    """Rejoue le duel règle de référence / challenger sur les 18 derniers mois,
-    applique la règle de déploiement, calibre la borne P80 de la méthode servie
-    sur la validation, et écrit `reports/demande_reference_metrics.json`."""
+    """Rejoue le duel règle de référence / challenger sur les 18 derniers mois, applique la règle de…"""
     try:
         from ml_engine.determinisme import etat as etat_determinisme, limiter_threads
     except Exception:  # pragma: no cover
@@ -839,7 +655,7 @@ def train(store: Optional[Path] = None, extrait: Optional[Path] = None,
             ch_test = _long_methode(p, O["test"], "challenger")
             ch_val = _long_methode(p, O["validation"], "challenger")
             challenger_ok, motif_indispo = True, None
-        except ImportError as e:        # LightGBM absent : la règle est servie
+        except ImportError as e:
             challenger_ok, motif_indispo = False, f"challenger indisponible ({e})"
         ref_test = _long_methode(p, O["test"], REGLE_DE_REFERENCE)
         ref_val = _long_methode(p, O["validation"], REGLE_DE_REFERENCE)
@@ -887,7 +703,6 @@ def train(store: Optional[Path] = None, extrait: Optional[Path] = None,
         "comparaison_challenger_vs_reference_h1": comp,
         "methode_servie": {
             "nom": nom_ch if servi else REGLE_DE_REFERENCE,
-            # Phrase lue par le registre (`_motif`) : ce qui est servi, et pourquoi.
             "methode_servie": (
                 f"{nom_ch} servi : +{comp['ecart_pts']} points de WAPE sur la règle simple "
                 f"(IC95 {comp['ic95']})" if servi else
@@ -923,13 +738,9 @@ def train(store: Optional[Path] = None, extrait: Optional[Path] = None,
     return rapport
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 9. Prévision servie
-# ═══════════════════════════════════════════════════════════════════════════
 def prevoir(store: Optional[Path] = None, extrait: Optional[Path] = None,
             limite: Optional[int] = None) -> Dict[str, Any]:
-    """Prévision des trois prochains mois pour chaque référence éligible, avec
-    la méthode que le dernier `train()` a déclarée servie, et sa borne P80."""
+    """Prévision des trois prochains mois pour chaque référence éligible, avec la méthode que le…"""
     chemin = REPORTS_DIR / RAPPORT
     if not chemin.exists():
         return {"servi": False, "motif": f"rapport {RAPPORT} absent — lancer l'entraînement"}
@@ -955,7 +766,7 @@ def prevoir(store: Optional[Path] = None, extrait: Optional[Path] = None,
             prev.append(predire_lgbm(modeles[h], p, o, h, m))
         else:
             prev.append(regles(p, o, h, m)[REGLE_DE_REFERENCE])
-    prev = np.vstack(prev).T                                 # références × 3
+    prev = np.vstack(prev).T
     ech = np.maximum(p.Y[m, max(0, o - 11):o + 1].mean(axis=1), 0.5)
     grp = [groupe_de_calibration(p, i, o) for i in idx]
     q3 = np.array([qs["cumul_3_mois"].get(g, max(qs["cumul_3_mois"].values())) for g in grp])

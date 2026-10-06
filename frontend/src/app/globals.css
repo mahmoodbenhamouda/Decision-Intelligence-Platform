@@ -654,6 +654,11 @@ select.mini { color-scheme: light; }
 .bl-raz:hover { color: var(--accent-red); background: rgba(239,68,68,0.08); }
 
 .bl-nav { display: flex; flex-direction: column; gap: 2px; }
+/* Un groupe = une étape du cycle de gestion. L'espace entre groupes fait le
+   travail d'un titre quand le menu est replié et que les titres disparaissent. */
+.bl-groupe { display: flex; flex-direction: column; gap: 2px; }
+.bl-groupe + .bl-groupe { margin-top: 6px; }
+.bl-separateur { height: 1px; margin: 7px 10px; background: rgba(26,35,72,0.10); }
 .bl-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: none;
   background: transparent; color: var(--text-secondary); font-size: 0.83rem; font-weight: 600;
   border-radius: 10px; cursor: pointer; transition: background .15s, color .15s; text-align: left; position: relative; }
@@ -730,6 +735,13 @@ select.mini { color-scheme: light; }
 .xai-barre { display: flex; align-items: center; gap: 7px; margin-left: 18px; }
 .xai-barre i { display: block; height: 5px; border-radius: 3px; background: #5580EE; }
 .xai-barre b { font-size: 0.66rem; font-weight: 700; color: #93A0BC; }
+/* Position de la valeur dans la distribution (centile ou côté de la moyenne) :
+   un fait calculé, posé en retrait du libellé qu'il qualifie. */
+.xai-position { font-style: normal; color: #93A0BC; }
+/* L'action à mener — ce qui ramènerait le score sous le seuil — est séparée des
+   raisons par un filet : elle répond à « que faire », pas à « pourquoi ». */
+.xai-action { margin-top: 2px; padding-top: 7px; border-top: 1px dashed rgba(26,35,72,0.12); }
+.xai-action .xai-phrase { color: #2342B8; font-weight: 600; }
 /* ── ÉCRAN DE CONNEXION ──────────────────────────────────────────────────── */
 /* Deux moitiés : la marque à gauche (logo, une phrase, trois points courts),
    le formulaire à droite, posé dans une carte. Sous 900 px, la marque devient

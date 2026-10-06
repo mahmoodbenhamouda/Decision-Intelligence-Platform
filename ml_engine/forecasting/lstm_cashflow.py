@@ -1,21 +1,4 @@
-"""
-ml_engine/forecasting/lstm_cashflow.py
-======================================
-Prévision d'ENCAISSEMENTS / trésorerie par DEEP LEARNING (LSTM).
-
-Objectif métier : anticiper les entrées de cash (basées sur les dates d'échéance
-des factures de vente) sur 3–6 mois, pour piloter le recouvrement et la trésorerie.
-Le résultat alimente le radar financier (levier « trésorerie prévisionnelle ») et
-le copilote / l'avatar.
-
-Conception robuste :
-  - Modèle principal : LSTM (PyTorch) sur la série mensuelle log-transformée.
-  - Repli automatique (si PyTorch absent) : lissage exponentiel + tendance +
-    saisonnalité mensuelle, en NumPy pur → la fonction renvoie TOUJOURS un résultat.
-  - Bande de confiance estimée à partir des résidus (backtest 1 pas).
-
-API : forecast_cashflow(horizon=6, data_dir=None) -> dict
-"""
+"""Prévision d'ENCAISSEMENTS / trésorerie par DEEP LEARNING (LSTM)."""
 
 from __future__ import annotations
 
@@ -25,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-try:  # PyTorch est optionnel (cf. requirements.txt) — repli NumPy sinon
+try:
     import torch
     import torch.nn as nn
     _TORCH = True
@@ -33,9 +16,6 @@ except Exception:  # pragma: no cover
     _TORCH = False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Données : série mensuelle d'encaissements attendus (par date d'échéance)
-# ─────────────────────────────────────────────────────────────────────────────
 def _load_series(data_dir: Path | None = None) -> Tuple[List[str], np.ndarray]:
     from ml_engine.analytics import kpi_engine
     con = kpi_engine._connect(data_dir)
@@ -49,7 +29,6 @@ def _load_series(data_dir: Path | None = None) -> Tuple[List[str], np.ndarray]:
     if not rows:
         return [], np.array([])
 
-    # Reindex mensuel continu (comble les trous par interpolation linéaire)
     def _key(s: str) -> int:
         y, mo = s.split("-"); return int(y) * 12 + (int(mo) - 1)
     idx = {r[0]: (float(r[1] or 0), int(r[2] or 0)) for r in rows}
@@ -64,20 +43,6 @@ def _load_series(data_dir: Path | None = None) -> Tuple[List[str], np.ndarray]:
     arr = np.array(vals, dtype=float)
     cnt = np.array(counts, dtype=float)
 
-    # ── TRONCATURE AVANT TOUTE INTERPOLATION ────────────────────────────────
-    # L'ERP ne couvre pas 2019 ni 2020 : 27 mois sont absents (bascule d'outil,
-    # cf. scripts/audit_trou_temporel.py). Interpoler cette plage traçait une
-    # DROITE de 447 k DT (2018) à 47,6 M DT (2021) — 27 points inventés, soit un
-    # quart de la série, dont une fausse rampe de croissance.
-    #
-    # Conséquence mesurable : Holt-Winters et le LSTM estiment tendance et
-    # saisonnalité sur tout l'historique, donc sur cette rampe fictive, alors
-    # que le naïf saisonnier ne regarde que m−12 et l'ignore. Une partie de la
-    # « victoire des baselines » venait de là, pas de la nature de la série.
-    #
-    # On ne conserve donc que le segment postérieur au dernier trou LONG. Les
-    # trous courts (1 ou 2 mois) restent interpolables : ils relèvent du bruit
-    # de facturation, pas d'une absence de données.
     TROU_LONG = 3
     nans = np.isnan(arr)
     if nans.any():
@@ -88,27 +53,21 @@ def _load_series(data_dir: Path | None = None) -> Tuple[List[str], np.ndarray]:
                 longueur += 1
             else:
                 if longueur >= TROU_LONG:
-                    debut = i          # on repart juste après le trou long
+                    debut = i
                 longueur = 0
         if debut:
             periods, arr, cnt = periods[debut:], arr[debut:], cnt[debut:]
             nans = np.isnan(arr)
 
-    # Trous courts restants : interpolation légitime.
     if nans.any():
         arr[nans] = np.interp(np.flatnonzero(nans), np.flatnonzero(~nans), arr[~nans])
 
-    # Retire les mois de fin PARTIELS (échéances futures des factures déjà émises) :
-    # un mois dont le nombre de factures s'effondre (< 40% de la médiane) est incomplet.
     med_cnt = np.median(cnt[cnt > 0]) if (cnt > 0).any() else 0
     while len(arr) > 24 and cnt[-1] < 0.4 * med_cnt:
         periods.pop(); arr = arr[:-1]; cnt = cnt[:-1]
     return periods, arr
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Modèle LSTM (PyTorch)
-# ─────────────────────────────────────────────────────────────────────────────
 if _TORCH:
     class _LSTM(nn.Module):
         def __init__(self, hidden: int = 32, layers: int = 1):
@@ -130,8 +89,7 @@ def _windows(series: np.ndarray, look_back: int) -> Tuple[np.ndarray, np.ndarray
 
 def _forecast_lstm(z: np.ndarray, horizon: int, look_back: int,
                    epochs: int = 200, seed: int = 42) -> Tuple[np.ndarray, np.ndarray]:
-    """Entraîne un LSTM sur la série normalisée z et prévoit `horizon` pas.
-    Renvoie (prévisions normalisées, résidus de backtest 1-pas)."""
+    """Entraîne un LSTM sur la série normalisée z et prévoit `horizon` pas."""
     torch.manual_seed(seed); np.random.seed(seed)
     X, y = _windows(z, look_back)
     Xt = torch.tensor(X, dtype=torch.float32).unsqueeze(-1)
@@ -145,12 +103,10 @@ def _forecast_lstm(z: np.ndarray, horizon: int, look_back: int,
         pred = model(Xt)
         loss = loss_fn(pred, yt)
         loss.backward(); opt.step()
-    # résidus de backtest (1 pas) pour la bande de confiance
     model.eval()
     with torch.no_grad():
         fitted = model(Xt).squeeze(-1).numpy()
     resid = y - fitted
-    # prévision récursive
     model.eval(); window = list(z[-look_back:]); preds = []
     with torch.no_grad():
         for _ in range(horizon):
@@ -160,18 +116,14 @@ def _forecast_lstm(z: np.ndarray, horizon: int, look_back: int,
     return np.array(preds), resid
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Repli NumPy : lissage exponentiel + tendance + saisonnalité (Holt-Winters léger)
-# ─────────────────────────────────────────────────────────────────────────────
 def _forecast_fallback(z: np.ndarray, horizon: int, season: int = 12,
                        window: int = 30, damping: float = 0.85) -> Tuple[np.ndarray, np.ndarray]:
-    """Holt-Winters léger, régime RÉCENT + tendance AMORTIE (évite l'extrapolation
-    explosive d'une série à forte croissance)."""
+    """Holt-Winters léger, régime RÉCENT + tendance AMORTIE (évite l'extrapolation explosive d'une…"""
     n = len(z)
     W = min(n, window)
     zr = z[-W:]
     xs = np.arange(W)
-    a, b = np.polyfit(xs, zr, 1)          # tendance sur la fenêtre récente
+    a, b = np.polyfit(xs, zr, 1)
     detr = zr - (a * xs + b)
     seas = np.zeros(season)
     if W >= season:
@@ -186,24 +138,19 @@ def _forecast_fallback(z: np.ndarray, horizon: int, season: int = 12,
     preds = []
     cum = 0.0
     for h in range(1, horizon + 1):
-        cum += damping ** h            # incrément de tendance amorti
+        cum += damping ** h
         i = (W - 1) + h
         preds.append(level + a * cum + seas[i % season])
     return np.array(preds), resid
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# API publique
-# ─────────────────────────────────────────────────────────────────────────────
 def forecast_cashflow(horizon: int = 6, data_dir: Path | None = None,
                       look_back: int = 12) -> Optional[Dict[str, Any]]:
-    """Prévoit les encaissements mensuels sur `horizon` mois.
-    Renvoie history, forecast (avec bande de confiance), modèle utilisé et métriques."""
+    """Prévoit les encaissements mensuels sur `horizon` mois."""
     periods, raw = _load_series(data_dir)
     if len(raw) < look_back + 6:
         return None
 
-    # log-transform (série à forte croissance) + standardisation
     logs = np.log1p(np.clip(raw, 0, None))
     mu, sd = logs.mean(), (logs.std() or 1.0)
     z = (logs - mu) / sd
@@ -220,7 +167,6 @@ def forecast_cashflow(horizon: int = 6, data_dir: Path | None = None,
         preds_z, resid = _forecast_fallback(z, horizon)
         model_name = "Lissage saisonnier (repli NumPy)"
 
-    # bande de confiance : σ des résidus en espace log, bornée pour rester réaliste
     sigma = min(float(resid.std() or 0.0), 0.30)
 
     def _inv(zv: float) -> float:
@@ -240,10 +186,9 @@ def forecast_cashflow(horizon: int = 6, data_dir: Path | None = None,
             "upper": round(hi, 0),
         })
 
-    # métrique de backtest : MAPE 1-pas dans l'espace réel (mois significatifs)
     fitted_real = np.expm1(((z[-len(resid):] - resid) * sd) + mu)
     actual_real = np.expm1((z[-len(resid):] * sd) + mu)
-    mask = actual_real > np.median(actual_real) * 0.1  # ignore les mois quasi nuls
+    mask = actual_real > np.median(actual_real) * 0.1
     if mask.any():
         mape = float(np.mean(np.abs((actual_real[mask] - fitted_real[mask]) / actual_real[mask])) * 100)
     else:
@@ -268,8 +213,7 @@ def forecast_cashflow(horizon: int = 6, data_dir: Path | None = None,
 
 def load_or_forecast(horizon: int = 6, data_dir: Path | None = None,
                      max_age_hours: float = 12.0) -> Optional[Dict[str, Any]]:
-    """Version CACHÉE : réutilise la dernière prévision si elle a moins de
-    `max_age_hours`, sinon réentraîne. Évite d'entraîner le LSTM à chaque requête."""
+    """Version CACHÉE : réutilise la dernière prévision si elle a moins de `max_age_hours`, sinon…"""
     import json
     import time as _time
     try:

@@ -1,10 +1,4 @@
-"""
-api/services/modeles.py
-=======================
-Tableau comparatif de TOUS les modules du registre : nature, statut, métrique
-hors période, référence battue, et pour les classifieurs accuracy, balanced
-accuracy, F1 et MCC — y compris la carte du modèle deep learning.
-"""
+"""Tableau comparatif de TOUS les modules du registre : nature, statut, métrique hors période,…"""
 
 from __future__ import annotations
 

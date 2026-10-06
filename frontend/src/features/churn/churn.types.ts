@@ -1,7 +1,5 @@
-/**
- * Model — clients susceptibles de cesser de commander (réponse de /api/churn).
- */
-import type { Raison } from "@/shared/ui/Pourquoi";
+
+import type { Contrefactuel, Raison } from "@/shared/ui/Pourquoi";
 
 export interface ChurnClient {
   code: string;
@@ -14,10 +12,14 @@ export interface ChurnClient {
   tendance_ca: number;
   enjeu_dt: number;
   raisons?: Raison[];
+  contrefactuel?: Contrefactuel | null;
 }
 export interface ChurnData {
   servi: boolean;
   motif?: string;
+  masque?: boolean;
+  portee?: string;
+  n_clients_filtre?: number;
   n_clients_scores?: number;
   n_au_dessus_de_0_5?: number;
   enjeu_total_dt?: number;

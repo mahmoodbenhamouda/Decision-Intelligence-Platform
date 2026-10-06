@@ -1,16 +1,4 @@
-"""
-ml_engine/ocr/layoutlm/champs.py
-================================
-Outils communs à l'entraînement (Colab), à l'évaluation et à l'inférence :
-
-  - lecture robuste des montants, dates et numéros tels qu'imprimés
-    (« 2 381,000 », « 1.600,000 », « 6,720.00 », « 14OCTOBER25 »…) ;
-  - décodage des prédictions LayoutLMv3 (étiquettes BIO par mot) en champs ;
-  - contrôle arithmétique HT + TVA (+ timbre) = TTC ;
-  - comparaison d'une extraction avec la vérité terrain.
-
-Aucune dépendance lourde : ce module s'importe sans torch ni transformers.
-"""
+"""Outils communs à l'entraînement (Colab), à l'évaluation et à l'inférence :"""
 from __future__ import annotations
 
 import re
@@ -29,7 +17,6 @@ CLE = {"NUMERO": "numero", "DATE": "date", "FOURNISSEUR": "fournisseur",
        "TIMBRE": "timbre", "TTC": "total_ttc", "NET": "net_a_payer"}
 
 
-# ── lecture des valeurs ─────────────────────────────────────────────────────
 def sans_accent(s: str) -> str:
     s = unicodedata.normalize("NFKD", s or "")
     return "".join(c for c in s if not unicodedata.combining(c)).lower()
@@ -76,7 +63,7 @@ def _an(y: str) -> int:
 
 def lire_date(s: str) -> Optional[date]:
     s = sans_accent(s or "").replace("°", " ")
-    s = re.sub(r"(?<=\d)0(?=ct[a-z])", " o", s)          # « 140CTOBER25 » = 14 OCTOBER 25
+    s = re.sub(r"(?<=\d)0(?=ct[a-z])", " o", s)
     s = re.sub(r"(?<=\d)o(?!ct)|o(?=\d)", "0", s)
     try:
         m = re.search(r"(\d{1,2})\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*(\d{4}|\d{2})\b", s)
@@ -110,7 +97,6 @@ def mots_nom(s: str) -> List[str]:
     return [w for w in re.findall(r"[a-z0-9]+", sans_accent(s or "")) if len(w) > 1 and w not in VIDES]
 
 
-# ── décodage des prédictions ────────────────────────────────────────────────
 def spans(mots: Sequence[str], etiquettes: Sequence[str],
           probas: Optional[Sequence[float]] = None) -> Dict[str, List[Tuple[str, float, int]]]:
     """Mots étiquetés BIO → {champ: [(texte, score moyen, indice du 1er mot)]}."""
@@ -145,29 +131,14 @@ def valeur(champ: str, texte: str):
     return texte.strip() or None
 
 
-# Un montant « 1 081,080 » est souvent coupé en deux mots par l'espace des
-# milliers. Quand le modèle n'étiquette que le second, la valeur perd son
-# chiffre de tête : 1 081,080 devient 81,080. Mesuré en validation croisée :
-# 5 montants sur 742 champs (d003, d045, d059).
 _MILLIERS_GAUCHE = re.compile(r"^\d{1,3}$")
 _MILLIERS_DROITE = re.compile(r"^\d{3}[.,]\d")
-# Le piège à éviter : dans un tableau, « 4 » (quantité) précède « 312,500 »
-# (prix unitaire) — même motif, autre sens. Seule la géométrie les distingue.
-# L'écart est rapporté à la largeur d'UN CARACTÈRE du montant : le chiffre de
-# gauche est parfois un « 1 » de 3 pixels, trop étroit pour servir d'étalon.
-# Mesuré sur les 55 séparateurs de milliers annotés du jeu : écart de 0,09 à
-# 1,67 caractère. Sur un saut de colonne quantité / prix unitaire : 15
-# caractères. Le seuil de 2 accepte tous les cas observés et reste très loin
-# d'un changement de colonne.
 ECART_MAX_MILLIERS = 2.0
 
 
 def recoller_milliers(mots: Sequence[str], etiquettes: Sequence[str],
                       boites: Optional[Sequence[Sequence[float]]] = None) -> List[str]:
-    """Rattache à un montant le chiffre de tête que le modèle a laissé de côté.
-
-    Sans boîtes, aucun recollage : la géométrie est le seul garde-fou contre la
-    confusion avec une quantité de ligne. Renvoie des étiquettes modifiées."""
+    """Rattache à un montant le chiffre de tête que le modèle a laissé de côté."""
     etq = list(etiquettes)
     if not boites or len(boites) != len(mots):
         return etq
@@ -179,7 +150,7 @@ def recoller_milliers(mots: Sequence[str], etiquettes: Sequence[str],
             continue
         (x0, y0, x1, y1), (u0, v0, u1, v1) = boites[i - 1], boites[i]
         caractere = max((u1 - u0) / max(len(mots[i]), 1), 1e-6)
-        meme_ligne = min(y1, v1) > max(y0, v0)          # chevauchement vertical
+        meme_ligne = min(y1, v1) > max(y0, v0)
         ecart = u0 - x1
         if meme_ligne and -caractere < ecart <= ECART_MAX_MILLIERS * caractere:
             etq[i - 1], etq[i] = f"B-{ch}", f"I-{ch}"
@@ -187,10 +158,7 @@ def recoller_milliers(mots: Sequence[str], etiquettes: Sequence[str],
 
 
 def decoder(pages: List[dict]) -> Dict[str, object]:
-    """pages : [{mots, etiquettes, probas}] d'UN document → champs extraits.
-
-    Pour chaque champ : le passage le plus sûr dont la valeur est lisible.
-    Puis contrôle arithmétique (cohérence HT + TVA + timbre = TTC)."""
+    """pages : [{mots, etiquettes, probas}] d'UN document → champs extraits."""
     cand: Dict[str, List[Tuple[float, object]]] = {c: [] for c in CHAMPS}
     for p in pages:
         etq = recoller_milliers(p["mots"], p["etiquettes"], p.get("boites"))
@@ -208,34 +176,19 @@ def decoder(pages: List[dict]) -> Dict[str, object]:
     return coherence(res)
 
 
-# Seuils de confiance par champ, calibrés sur la validation croisée (sept. 2026).
-#
-# Sous le seuil, l'hybride abandonne le modèle et reprend la valeur des règles.
-# Pour HT, TVA et TTC c'est perdant : les règles y sont à 22, 27 et 23 %, le
-# modèle à 75, 76 et 60 %. Seuil 0 = on garde toujours le modèle dès qu'il a lu
-# une valeur. Ailleurs la bascule à 0,5 fait gagner des points (numéro 86,2 →
-# 87,4 ; date 88,6 → 90,9 ; timbre 83,6 → 86,6) : on la garde.
 SEUILS_CONFIANCE = {
     "total_ht": 0.0,
     "total_tva": 0.0,
     "total_ttc": 0.0,
 }
-SEUIL_CONFIANCE = 0.5          # défaut pour les champs absents du tableau
+SEUIL_CONFIANCE = 0.5
 
 
 MONTANTS_EVAL = ("total_ht", "total_tva", "timbre", "total_ttc", "net_a_payer")
 
 
 def montant_plausible(cle: str, v, lu: Dict[str, object]) -> bool:
-    """Un montant proposé par les RÈGLES est-il compatible avec ceux lus par le modèle ?
-
-    Ne sert qu'à écarter l'absurde, jamais à arbitrer entre deux valeurs crédibles :
-      - aucun montant négatif ;
-      - HT, TVA et timbre ne dépassent pas le TTC (ou à défaut le net) ;
-      - la TVA ne dépasse pas le HT (taux < 100 %) ;
-      - pas plus de 10 fois le plus grand total lu par le modèle.
-    Cas réel (d002) : TVA des règles 101 296 pour un TTC de 1 855,276.
-    """
+    """Un montant proposé par les RÈGLES est-il compatible avec ceux lus par le modèle ?"""
     if v is None:
         return True
     try:
@@ -258,10 +211,7 @@ def montant_plausible(cle: str, v, lu: Dict[str, object]) -> bool:
 
 
 def fusionner_avec_regles(lu: Dict[str, object], regles: Dict[str, object]) -> Dict[str, object]:
-    """Hybride : le modèle quand il est sûr de lui, les règles sinon, puis
-    l'arithmétique départage les montants (candidats des deux sources).
-
-    `lu` : sortie de `decoder` ; `regles` : même schéma (voir `depuis_regles`)."""
+    """Hybride : le modèle quand il est sûr de lui, les règles sinon, puis l'arithmétique départage les…"""
     scores = lu.get("_scores") or {}
     h: Dict[str, object] = {}
     rejetes: List[Tuple[str, object]] = []
@@ -269,7 +219,7 @@ def fusionner_avec_regles(lu: Dict[str, object], regles: Dict[str, object]) -> D
         m, r = lu.get(k), regles.get(k)
         if m is None or (r is not None and scores.get(k, 1.0) < SEUILS_CONFIANCE.get(k, SEUIL_CONFIANCE)):
             if k in MONTANTS_EVAL and not montant_plausible(k, r, lu):
-                rejetes.append((k, r))          # absurde : on garde le modèle (éventuellement vide)
+                rejetes.append((k, r))
                 h[k] = m
             else:
                 h[k] = r
@@ -286,11 +236,7 @@ def fusionner_avec_regles(lu: Dict[str, object], regles: Dict[str, object]) -> D
 
 
 def coherence(res: Dict[str, object], tol: float = 0.011) -> Dict[str, object]:
-    """Choisit, parmi les candidats, la combinaison qui « tombe juste ».
-
-    HT + TVA (+ timbre, + éventuels frais) ≈ TTC : si le montant le plus sûr du
-    modèle ne respecte pas l'égalité mais qu'un autre candidat la respecte,
-    on prend l'autre. Un net à payer manquant reprend le TTC."""
+    """Choisit, parmi les candidats, la combinaison qui « tombe juste »."""
     c = res.get("_candidats") or {}
     hts = [x for x in [res.get("total_ht")] + c.get("total_ht", []) if x is not None]
     tvas = [x for x in [res.get("total_tva")] + c.get("total_tva", []) if x is not None]
@@ -312,7 +258,6 @@ def coherence(res: Dict[str, object], tol: float = 0.011) -> Dict[str, object]:
     return res
 
 
-# ── évaluation ──────────────────────────────────────────────────────────────
 def juste(champ_cle: str, pred, vrai, devise: str = "TND") -> bool:
     if vrai is None:
         return pred is None or champ_cle in ("timbre",)
@@ -328,7 +273,6 @@ def juste(champ_cle: str, pred, vrai, devise: str = "TND") -> bool:
     if champ_cle == "numero":
         a, b = norm_id(str(pred)), norm_id(str(vrai))
         return a == b or (a.endswith(b) and len(a) - len(b) <= 2)
-    # noms : au moins 60 % des mots du vrai nom retrouvés
     v = set(mots_nom(str(vrai))); p = set(mots_nom(str(pred)))
     return bool(v) and len(v & p) / len(v) >= 0.6
 
@@ -339,7 +283,6 @@ def depuis_regles(r: dict) -> dict:
             "fournisseur": None, "client": r.get("tiers"),
             "total_ht": r.get("montant_ht"), "total_tva": r.get("montant_tva"),
             "timbre": r.get("timbre_fiscal"), "total_ttc": r.get("montant_ttc"),
-            # « net » des règles = TTC + timbre ; la vérité = somme réellement due
             "net_a_payer": r.get("net_a_payer") if r.get("net_a_payer") is not None
             else r.get("montant_ttc")}
 

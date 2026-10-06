@@ -1,8 +1,4 @@
-"""
-api/routers/sante.py
-====================
-GET /api/health — les deux moteurs se sont-ils chargés, et sinon pourquoi.
-"""
+"""GET /api/health — les deux moteurs se sont-ils chargés, et sinon pourquoi."""
 
 from __future__ import annotations
 

@@ -1,45 +1,9 @@
-"""
-ml_engine/analytics/data_quality.py
-====================================
-Controle d'integrite de l'entrepot : detecte les incoherences AVANT qu'elles ne
-soient lues comme des resultats.
-
-Pourquoi ce module existe
--------------------------
-Le chiffre d'affaires a ete faux de 5,44 % pendant toute la duree du projet sans
-que rien ne le signale. La raison n'est pas qu'on ait mal cherche, c'est qu'un
-montant faux ne se voit pas : 290 M et 275 M sont aussi plausibles l'un que
-l'autre. Aucune relecture, aucun coup d'oeil au tableau de bord n'aurait pu
-faire la difference.
-
-La seule defense contre ce genre d'erreur, ce sont les INVARIANTS : des egalites
-qui doivent tenir par construction, quelle que soit la donnee. Si l'une se
-brise, c'est qu'une formule est fausse -- meme si le resultat affiche semble
-raisonnable.
-
-    CA net       = ventes - avoirs           (identite comptable)
-    nb lignes    = factures + avoirs         (partition exhaustive)
-    marge        = CA - cout de revient      (definition)
-    HHI          dans ]0, 10000]             (borne mathematique)
-    CA lignes   <= CA factures               (meme argent, deux granularites)
-
-Trois niveaux de gravite :
-  * `erreur`  : un invariant est brise -- un chiffre affiche est faux ;
-  * `alerte`  : une valeur est hors de son domaine de vraisemblance ;
-  * `info`    : un fait a connaitre, sans anomalie (volumetrie, rejets).
-
-Usage :
-    from ml_engine.analytics.data_quality import controler_integrite
-    rapport = controler_integrite()
-    if rapport["erreurs"]:
-        ...
-"""
+"""Controle d'integrite de l'entrepot : detecte les incoherences AVANT qu'elles ne soient lues…"""
 
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 
-# Tolerance absolue sur les comparaisons de montants (arrondis de conversion).
 EPS = 1.0
 
 
@@ -81,9 +45,6 @@ class _Contexte:
             self.alerte(controle, f"{libelle} — valeur absente")
             return False
         v = float(valeur)
-        # Tolérance d'arrondi flottant : une borne atteinte exactement (HHI de
-        # 10 000 ou part de 100 % sur un seul client) ne doit pas passer pour
-        # un dépassement selon l'ordre des additions.
         eps = 1e-9 * max(1.0, abs(mini), abs(maxi))
         if mini - eps <= v <= maxi + eps:
             return True
@@ -115,7 +76,6 @@ def _table_existe(con, nom: str) -> bool:
         return False
 
 
-# ── Controles ───────────────────────────────────────────────────────────────
 def _ctrl_ventes(con, c: _Contexte) -> None:
     r = _ligne(con, """
         SELECT sum(ttc) FILTER (WHERE NOT est_avoir),
@@ -207,7 +167,6 @@ def _ctrl_lignes(con, c: _Contexte) -> None:
     c.info("lignes.volumetrie",
            f"{n:,} lignes dont {n_ret:,} retours, {somme:,.0f} DT".replace(",", " "))
 
-    # Le CA des lignes ne peut pas depasser celui des factures : meme argent.
     ca_fact = _un(con, "SELECT sum(ttc) FROM sales")
     if ca_fact and somme and float(somme) > float(ca_fact) * 1.05:
         c.erreur("lignes.coherence_facture",
@@ -235,32 +194,7 @@ def _ctrl_marge(con, c: _Contexte) -> None:
 
 
 def _ctrl_ancrages_externes(con, c: _Contexte) -> None:
-    """Controles que les identites internes ne peuvent PAS attraper.
-
-    Une identite comme `CA = ventes - avoirs` reste vraie si un coefficient est
-    applique uniformement a tous les montants : les deux membres bougent
-    ensemble. Ce type d'erreur systematique n'est detectable que par des
-    ANCRAGES EXTERNES -- des reperes qui ne derivent pas des donnees elles-memes
-    mais de la comptabilite, de la fiscalite, ou d'une seconde source.
-
-    Trois ancrages sont utilises ici :
-
-      1. TTC >= HT sur CHAQUE piece. C'est une contrainte fiscale, pas une
-         moyenne : la TVA ne peut pas etre negative. Un coefficient applique au
-         seul TTC la briserait ligne a ligne.
-
-      2. Le ratio TTC/HT global doit rester dans une bande plausible. En
-         distribution pharmaceutique tunisienne, beaucoup de produits sont
-         exoneres ou a taux reduit : le ratio observe est bas, mais il ne peut
-         ni descendre sous 1 ni s'envoler.
-
-      3. RAPPROCHEMENT DE DEUX SOURCES INDEPENDANTES. Le HT des LIGNES
-         (`ZZ_Facture_vente_mouv.csv`) et le HT des ENTETES
-         (`Facture_vente_ent_v.csv`) decrivent le meme argent, exporte
-         separement par l'ERP. Leur ecart est le seul controle qui ne depende
-         d'aucune hypothese interne : c'est la seconde opinion.
-    """
-    # ── 1. Contrainte fiscale, piece par piece ──────────────────────────────
+    """Controles que les identites internes ne peuvent PAS attraper."""
     viole = _un(con, """
         SELECT count(*) FROM sales
         WHERE ht IS NOT NULL AND ttc IS NOT NULL AND abs(ttc) < abs(ht) - 0.01
@@ -270,7 +204,6 @@ def _ctrl_ancrages_externes(con, c: _Contexte) -> None:
                  f"{viole} pièce(s) dont le TTC est inférieur au HT — "
                  "la TVA ne peut pas être négative")
 
-    # ── 2. Ratio TTC/HT global ──────────────────────────────────────────────
     r = _ligne(con, "SELECT sum(ttc), sum(ht) FROM sales WHERE NOT est_avoir")
     if r and r[1]:
         ratio = float(r[0]) / float(r[1])
@@ -280,7 +213,6 @@ def _ctrl_ancrages_externes(con, c: _Contexte) -> None:
                f"ratio TTC/HT observé : {ratio:.4f} "
                f"(TVA implicite {(ratio - 1) * 100:.2f} %)")
 
-    # ── 3. Rapprochement lignes ↔ entêtes : la seconde opinion ──────────────
     if _table_existe(con, "sales_lines"):
         ht_lignes = _un(con, "SELECT sum(montant) FROM sales_lines")
         ht_entetes = _un(con, "SELECT sum(ht) FROM sales")
@@ -292,12 +224,9 @@ def _ctrl_ancrages_externes(con, c: _Contexte) -> None:
                    f"écart {ecart_pct:.2f} %".replace(",", " "))
             if ecart_pct > 15:
                 c.alerte("ancrage.rapprochement",
-                         f"les deux exports de l'ERP divergent de {ecart_pct:.2f} % — "
+                         f"les deux sources de facturation divergent de {ecart_pct:.2f} % — "
                          "à expliquer avant de publier un chiffre", obtenu=ecart_pct)
 
-    # ── 4. Plausibilite du prix unitaire ────────────────────────────────────
-    # Un coefficient applique aux montants ferait deriver le prix moyen d'une
-    # reference sans toucher aux quantites : l'anomalie devient visible.
     if _table_existe(con, "sales_lines"):
         aberrants = _un(con, """
             SELECT count(*) FROM (
@@ -314,15 +243,7 @@ def _ctrl_ancrages_externes(con, c: _Contexte) -> None:
 
 
 def _ctrl_continuite_temporelle(con, c: _Contexte) -> None:
-    """Detecte une degradation FUTURE de la source : trou dans la serie,
-    effondrement d'une annee, perte de clients.
-
-    Ces controles ne verifient pas une identite mais une CONTINUITE. Si un
-    export est tronque, si un mois manque, si le fichier change de structure,
-    les identites comptables resteront vraies sur ce qui reste -- et le chiffre
-    sera faux malgre tout. C'est la faille que ces controles couvrent.
-    """
-    # Un mois vide AU MILIEU de la serie : un export tronque, pas une saison.
+    """Detecte une degradation FUTURE de la source : trou dans la serie, effondrement d'une annee,…"""
     trous = _un(con, """
         WITH mois AS (
             SELECT DISTINCT date_trunc('month', date) AS m
@@ -337,16 +258,10 @@ def _ctrl_continuite_temporelle(con, c: _Contexte) -> None:
         WHERE NOT EXISTS (SELECT 1 FROM mois x WHERE x.m = a.m)
     """)
     if trous:
-        # Diagnostic établi : 2019 et 2020 sont absentes de TOUTES les sources
-        # (ventes, lignes, achats, devis), ce qui exclut un défaut d'export et
-        # désigne une bascule d'ERP. 2017-2018 ne portent que 1,1 % des
-        # factures — des résidus de migration. Voir
-        # scripts/audit_trou_temporel.py et docs/SEMANTIQUE_COLONNES.md.
         c.info("continuite.mois_manquant",
                f"{trous} mois sans facture avant 2021 — période non couverte par "
-               "l'ERP (diagnostic établi, pas un défaut d'export)")
+               "les données (constat établi, pas une erreur de saisie)")
 
-    # Effondrement d'une annee par rapport a la precedente (hors annee en cours).
     rows = None
     try:
         rows = con.execute("""
@@ -363,10 +278,6 @@ def _ctrl_continuite_temporelle(con, c: _Contexte) -> None:
         derniere = max(r[0] for r in rows)
         ca_total = sum(float(r[1] or 0) for r in rows) or 1.0
         for an, ca, prec in rows:
-            # L'année en cours est incomplète par nature. Les années pesant
-            # moins de 2 % du CA total sont les résidus de migration
-            # (2017-2018) : comparer une année pleine à un résidu produirait
-            # une fausse alerte à chaque exécution.
             if not prec or an == derniere:
                 continue
             if float(ca or 0) / ca_total < 0.02 or float(prec) / ca_total < 0.02:
@@ -375,10 +286,8 @@ def _ctrl_continuite_temporelle(con, c: _Contexte) -> None:
             if var < -60:
                 c.alerte("continuite.effondrement",
                          f"{an} : CA en baisse de {abs(var):.0f} % sur un an — "
-                         "à vérifier (export partiel ?)", obtenu=var)
+                         "à vérifier (saisie incomplète ?)", obtenu=var)
 
-        # Profondeur d'historique réellement exploitable, à distinguer des
-        # bornes brutes des dates.
         pleines = [r[0] for r in rows
                    if r[0] != derniere and float(r[1] or 0) / ca_total >= 0.02]
         if pleines:
@@ -408,10 +317,6 @@ def _ctrl_concentration(con, c: _Contexte, kpis: Optional[Dict[str, Any]]) -> No
         c.erreur("concentration.pareto",
                  "plus de clients pour 80 % du CA que de clients au total",
                  attendu=ntot, obtenu=n80)
-    # Tolérance d'arrondi : sur un périmètre d'un seul client, la part vaut
-    # 100 % à 1e-14 près, au-dessus ou au-dessous selon l'ordre dans lequel
-    # DuckDB a additionné. Sans elle, un client voyait « des montants affichés
-    # sont faux » une fois sur deux.
     for cl in kpis.get("top_clients", []):
         if not -100 - 1e-6 <= cl.get("share", 0) <= 100 + 1e-6:
             c.erreur("concentration.part",
@@ -431,12 +336,12 @@ def _ctrl_kpis(con, c: _Contexte, kpis: Optional[Dict[str, Any]]) -> None:
     ):
         if champ in kpis:
             c.borne(f"kpi.{champ}", kpis[champ], mini, maxi, champ)
-    for b in kpis.get("aging_creances", []):
+    for b in kpis.get("echelonnement_delais_accordes", []):
         if b.get("montant", 0) < 0:
             c.erreur("kpi.aging",
                      f"tranche « {b.get('bucket')} » négative : un avoir y a été "
                      "compté comme une créance", obtenu=b.get("montant"))
-    expo, crit = kpis.get("montant_risque_ttc"), kpis.get("montant_critique_ttc")
+    expo, crit = kpis.get("montant_delai_sup_60j_ttc"), kpis.get("montant_delai_sup_90j_ttc")
     if expo is not None and crit is not None and crit > expo + EPS:
         c.erreur("kpi.exposition",
                  "l'exposition critique dépasse l'exposition totale",
@@ -444,15 +349,7 @@ def _ctrl_kpis(con, c: _Contexte, kpis: Optional[Dict[str, Any]]) -> None:
 
 
 def controler_integrite(kpis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Lance tous les controles et rend un rapport structure.
-
-    Args:
-        kpis: sortie de `compute_dashboard()`. Si absente, elle est calculee.
-
-    Returns:
-        dict avec `statut` (`ok` / `alerte` / `erreur`), les listes de constats
-        par gravite, et un resume en une ligne.
-    """
+    """Lance tous les controles et rend un rapport structure."""
     import duckdb
 
     from etl.construire import assurer_a_jour
@@ -462,7 +359,7 @@ def controler_integrite(kpis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     try:
         assurer_a_jour(STORE_PATH)
         con = duckdb.connect(str(STORE_PATH), read_only=True)
-    except Exception as exc:                         # entrepot illisible
+    except Exception as exc:
         return {"statut": "erreur", "erreurs": [{
             "niveau": "erreur", "controle": "entrepot",
             "message": f"entrepôt inaccessible : {exc}"}],

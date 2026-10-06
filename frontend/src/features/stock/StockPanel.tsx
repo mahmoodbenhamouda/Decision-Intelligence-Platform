@@ -1,51 +1,76 @@
 "use client";
 
-/**
- * StockPanel — onglet « Stock », sur données entièrement réelles (factures
- * d'achat et de vente).
- *
- * Trois questions, trois sous-onglets, chacun porté par des graphes :
- *   · À commander        → produits en rupture, budget par produit, par urgence ;
- *   · Argent immobilisé  → où dort le stock, ce qui ne sera pas vendu, ce qui
- *                          va cesser de se vendre ;
- *   · Volumes à prévoir  → prévision par produit (StockForecastPanel).
- */
-
 import { useState } from "react";
 import {
-  Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import {
   AlertTriangle, CalendarX2, LineChart as LineIcon, PackageX, RefreshCw, ShoppingCart,
-  TrendingDown, Warehouse,
+  TrendingDown, Truck, Warehouse,
 } from "lucide-react";
+import PanneauMasque from "@/shared/ui/PanneauMasque";
 import Pourquoi from "@/shared/ui/Pourquoi";
+import ApprovisionnementPanel from "./ApprovisionnementPanel";
 import StockForecastPanel from "./StockForecastPanel";
-import { URGENCE } from "./stock.constantes";
 import { useStock } from "./useStock";
 import {
   BLEU, Carte, GRAVITE, Grille, INFOBULLE, INK, Legende, RangeeTuiles, TuileChiffre, Vide,
   fAxe, fMoney, tronquer,
 } from "@/shared/ui/VisuelKit";
 
-type Onglet = "commander" | "immobilise" | "prevision";
+// « À commander » a été retiré : les produits à réapprovisionner se décident
+// dans l'onglet Approvisionnement, où ils sont ACTIONNABLES — proposés,
+// validés, commandés. Une liste à deux endroits, dont une sans bouton, invite
+// à chercher laquelle fait foi.
+type Onglet = "immobilise" | "prevision" | "amont";
 const ONGLETS: { id: Onglet; label: string; icone: React.ReactNode }[] = [
-  { id: "commander", label: "À commander", icone: <ShoppingCart size={14} /> },
   { id: "immobilise", label: "Argent immobilisé", icone: <Warehouse size={14} /> },
   { id: "prevision", label: "Volumes à prévoir", icone: <LineIcon size={14} /> },
+  // Le processus amont rejoint le stock : ce sont les deux bouts de la même
+  // chaîne, et séparer « qui fournit » de « ce qu'il reste » obligeait à
+  // changer d'onglet pour décider d'une commande.
+  { id: "amont", label: "Approvisionnement", icone: <Truck size={14} /> },
 ];
 
-export default function StockPanel({ selectedClient, selectedClientName }: {
-  selectedClient?: string; selectedClientName?: string;
-}) {
-  const { data, loading, flux, v, load } = useStock(selectedClient);
-  const [onglet, setOnglet] = useState<Onglet>("commander");
+export default function StockPanel() {
+  const { data, loading, flux, v, load } = useStock();
+  const [onglet, setOnglet] = useState<Onglet>("amont");
 
   if (loading && !data) return <div style={{ gridColumn: "span 12" }}><Vide texte="Chargement du stock…" /></div>;
+
+  // L'onglet Approvisionnement reste TOUJOURS accessible. Les trois autres
+  // comptent par produit et n'ont pas de sens sous un filtre client ; celui-ci
+  // répond justement « ce que ce client consomme, et ce qui risque de lui
+  // manquer ». Le masquer privait le directeur de la seule réponse disponible.
+  const ongletsAffiches = ONGLETS;
+  const barreOnglets = (
+    <div className="vk-onglets" style={{ gridColumn: "span 12" }}>
+      {ongletsAffiches.map(o => (
+        <button key={o.id} className={`vk-onglet${onglet === o.id ? " actif" : ""}`}
+          onClick={() => setOnglet(o.id)}>{o.icone}{o.label}</button>
+      ))}
+    </div>
+  );
+
+  if (data?.masque && onglet !== "amont") {
+    return (
+      <Grille>
+        {barreOnglets}
+        <PanneauMasque motif={data.error} />
+      </Grille>
+    );
+  }
+
+  // L'analyse amont ne dépend pas des flux de stock : elle lit les factures
+  // d'achat. Elle reste donc consultable même quand le stock est indisponible.
+  if (onglet === "amont") {
+    return <Grille>{barreOnglets}<ApprovisionnementPanel /></Grille>;
+  }
 
   if (!flux?.disponible) {
     return (
       <Grille>
+        {barreOnglets}
         <Carte titre="Stock indisponible" icone={<AlertTriangle size={15} />}>
           <Vide texte="Les données de stock ne sont pas disponibles pour le moment." />
         </Carte>
@@ -53,15 +78,10 @@ export default function StockPanel({ selectedClient, selectedClientName }: {
     );
   }
 
-  const barreHorizontale = (h: number) => ({
-    width: "100%" as const, height: h,
-  });
-
   return (
     <Grille>
-      {/* ── Chiffres clés ────────────────────────────────────────────────── */}
       <RangeeTuiles>
-        <TuileChiffre icone={<Warehouse size={16} />} label={`Argent immobilisé${selectedClientName ? ` — ${selectedClientName}` : ""}`}
+        <TuileChiffre icone={<Warehouse size={16} />} label="Argent immobilisé"
           valeur={fMoney(flux.valeur_immobilisee_dt)}
           detail={`${flux.n_references_accumulees ?? 0} produits en stock`} />
         <TuileChiffre icone={<ShoppingCart size={16} />} label="Produits à commander"
@@ -75,10 +95,9 @@ export default function StockPanel({ selectedClient, selectedClientName }: {
           detail="stock de produits qui cessent de se vendre" />
       </RangeeTuiles>
 
-      {/* ── Sous-onglets ─────────────────────────────────────────────────── */}
       <div style={{ gridColumn: "span 12", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
         <div className="vk-onglets">
-          {ONGLETS.map(o => (
+          {ongletsAffiches.map(o => (
             <button key={o.id} className={`vk-onglet${onglet === o.id ? " actif" : ""}`} onClick={() => setOnglet(o.id)}>
               {o.icone}{o.label}
             </button>
@@ -87,67 +106,6 @@ export default function StockPanel({ selectedClient, selectedClientName }: {
         <button className="icon-button" onClick={load} title="Actualiser"><RefreshCw size={15} /></button>
       </div>
 
-      {/* ── À commander ──────────────────────────────────────────────────── */}
-      {onglet === "commander" && (
-        v.ruptures.length ? (
-          <>
-            <Carte span={8} titre="Budget à engager par produit" icone={<ShoppingCart size={15} />}
-              sousTitre="Produits encore vendus dont l'approvisionnement s'est arrêté — la couleur indique l'urgence">
-              <ResponsiveContainer {...barreHorizontale(Math.max(300, v.ruptures.length * 36))}>
-                <BarChart layout="vertical" data={v.ruptures} margin={{ top: 0, right: 70, left: 0, bottom: 0 }} barCategoryGap={8}>
-                  <CartesianGrid stroke={INK.grid} horizontal={false} />
-                  <XAxis type="number" tickFormatter={fAxe} tick={{ fill: INK.secondary, fontSize: 11 }} axisLine={false} tickLine={false} />
-                  <YAxis type="category" dataKey="nom" width={190} tick={{ fill: INK.primary, fontSize: 11.5 }} axisLine={false} tickLine={false} />
-                  <Tooltip cursor={{ fill: "rgba(47,91,234,0.05)" }}
-                    content={({ active, payload }) => {
-                      if (!active || !payload?.length) return null;
-                      const r = payload[0].payload as (typeof v.ruptures)[number];
-                      return (
-                        <div style={INFOBULLE}>
-                          <b>{r.produit}</b>
-                          <div>{(URGENCE[r.gravite] || URGENCE.a_commander).label}</div>
-                          <div>{r.quantite_suggeree.toLocaleString("fr-FR")} unités à commander · {fMoney(r.budget)}</div>
-                          <div>{Math.round(r.conso_mensuelle).toLocaleString("fr-FR")} vendues par mois · dernier achat il y a {r.mois_sans_approvisionnement} mois</div>
-                        </div>
-                      );
-                    }} />
-                  <Bar dataKey="budget" barSize={16} radius={[0, 4, 4, 0]}
-                    label={{ position: "right", formatter: (x: unknown) => fMoney(Number(x)), fill: INK.secondary, fontSize: 11 }}>
-                    {v.ruptures.map((r, i) => <Cell key={i} fill={(URGENCE[r.gravite] || URGENCE.a_commander).couleur} />)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-              <Legende items={Object.values(URGENCE).map(u => ({ couleur: u.couleur, label: u.label }))} />
-            </Carte>
-
-            <Carte span={4} titre="Ruptures par urgence" sousTitre="Parmi les produits les plus coûteux à réapprovisionner">
-              <ResponsiveContainer width="100%" height={260}>
-                <PieChart>
-                  <Pie data={v.parUrgence} dataKey="n" nameKey="label" innerRadius={62} outerRadius={96}
-                    paddingAngle={2} stroke="#fff" strokeWidth={2}>
-                    {v.parUrgence.map(u => <Cell key={u.cle} fill={u.couleur} />)}
-                  </Pie>
-                  <Tooltip contentStyle={INFOBULLE} formatter={(x, n) => [`${x} produit(s)`, String(n)]} />
-                </PieChart>
-              </ResponsiveContainer>
-              <div style={{ display: "grid", gap: 6 }}>
-                {v.parUrgence.map(u => (
-                  <div key={u.cle} style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8rem", color: INK.secondary }}>
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
-                      <span style={{ width: 10, height: 10, borderRadius: 3, background: u.couleur }} />{u.label}
-                    </span>
-                    <b style={{ color: INK.primary }}>{u.n}</b>
-                  </div>
-                ))}
-              </div>
-            </Carte>
-          </>
-        ) : (
-          <Carte titre="À commander"><Vide texte="Aucun produit en rupture d'approvisionnement." /></Carte>
-        )
-      )}
-
-      {/* ── Argent immobilisé ────────────────────────────────────────────── */}
       {onglet === "immobilise" && (
         <>
           <Carte span={7} titre="Où dort votre stock" icone={<Warehouse size={15} />}
@@ -252,12 +210,15 @@ export default function StockPanel({ selectedClient, selectedClientName }: {
         </>
       )}
 
-      {/* ── Volumes à prévoir ────────────────────────────────────────────── */}
       {onglet === "prevision" && (
         <div className="chart-card" style={{ gridColumn: "span 12" }}>
           <StockForecastPanel />
         </div>
       )}
+
+      {/* L'onglet Approvisionnement est rendu plus haut, avant les garde-fous
+          de masquage : il reste accessible sous un filtre client, puisqu'il
+          est le seul à savoir répondre pour un client. */}
     </Grille>
   );
 }

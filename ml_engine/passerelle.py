@@ -1,37 +1,4 @@
-"""
-ml_engine/passerelle.py
-=======================
-Passerelle unique entre les AGENTS, l'API et les MODÈLES.
-
-Le problème que ce fichier résout
----------------------------------
-Les agents de la flotte lisaient surtout des indicateurs calculés : seul l'agent
-Risque client consommait un modèle appris. La conversion des devis, l'érosion de
-marge, la segmentation, le réapprovisionnement, la fin de vie et la
-recommandation n'atteignaient que le tableau de bord — aucun agent n'en tirait un
-constat, et le briefing ne profitait donc pas de la science des données du projet.
-
-Et le copilote, lui, importait directement `score_stock_risk` : un modèle RETIRÉ
-par le registre, entraîné sur un stock simulé. Rien ne l'en empêchait, parce que
-la décision du registre n'était consultée qu'à certains endroits.
-
-Ce que garantit la passerelle
------------------------------
-1. **Un seul chemin** : un agent ou le copilote n'importe jamais un module de
-   modèle ; il appelle une fonction d'ici. Un modèle refusé ou retiré ne peut donc
-   pas atteindre un briefing par une importation oubliée — un test le vérifie.
-2. **Le registre décide** : chaque fonction interroge `ml_engine.registre` avant
-   de servir. Si le modèle n'est pas servi, elle renvoie la méthode de repli que
-   la mesure a désignée (règle, statistique), jamais un score non validé.
-3. **Chaque sortie porte sa carte d'identité** (`modele`) : nature, statut,
-   métrique hors période, référence battue, accuracy et balanced accuracy. L'agent
-   la recopie dans son constat ; le briefing peut donc toujours dire *quel
-   modèle* a produit *quel chiffre*, et avec quelle fiabilité mesurée.
-4. **L'API passe par le même chemin** : ses services n'importent ni un module de
-   modèle ni un nom privé du moteur KPI (un test le vérifie). Les fonctions de la
-   dernière section leur servent les sorties affichées à l'écran — sans la carte,
-   servie à part par `/api/models/metrics`.
-"""
+"""Passerelle unique entre les AGENTS, l'API et les MODÈLES."""
 
 from __future__ import annotations
 
@@ -48,7 +15,6 @@ except Exception:  # pragma: no cover
 REPORTS_DIR = BASE / "reports"
 OUTPUT_DIR = BASE / "output"
 
-# Où lire le bloc `classification` (ml_engine/metriques.py) de chaque rapport.
 _CHEMIN_CLASSIFICATION = {
     "churn": ["hors_periode", "classification"],
     "conversion_devis": ["hors_periode", "classification"],
@@ -85,7 +51,6 @@ def _extraire(doc: Any, chemin: List[str]) -> Any:
     return doc
 
 
-# ── Carte d'identité d'un modèle ────────────────────────────────────────────
 def carte_modele(nom: str) -> Dict[str, Any]:
     """Ce qu'un agent doit savoir d'un modèle pour citer son résultat honnêtement."""
     try:
@@ -109,7 +74,6 @@ def carte_modele(nom: str) -> Dict[str, Any]:
     rapport = _lire_json(REPORTS_DIR / _RAPPORTS.get(nom, "")) if nom in _RAPPORTS else None
     cl = _extraire(rapport, _CHEMIN_CLASSIFICATION[nom]) if (rapport and nom in _CHEMIN_CLASSIFICATION) else None
     if cl is None and rapport and nom in _CHEMIN_CLASSIFICATION:
-        # Rapport antérieur au module de métriques : on dérive de la matrice publiée.
         bloc = _extraire(rapport, _CHEMIN_CLASSIFICATION[nom][:-1]) or {}
         matrice = bloc.get("confusion_matrix")
         if isinstance(matrice, list) and len(matrice) == 2:
@@ -160,7 +124,6 @@ def trace_modele(carte: Dict[str, Any], role: str) -> Dict[str, Any]:
     }
 
 
-# ── Accès aux sorties des modèles ───────────────────────────────────────────
 def _noms_clients() -> Dict[str, str]:
     try:
         import duckdb
@@ -176,13 +139,14 @@ def _noms_clients() -> Dict[str, str]:
         return {}
 
 
-def decrochage(limite: int = 10, kpis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def decrochage(limite: int = 10, kpis: Optional[Dict[str, Any]] = None,
+               clients: Optional[List[str]] = None) -> Dict[str, Any]:
     carte = carte_modele("churn")
-    if kpis and isinstance(kpis.get("churn_anticipe"), dict) and kpis["churn_anticipe"].get("servi"):
+    if clients is None and kpis and isinstance(kpis.get("churn_anticipe"), dict) and kpis["churn_anticipe"].get("servi"):
         return {**kpis["churn_anticipe"], "modele": carte}
     try:
         from ml_engine.analytics.kpi_engine import _charger_churn_si_servi
-        return {**_charger_churn_si_servi(limite), "modele": carte}
+        return {**_charger_churn_si_servi(limite, clients), "modele": carte}
     except Exception as e:
         return {"servi": False, "motif": f"indisponible ({type(e).__name__})", "modele": carte}
 
@@ -202,20 +166,30 @@ def segments_clients() -> Dict[str, Any]:
     return {"servi": True, "par_client": par_client, "segments": segs, "modele": carte}
 
 
-def conversion_devis(limite: int = 20) -> Dict[str, Any]:
+def conversion_devis(limite: int = 20, clients: Optional[List[str]] = None) -> Dict[str, Any]:
     carte = carte_modele("conversion_devis")
     try:
         from ml_engine.analytics.conversion_devis import predire
-        return {**predire(limite), "modele": carte}
+        return {**predire(limite, clients), "modele": carte}
     except Exception as e:
         return {"servi": False, "motif": f"indisponible ({type(e).__name__})", "modele": carte}
 
 
-def marge_clients(limite: int = 15) -> Dict[str, Any]:
+def marge_clients(limite: int = 15, clients: Optional[List[str]] = None) -> Dict[str, Any]:
     carte = carte_modele("marge_client")
     try:
         from ml_engine.analytics.marge_client import predire
-        return {**predire(limite), "modele": carte}
+        return {**predire(limite, clients), "modele": carte}
+    except Exception as e:
+        return {"servi": False, "motif": f"indisponible ({type(e).__name__})", "modele": carte}
+
+
+def ca_client(horizon: int = 3, limite: int = 15,
+              clients: Optional[List[str]] = None) -> Dict[str, Any]:
+    carte = carte_modele(f"ca_client_{horizon}m")
+    try:
+        from ml_engine.analytics.ca_client import predire
+        return {**predire(horizon, limite, clients), "modele": carte}
     except Exception as e:
         return {"servi": False, "motif": f"indisponible ({type(e).__name__})", "modele": carte}
 
@@ -256,11 +230,7 @@ def conditions_credit(codes: Optional[List[str]] = None) -> Dict[str, Any]:
 
 
 def risque_stock() -> Dict[str, Any]:
-    """Modèle RETIRÉ : on renvoie sa carte, jamais ses scores.
-
-    Il reste mesurable (AUC 0,856) mais sa cible dépend de dates de péremption
-    simulées. Les montants de stock servis viennent des flux réels.
-    """
+    """Modèle RETIRÉ : on renvoie sa carte, jamais ses scores."""
     carte = carte_modele("stock_risque")
     if carte["servi"]:     # pragma: no cover — ne se produit que s'il est réadmis
         try:
@@ -284,11 +254,7 @@ def demande_et_fournisseurs() -> Dict[str, Any]:
 
 
 def demande_par_reference(limite: int = 400) -> Dict[str, Any]:
-    """Quantités attendues par référence sur 1 à 3 mois, avec borne haute P80.
-
-    Toujours une méthode servie — la règle simple ou le modèle appris, selon le
-    dernier duel mesuré — mais jamais sans rapport : sans lui, rien n'est servi.
-    """
+    """Quantités attendues par référence sur 1 à 3 mois, avec borne haute P80."""
     carte = carte_modele("demande_reference")
     if not carte["servi"]:
         return {"servi": False, "motif": carte.get("motif"), "modele": carte}
@@ -319,11 +285,12 @@ def echeancier_1_mois() -> Dict[str, Any]:
         return {"servi": False, "motif": f"indisponible ({type(e).__name__})", "modele": carte}
 
 
-def recommandations(client: Optional[str] = None, n_clients: int = 15) -> Dict[str, Any]:
+def recommandations(client: Optional[str] = None, n_clients: int = 15,
+                    clients: Optional[List[str]] = None) -> Dict[str, Any]:
     carte = carte_modele("recommandation")
     try:
         from ml_engine.deep.recommandation import predire
-        return {**predire(client=client, n_clients=n_clients), "modele": carte}
+        return {**predire(client=client, n_clients=n_clients, clients_filtre=clients), "modele": carte}
     except Exception as e:
         return {"servi": False, "motif": f"indisponible ({type(e).__name__})", "modele": carte}
 
@@ -346,13 +313,10 @@ def noms_clients() -> Dict[str, str]:
     return _noms_clients()
 
 
-# ── Sorties servies au tableau de bord (API) ────────────────────────────────
-# Mêmes modules, mêmes décisions du registre que pour les agents ; seule la
-# forme change : l'écran reçoit la sortie du module telle quelle.
-def decrochage_servi(limite: int = 20) -> Dict[str, Any]:
+def decrochage_servi(limite: int = 20, clients: Optional[List[str]] = None) -> Dict[str, Any]:
     """Clients à risque de décrochage — seulement si le registre sert le modèle."""
     from ml_engine.analytics.kpi_engine import _charger_churn_si_servi
-    return _charger_churn_si_servi(limite=limite)
+    return _charger_churn_si_servi(limite=limite, clients=clients)
 
 
 def reapprovisionnement_servi() -> Dict[str, Any]:
@@ -377,14 +341,60 @@ def fin_de_vie_servie() -> Dict[str, Any]:
     return predire()
 
 
-def devis_a_relancer(limite: int = 20) -> Dict[str, Any]:
+def devis_a_relancer(limite: int = 20, clients: Optional[List[str]] = None) -> Dict[str, Any]:
     from ml_engine.analytics.conversion_devis import predire
-    return predire(limite=limite)
+    return predire(limite=limite, clients=clients)
 
 
-def marge_a_surveiller(limite: int = 15) -> Dict[str, Any]:
+def calibration_devis() -> Dict[str, Any]:
+    """Calibration hors période du modèle de conversion, lue dans le rapport.
+
+    Elle n'est PAS recalculée à la demande : la mesurer honnêtement exige le
+    découpage train/test de l'évaluation, donc un réentraînement. Elle est
+    produite une fois par `python -m ml_engine.analytics.conversion_devis` et
+    lue ici — comme toutes les autres métriques de ce projet.
+    """
+    doc = _lire_json(REPORTS_DIR / _RAPPORTS["conversion_devis"])
+    cal = _extraire(doc, ["hors_periode", "calibration"])
+    if not isinstance(cal, dict) or not cal.get("applicable"):
+        motif = (cal.get("motif") if isinstance(cal, dict)
+                 else "absente du rapport — relancer l'évaluation du modèle "
+                      "(python -m ml_engine.analytics.conversion_devis)")
+        return {"applicable": False, "motif": motif}
+    return cal
+
+
+def impact_financier() -> Dict[str, Any]:
+    """Ce que la plateforme identifie, en dinars, et sous quelles hypothèses.
+
+    Agrège les postes des autres modules : aucun montant n'est calculé ici, et
+    un poste dont le modèle n'est pas servi disparaît du total au lieu d'être
+    estimé. Le calcul est reproductible par
+    `python -m ml_engine.analytics.impact`.
+    """
+    try:
+        from ml_engine.analytics.impact import calculer
+        return {"servi": True, **calculer()}
+    except Exception as e:  # pragma: no cover
+        return {"servi": False, "motif": f"calcul d'impact indisponible : {e}"}
+
+
+def reperes_conversion(clients: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Taux de signature constaté par tranche de montant — comptage, pas modèle."""
+    from ml_engine.analytics.conversion_devis import reperes_conversion as r
+    return r(clients=clients)
+
+
+def marge_decomposee(filtres: Optional[Dict[str, Any]] = None,
+                     limite: int = 15) -> Dict[str, Any]:
+    """D'où vient la marge brute : catégorie, produits, tendance, limites."""
+    from ml_engine.analytics.marge_decomposee import analyser
+    return analyser(filtres, limite=limite)
+
+
+def marge_a_surveiller(limite: int = 15, clients: Optional[List[str]] = None) -> Dict[str, Any]:
     from ml_engine.analytics.marge_client import predire
-    return predire(limite=limite)
+    return predire(limite=limite, clients=clients)
 
 
 def prevision_encaissements(horizon: int = 6) -> Any:
@@ -400,15 +410,13 @@ def etat_du_modele(nom: str) -> Dict[str, Any]:
 
 
 def risque_stock_par_produit(client: Optional[str] = None, limite: int = 25) -> Dict[str, Any]:
-    """Scoring du risque produit. Module RETIRÉ : l'appelant consulte d'abord
-    `etat_du_modele("stock_risque")` ; ce chemin ne sert que s'il est réadmis."""
+    """Scoring du risque produit."""
     from ml_engine.models import score_stock_risk
     return score_stock_risk(client=client, limit=limite)
 
 
 def demande_par_produit_historique(produit: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Ancien chemin de prévision de demande (repli si `demande_reference`
-    n'est pas servie) : naïf saisonnier par produit, horizons 30/60/90 jours."""
+    """Ancien chemin de prévision de demande (repli si `demande_reference` n'est pas servie) : naïf…"""
     from ml_engine.models import predict_demand
     return predict_demand([produit] if produit else None)
 
@@ -420,9 +428,6 @@ def metriques_demande_historique() -> Dict[str, Any]:
                 "horizon_jours": v.get("horizon_jours"),
                 "wape_pct": (v.get("holdout") or {}).get("wape_pct"),
                 "mae": (v.get("holdout") or {}).get("mae"),
-                # Traçabilité de la décision de déploiement : le gain obtenu en
-                # validation croisée et sa confirmation (ou non) sur les 6 mois
-                # jamais vus.
                 "gain_cv_pct": v.get("gain_vs_meilleure_baseline_pct"),
                 "gain_holdout_pct": v.get("holdout_gain_vs_baseline_pct"),
                 "gain_confirme": v.get("holdout_confirme_le_gain")}

@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * ViewModel — le copilote FinBot.
- *
- * Porte la conversation (messages, saisie, pièce jointe, suggestions), envoie
- * les questions au service, fait réagir l'avatar (humeur, geste, voix) et
- * diffuse son état à la mascotte flottante. La vue ne fait qu'afficher.
- */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AvatarMode, AvatarMood } from "@/shared/avatar/FinBotAvatar";
 import { API_URL } from "@/core/config";
@@ -30,7 +23,6 @@ export function useCopilote(filterPayload: Record<string, unknown>) {
   const [mood, setMood] = useState<AvatarMood>("neutral");
   const { speaking, setSpeaking, speak, stopLipSync, avatarRef } = useSyntheseVocale(voiceOn);
 
-  // Mode courant de l'avatar (priorité : parle > réfléchit > écoute > repos)
   const avatarMode: AvatarMode = speaking
     ? "speaking"
     : thinking

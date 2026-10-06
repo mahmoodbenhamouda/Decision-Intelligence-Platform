@@ -1,9 +1,5 @@
 "use client";
 
-/**
- * Vue — une bulle de conversation, avec pièce jointe, rendu Markdown, termes
- * du glossaire mis en évidence et badge d'origine de la réponse.
- */
 import {
   Bot, FileSpreadsheet, FileText, Image as ImageIcon, Shield, Zap,
 } from "lucide-react";
@@ -11,14 +7,12 @@ import ReactMarkdown from "react-markdown";
 import { GLOSSARY_TOOLTIPS } from "./copilote.regles";
 import type { Msg } from "./copilote.types";
 
-/* ── Icône selon type de fichier ─────────────────────────────────────────── */
 export function FileIcon({ ext }: { ext: string }) {
   if (["png", "jpg", "jpeg"].includes(ext)) return <ImageIcon size={14} />;
   if (ext === "pdf") return <FileText size={14} />;
   return <FileSpreadsheet size={14} />;
 }
 
-/* ── Badge Via (LLM vs Règles) ────────────────────────────────────────────── */
 function ViaBadge({ via }: { via?: string }) {
   if (!via || via === "error") return null;
   if (via === "rag") {
@@ -38,7 +32,6 @@ function ViaBadge({ via }: { via?: string }) {
   );
 }
 
-/* ── Composant Message ────────────────────────────────────────────────────── */
 export default function ChatMessage({ msg }: { msg: Msg }) {
   const isAssistant = msg.role === "assistant";
 
@@ -58,13 +51,13 @@ export default function ChatMessage({ msg }: { msg: Msg }) {
           {isAssistant ? (
             <ReactMarkdown
               components={{
-                // Liens : ouvrir dans un nouvel onglet
+
                 a: ({ href, children }) => (
                   <a href={href} target="_blank" rel="noopener noreferrer">
                     {children}
                   </a>
                 ),
-                // Mise en évidence des termes du glossaire
+
                 strong: ({ children }) => {
                   const text = String(children);
                   const glossaryKey = Object.keys(GLOSSARY_TOOLTIPS).find(

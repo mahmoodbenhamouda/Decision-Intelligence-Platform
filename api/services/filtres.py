@@ -1,10 +1,4 @@
-"""
-api/services/filtres.py
-=======================
-Les filtres du tableau de bord, sous les deux formes dont les moteurs ont
-besoin : le dictionnaire lu par le moteur DuckDB et l'agent, et le résumé
-renvoyé à l'écran (`active_filters`).
-"""
+"""Les filtres du tableau de bord, sous les deux formes dont les moteurs ont besoin : le…"""
 
 from __future__ import annotations
 
@@ -25,7 +19,21 @@ def filtres_moteur(req: FilterRequest) -> Dict[str, Any]:
         "risk_level": req.risk_level,
         "min_amount": req.min_amount,
         "max_amount": req.max_amount,
+        "periode": req.periode,
     }
+
+
+def filtres_depuis_query(texte: str | None) -> Dict[str, Any]:
+    """Filtres transmis en JSON dans la query `?filtres=` des routes des modèles.
+
+    Un JSON illisible vaut « aucun filtre » : la route répond sur tout le
+    portefeuille plutôt que d'échouer."""
+    import json
+    try:
+        brut = json.loads(texte or "{}")
+        return filtres_moteur(FilterRequest(**(brut if isinstance(brut, dict) else {})))
+    except Exception:
+        return {}
 
 
 def resume_filtres(req: FilterRequest) -> Dict[str, Any]:
@@ -34,4 +42,5 @@ def resume_filtres(req: FilterRequest) -> Dict[str, Any]:
         "clients": req.selected_clients or "Tous",
         "client_count": len(req.selected_clients),
         "fidelity": req.fidelity_filter,
+        "periode": req.periode,
     }

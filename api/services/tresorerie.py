@@ -1,9 +1,4 @@
-"""
-api/services/tresorerie.py
-==========================
-Trésorerie : prévision d'encaissements de l'entreprise et scénarios de retard
-de paiement.
-"""
+"""Trésorerie : prévision d'encaissements de l'entreprise et scénarios de retard de paiement."""
 
 from __future__ import annotations
 
@@ -16,9 +11,7 @@ from ml_engine import passerelle as pw
 
 
 def prevision_encaissements() -> Dict[str, Any]:
-    """Prévision GLOBALE à 6 mois (LSTM, avec repli). C'est la trésorerie de la
-    société, pas celle d'un client : les prévisions du périmètre client sont
-    dans son tableau de bord (`forecast_next`)."""
+    """Prévision GLOBALE à 6 mois (LSTM, avec repli)."""
     try:
         fc = pw.prevision_encaissements(horizon=6)
         if not fc:
@@ -29,12 +22,7 @@ def prevision_encaissements() -> Dict[str, Any]:
 
 
 def scenarios_paiement(req: FilterRequest) -> Dict[str, Any]:
-    """Impact CHIFFRÉ d'hypothèses de retard de paiement, l'hypothèse restant
-    explicite et modifiable.
-
-    Ce n'est PAS une prédiction : l'ERP ne contient aucune date de règlement.
-    Le module quantifie l'effet d'un paramètre assumé (voir
-    `ml_engine/analytics/payment_scenario.py`)."""
+    """Impact CHIFFRÉ d'hypothèses de retard de paiement, l'hypothèse restant explicite et modifiable."""
     try:
         from ml_engine.analytics.payment_scenario import compute_scenarios
         return compute_scenarios(filtres_moteur(req))

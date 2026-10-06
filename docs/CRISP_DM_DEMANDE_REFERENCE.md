@@ -17,8 +17,9 @@ ceux des rapports ; ils se régénèrent avec les commandes indiquées en fin de
 
 ### Le besoin
 
-Overlyne distribue des réactifs de diagnostic à des hôpitaux publics, des
-cliniques et des laboratoires. Deux erreurs coûtent :
+L'entreprise dont l'ERP alimente le projet — un client d'Overlyne — distribue
+des réactifs de diagnostic à des hôpitaux publics, des cliniques et des
+laboratoires. Deux erreurs coûtent :
 
 * **commander trop peu** : un laboratoire sans réactif arrête une série
   d'analyses, et se tourne vers un concurrent ;

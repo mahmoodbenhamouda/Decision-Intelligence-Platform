@@ -1,19 +1,4 @@
-"""
-tests/test_entrepot.py
-======================
-L'ETL de l'entrepôt (etl/), sur des exports CSV fabriqués pour le test :
-
-1. le contrat de présentation — les vues lues par l'application gardent leurs
-   colonnes ;
-2. les règles métier — signe des avoirs, doublons écartés, lignes décalées
-   rejetées, marge sans coûts aberrants ;
-3. le modèle en étoile — dimensions conformes, membres déduits, calendrier
-   continu, contrôles d'intégrité ;
-4. la sûreté de la construction — tables applicatives préservées, clients OCR
-   conservés, construction annulée d'un bloc si un contrôle échoue.
-
-L'entrepôt réel n'est jamais ouvert : tout se passe dans un dossier temporaire.
-"""
+"""L'ETL de l'entrepôt (etl/), sur des exports CSV fabriqués pour le test :"""
 
 from __future__ import annotations
 
@@ -61,19 +46,19 @@ def sources(tmp_path):
     d.mkdir()
     _ecrire(d, "ventes_entetes", [
         _vente("1", "FV-001", "CP001", "1/15/2024", 1190.0),
-        _vente("2", "FV-001", "CP001", "1/15/2024", 1190.0),              # doublon exact
-        _vente("3", "AV-001", "CP001", "1/20/2024", 119.0, signe=-1),     # avoir
-        _vente("4", "FV-002", "CP999", "2/10/2024", 2380.0,               # client hors référentiel
+        _vente("2", "FV-001", "CP001", "1/15/2024", 1190.0),
+        _vente("3", "AV-001", "CP001", "1/20/2024", 119.0, signe=-1),
+        _vente("4", "FV-002", "CP999", "2/10/2024", 2380.0,
                mode="virement 60 jours", depot="XX"),
-        _vente("5", "FV-003", "CP002", "", 500.0),                        # sans date : écarté
+        _vente("5", "FV-003", "CP002", "", 500.0),
     ])
     _ecrire(d, "ventes_lignes", [
         _ligne("10", "FV-001", "CP001", "R1", 600.0, 6, 300.0),
-        _ligne("11", "FV-001", "CP001", "R1", 600.0, 6, 300.0),           # doublon de l'en-tête dupliqué
-        _ligne("12", "FV-001", "CP001", "R2", 400.0, 4, 5000.0),          # coût aberrant (> 5x)
+        _ligne("11", "FV-001", "CP001", "R1", 600.0, 6, 300.0),
+        _ligne("12", "FV-001", "CP001", "R2", 400.0, 4, 5000.0),
         _ligne("13", "AV-001", "CP001", "R1", -100.0, -1, -50.0, sens="1"),
         _ligne("14", "FV-002", "CP999", "R3", 2000.0, 10, 1200.0),
-        _ligne("15", "FV-002", "CP999", "R3", 99.0, 1, 1.0, sens="CULTURE"),  # colonnes décalées
+        _ligne("15", "FV-002", "CP999", "R3", 99.0, 1, 1.0, sens="CULTURE"),
     ])
     _ecrire(d, "achats_entetes", [{
         "ENT_ID": "1", "PIECENOFULL": "FA-1", "FOURNISSEURNOM": "BIOMERIEUX",
@@ -122,7 +107,6 @@ def _q(chemin, sql):
         con.close()
 
 
-# ── 1. Contrat de présentation ──────────────────────────────────────────────
 COLONNES_ATTENDUES = {
     "sales": ["ent_id", "piece_no", "client", "date", "echeance", "ht", "ttc", "est_avoir",
               "mode_regl", "nbr_article", "year", "payment_delay_days", "client_name"],
@@ -151,7 +135,6 @@ def test_toutes_les_vues_de_presentation_existent(entrepot):
     assert set(presentation.VUES) <= vues
 
 
-# ── 2. Règles métier ────────────────────────────────────────────────────────
 @pytest.mark.vitrine
 def test_un_avoir_est_deduit_et_un_doublon_compte_une_fois(entrepot):
     rows = _q(entrepot, "SELECT piece_no, ttc, est_avoir FROM sales ORDER BY piece_no")
@@ -161,7 +144,7 @@ def test_un_avoir_est_deduit_et_un_doublon_compte_une_fois(entrepot):
 
 def test_les_libelles_de_reglement_sont_regroupes(entrepot):
     modes = {r[0] for r in _q(entrepot, "SELECT mode_regl FROM sales")}
-    assert modes == {"Virement 60 JOURS"}          # « virement 60 jours » regroupé
+    assert modes == {"Virement 60 JOURS"}
 
 
 def test_nom_du_client_et_repli_sur_le_code(entrepot):
@@ -179,7 +162,7 @@ def test_lignes_dedoublonnees_et_lignes_decalees_rejetees(entrepot):
 def test_la_marge_ecarte_les_couts_aberrants_et_garde_les_retours(entrepot):
     ca, cout = _q(entrepot, "SELECT sum(ca_ligne), sum(cout_revient) FROM client_margin "
                             "WHERE client = 'CP001'")[0]
-    assert ca == pytest.approx(600.0 - 100.0)       # R2 (coût 12x) écartée, retour gardé
+    assert ca == pytest.approx(600.0 - 100.0)
     assert cout == pytest.approx(300.0 - 50.0)
     assert _q(entrepot, "SELECT lignes_exclues FROM margin_quality")[0][0] == 1
 
@@ -189,7 +172,6 @@ def test_devis_transforme_selon_l_etat_erp(entrepot):
         "DV-1": True, "DV-2": False}
 
 
-# ── 3. Modèle en étoile ─────────────────────────────────────────────────────
 def test_dimensions_conformes_et_membres_deduits(entrepot):
     clients = dict(_q(entrepot, "SELECT client_code, origine FROM dim_client"))
     assert clients == {"CP001": "erp", "CP002": "erp", "CP999": "deduit", "CP003": "deduit"}
@@ -213,13 +195,12 @@ def test_aucun_fait_orphelin_de_sa_dimension(entrepot):
 def test_calendrier_continu_sans_date_de_remplissage(entrepot):
     debut, fin, n = _q(entrepot, "SELECT min(date), max(date), count(*) FROM dim_date")[0]
     assert str(debut) == "2024-01-02" and str(fin) == "2024-03-01"
-    assert n == (fin - debut).days + 1                 # aucun jour manquant
+    assert n == (fin - debut).days + 1
     alertes = dict(_q(entrepot, "SELECT controle, valeur FROM etl_controles "
                                 "WHERE statut = 'alerte'"))
-    assert alertes["calendrier:fait_ligne_achat.date"] == 1       # le 1/1/1900
+    assert alertes["calendrier:fait_ligne_achat.date"] == 1
 
 
-# ── 4. Sûreté de la construction ────────────────────────────────────────────
 def test_la_reconstruction_preserve_les_donnees_de_l_application(entrepot, sources):
     con = duckdb.connect(str(entrepot))
     con.execute("CREATE TABLE factures_importees (client_code VARCHAR, client_name VARCHAR, "
@@ -256,7 +237,7 @@ def test_un_controle_en_echec_annule_toute_la_construction(entrepot, sources, mo
     with pytest.raises(RuntimeError, match="contrôles"):
         etl.construire(entrepot, sources, rapport=None)
     assert _q(entrepot, "SELECT signature, construit_le FROM etl_execution") == avant
-    assert _q(entrepot, "SELECT count(*) FROM sales")[0][0] == 3     # l'ancien entrepôt
+    assert _q(entrepot, "SELECT count(*) FROM sales")[0][0] == 3
 
 
 def test_reconstruction_seulement_si_une_source_change(entrepot, sources):

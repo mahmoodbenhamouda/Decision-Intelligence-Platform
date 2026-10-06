@@ -1,16 +1,10 @@
 "use client";
 
-/**
- * Vue — les graphes du tableau de bord.
- *
- * Chaque graphe est une fonction de la hauteur : la même fonction dessine la
- * carte et sa version agrandie (« spotlight »).
- */
 import React from "react";
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Funnel, FunnelChart,
   LabelList, Legend, Line, Pie, PieChart, PolarAngleAxis, PolarGrid, Radar, RadarChart,
-  ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis,
+  ReferenceArea, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis,
 } from "recharts";
 import { Empty } from "./composants/Cartes";
 import { fAxis, fInt, fMoney } from "./format";
@@ -19,8 +13,6 @@ import type { KPIs } from "./tableauDeBord.types";
 const PIE_COLORS = ["#2F5BEA", "#10B981", "#8B5CF6", "#14C2D6", "#F59E0B", "#EF4444", "#EC4899", "#64748B"];
 const TT = { borderRadius: 10, border: "1px solid rgba(26,35,72,0.12)", background: "rgba(255,255,255,0.97)", color: "#16204A", fontSize: 13, boxShadow: "0 8px 24px rgba(26,35,72,0.14)" } as const;
 
-
-/** Série combinée ventes / achats / marge. */
 export type FluxMensuel = { period: string; ventes: number; achats: number; marge: number | null }[];
 
 export type Graphe = (h: number) => React.ReactNode;
@@ -35,6 +27,10 @@ export function graphiques(kpis: KPIs | null, combinedFlow: FluxMensuel): Record
       ...fc.map(d => ({ period: d.period, revenue: null as number | null, prevision: d.montant })),
     ];
     if (base.length && fc.length) data[base.length - 1].prevision = base[base.length - 1].revenue;
+    // La période des indicateurs est surlignée sur l'historique complet.
+    const ref = kpis?.periode_reference;
+    const periodeDebut = ref?.debut ? ref.debut.slice(0, 7) : null;
+    const periodeFin = ref?.fin ? ref.fin.slice(0, 7) : null;
     return (
       <ResponsiveContainer width="100%" height={h}>
         <AreaChart data={data} margin={{ top: 10, right: 12, left: 0, bottom: 0 }}>
@@ -44,6 +40,10 @@ export function graphiques(kpis: KPIs | null, combinedFlow: FluxMensuel): Record
           <YAxis tick={{ fill: "#5A6A8C", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={fAxis} />
           <RechartsTooltip formatter={(v, n) => [fMoney(Number(v ?? 0)), n === "prevision" ? "Prévision IA" : "CA TTC"]} contentStyle={TT} />
           <Legend wrapperStyle={{ fontSize: 11 }} />
+          {periodeDebut && periodeFin && (
+            <ReferenceArea x1={periodeDebut} x2={periodeFin} fill="#2F5BEA" fillOpacity={0.06}
+              label={{ value: kpis?.periode_reference?.libelle, position: "insideTopLeft", fill: "#5A6A8C", fontSize: 11 }} />
+          )}
           <Area type="monotone" dataKey="revenue" name="CA TTC" stroke="#2F5BEA" strokeWidth={2.5} fill="url(#gRev)" connectNulls />
           <Area type="monotone" dataKey="prevision" name="Prévision IA (3 mois)" stroke="#8B5CF6" strokeWidth={2.5} strokeDasharray="5 4" fill="none" connectNulls />
         </AreaChart>
@@ -148,14 +148,14 @@ export function graphiques(kpis: KPIs | null, combinedFlow: FluxMensuel): Record
         <Bar dataKey="count" name="Factures" fill="#2F5BEA" radius={[4, 4, 0, 0]} maxBarSize={40} />
       </BarChart>
     </ResponsiveContainer>) : <Empty />;
-  const rAging = (h: number) => kpis?.aging_creances?.length ? (
+  const rAging = (h: number) => kpis?.echelonnement_delais_accordes?.length ? (
     <ResponsiveContainer width="100%" height={h}>
-      <BarChart data={kpis.aging_creances} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
+      <BarChart data={kpis.echelonnement_delais_accordes} margin={{ top: 10, right: 8, left: 0, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(26,35,72,0.07)" vertical={false} />
         <XAxis dataKey="bucket" tick={{ fill: "#5A6A8C", fontSize: 11 }} axisLine={false} tickLine={false} />
         <YAxis tick={{ fill: "#5A6A8C", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={fAxis} />
         <RechartsTooltip formatter={(v) => fMoney(Number(v ?? 0))} contentStyle={TT} />
-        <Bar dataKey="montant" name="Montant TTC" radius={[5, 5, 0, 0]} maxBarSize={64}>{kpis.aging_creances.map((_, i) => <Cell key={i} fill={["#10B981", "#2F5BEA", "#F59E0B", "#F97316", "#EF4444"][i]} />)}</Bar>
+        <Bar dataKey="montant" name="Montant TTC" radius={[5, 5, 0, 0]} maxBarSize={64}>{kpis.echelonnement_delais_accordes.map((_, i) => <Cell key={i} fill={["#10B981", "#2F5BEA", "#F59E0B", "#F97316", "#EF4444"][i]} />)}</Bar>
       </BarChart>
     </ResponsiveContainer>) : <Empty />;
   const rCash = (h: number) => kpis?.cash_forecast?.length ? (

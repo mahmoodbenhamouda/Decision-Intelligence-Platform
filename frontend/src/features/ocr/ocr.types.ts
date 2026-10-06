@@ -1,7 +1,3 @@
-/**
- * Model — lecture de documents (OCR), facture structurée, rapprochement ERP,
- * enregistrement et échéancier.
- */
 
 export type Mode = "facture" | "texte" | "rag";
 
@@ -28,8 +24,8 @@ export interface Reconciliation {
 }
 export interface InvoiceResponse {
   filename: string; ocr: OcrMeta; facture: InvoiceFields; rapprochement: Reconciliation | null;
-  moteur?: string;          // "layoutlmv3+regles" ou "regles"
-  lecture_id?: string;      // la lecture est conservée : l'enregistrement ne relit pas le document
+  moteur?: string;
+  lecture_id?: string;
   sens?: { sens: "achat" | "vente" | "inconnu"; confiance: string | null; motif: string };
   entreprise?: { configuree: boolean; nom: string | null };
 }
@@ -59,8 +55,6 @@ export interface Echeancier {
 
 export type TypeChamp = "texte" | "date" | "montant";
 
-/** État du moteur de lecture (Tesseract, LayoutLMv3). */
 export interface EtatMoteur { ok: boolean; info: string; motif: string; cause: string }
 
-/** Réponse d'une requête : succès, statut HTTP et corps (vide si illisible). */
 export interface Reponse<T = Record<string, unknown>> { ok: boolean; status: number; data: T }

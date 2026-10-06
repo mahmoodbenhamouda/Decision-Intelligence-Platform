@@ -1,18 +1,4 @@
-"""
-api/routers/taches.py
-=====================
-Boucle d'action — toutes les routes sont réservées aux comptes internes
-(`require_interne`) : un client n'y a jamais accès.
-
-GET   /api/taches/employes  à qui confier une tâche, avec sa charge
-GET   /api/taches/impact    ce que les actions ont rapporté
-GET   /api/taches/boucle    ce qui est déjà reparti vers les modèles (directeur)
-GET   /api/taches/confiees  alertes déjà confiées (« Confiée à … »)
-GET   /api/taches           tableau de suivi (un employé : SES tâches)
-POST  /api/taches           confier une tâche (directeur)
-GET   /api/taches/{id}      détail et historique
-PATCH /api/taches/{id}      avancer, réaffecter (directeur), clôturer avec un résultat
-"""
+"""Boucle d'action — toutes les routes sont réservées aux comptes internes (`require_interne`) : un…"""
 
 from __future__ import annotations
 
@@ -24,7 +10,8 @@ from sqlalchemy.orm import Session
 from api.auth.database import get_db
 from api.auth.deps import require_directeur, require_interne
 from api.auth.models import User
-from api.schemas.taches import TacheCreate, TacheUpdate
+from api.schemas.taches import DelegationReglages, TacheCreate, TacheUpdate
+from api.services import delegation
 from api.services import taches as service
 
 router = APIRouter(prefix="/api/taches", tags=["taches"],
@@ -50,6 +37,24 @@ def boucle(db: Session = Depends(get_db), user: User = Depends(require_directeur
 @router.get("/confiees")
 def confiees(db: Session = Depends(get_db), user: User = Depends(require_interne)):
     return service.confiees(db)
+
+
+@router.get("/delegation")
+def delegation_etat(db: Session = Depends(get_db),
+                    user: User = Depends(require_directeur)):
+    return delegation.etat(db)
+
+
+@router.put("/delegation")
+def delegation_reglages(body: DelegationReglages, db: Session = Depends(get_db),
+                        user: User = Depends(require_directeur)):
+    return delegation.modifier_reglages(db, user, body.active, body.heure)
+
+
+@router.post("/delegation/lancer")
+def delegation_lancer(db: Session = Depends(get_db),
+                      user: User = Depends(require_directeur)):
+    return delegation.lancer(db, user)
 
 
 @router.get("")

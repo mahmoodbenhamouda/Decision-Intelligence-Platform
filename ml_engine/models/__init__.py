@@ -1,23 +1,4 @@
-"""
-Modèles ML du module Stock — démarche CRISP-DM complète.
-
-Deux modèles, une préparation de données commune :
-
-- `demand_features.py` : **CRISP-DM 3 (Data Preparation)** — construction des
-  séries mensuelles produit × mois depuis les lignes de vente réelles, avec
-  features de retard (lags), moyennes mobiles, saisonnalité et typologie
-  d'établissement. Anti-fuite par construction.
-
-- `demand_forecast.py` : **CRISP-DM 4-5** — prévision multi-horizon (30/60/90 j)
-  par régression. Compare LightGBM, XGBoost, Ridge et trois baselines ;
-  sélection par backtest walk-forward, contrôle d'overfitting.
-
-- `stock_risk.py` : **CRISP-DM 4-5** — classification du risque de péremption
-  et de surstock. Score 0-100, catégorie, impact financier estimé.
-
-Documentation complète : `docs/CRISP_DM_STOCK.md`
-Métriques : `reports/demand_forecast_ml_metrics.json`, `reports/stock_risk_metrics.json`
-"""
+"""Modèles ML du module Stock — démarche CRISP-DM complète."""
 
 from typing import TYPE_CHECKING, Any
 

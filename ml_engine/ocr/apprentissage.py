@@ -1,25 +1,4 @@
-"""
-ml_engine/ocr/apprentissage.py
-==============================
-Boucle d'apprentissage, partie 1 : MESURER le modèle en production.
-
-La validation croisée mesure le modèle sur 89 factures annotées une fois pour
-toutes. En production, chaque facture validée par un utilisateur est une
-nouvelle mesure, gratuite : un champ laissé tel quel était juste, un champ
-corrigé était faux (ou vide).
-
-    exactitude(champ) = 1 − corrigés / champs à renseigner
-
-« À renseigner » = le champ a une valeur lue OU une valeur validée. Un champ
-vide des deux côtés (pas de timbre sur la facture) ne compte ni pour ni contre.
-
-Biais à connaître, et affiché avec le chiffre : « validée telle quelle » veut
-dire que l'utilisateur n'a rien modifié, pas qu'il a tout vérifié. Une
-validation distraite gonfle l'exactitude. C'est pourquoi on ne mesure que sur
-les factures RELUES (écran de validation), jamais sur les imports sans relecture.
-
-Partie 2 (réentraîner) : `evaluation_ocr/preparation/6_integrer_production.py`.
-"""
+"""Boucle d'apprentissage, partie 1 : MESURER le modèle en production."""
 from __future__ import annotations
 
 import json
@@ -27,7 +6,6 @@ from typing import Any, Dict, Optional
 
 from .importer import CHAMPS_VALIDABLES, _assurer_schema, _connect, _valeur
 
-# Champs mesurés : ceux que LayoutLMv3 extrait (le matricule et la devise non).
 CHAMPS_MESURES = ["numero", "date_facture", "fournisseur", "client", "montant_ht",
                   "montant_tva", "timbre_fiscal", "montant_ttc", "net_a_payer"]
 RELUES = ("corrigee", "validee_telle_quelle")
@@ -56,7 +34,7 @@ def mesure_production(depuis: Optional[str] = None) -> Dict[str, Any]:
                   "client": cli, "montant_ht": ht, "montant_tva": tva, "timbre_fiscal": tim,
                   "montant_ttc": ttc, "net_a_payer": net}
         if lu.get("client") is None and lu.get("tiers"):
-            lu["client"] = lu["tiers"]                    # lectures « règles seules »
+            lu["client"] = lu["tiers"]
         m = par_moteur.setdefault(moteur, {"n_factures": 0, "n_sans_correction": 0,
                                            "champs": {c: {"n": 0, "corriges": 0} for c in CHAMPS_MESURES}})
         m["n_factures"] += 1

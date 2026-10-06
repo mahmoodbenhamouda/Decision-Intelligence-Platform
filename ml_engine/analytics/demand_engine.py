@@ -1,18 +1,4 @@
-"""
-Analyse de la DEMANDE & de l'APPROVISIONNEMENT (sans données de stock ERP).
-
-Rôle (honnête vu les données disponibles) : ce n'est PAS de la gestion de stock
-au sens strict (pas de niveaux de stock ni de mouvements produit dans la base),
-mais une analyse de la demande et du risque d'approvisionnement :
-
-  - Demande = volume d'articles vendus par mois (sales.nbr_article).
-  - Prévision 3 mois, avec BACKTEST (MAPE) de plusieurs méthodes → on retient la
-    meilleure. La MAPE est une mesure d'erreur honnête et mesurable.
-  - Risque fournisseur : concentration des achats (HHI, part du top fournisseur)
-    → alerte de dépendance / risque de rupture d'appro.
-
-Usage : python -m ml_engine.analytics.demand_engine
-"""
+"""Analyse de la DEMANDE & de l'APPROVISIONNEMENT (sans données de stock ERP)."""
 
 from __future__ import annotations
 
@@ -20,6 +6,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+
+#: Erreur moyenne au-delà de laquelle une prévision cesse d'être un chiffre
+#: d'action. Seuil DÉCLARÉ avant mesure, pas ajusté après coup.
+#:
+#: Sur l'entreprise entière, l'erreur tourne autour de 16 % : la demande agrégée
+#: est régulière. Restreinte à un établissement, elle grimpe au-delà de 200 % —
+#: un hôpital commande par à-coups, et une moyenne n'a plus de sens. Publier ce
+#: chiffre comme les autres laisserait croire qu'il se décide pareil.
+MAPE_MAXIMALE_EXPLOITABLE = 40.0
 
 
 def _connect(data_dir: Optional[Path] = None):
@@ -40,7 +35,6 @@ def _mape(actual: np.ndarray, pred: np.ndarray) -> float:
     return float(np.mean(np.abs((a[mask] - p[mask]) / a[mask])) * 100)
 
 
-# ── Méthodes de prévision ───────────────────────────────────────────────────
 def _predict(hist: np.ndarray, method: str) -> float:
     if method == "saisonnier" and len(hist) >= 12:
         return float(hist[-12])
@@ -52,7 +46,6 @@ def _predict(hist: np.ndarray, method: str) -> float:
         return float(base * min(2.0, max(0.5, factor)))
     if method == "moyenne_mobile":
         return float(hist[-3:].mean())
-    # tendance linéaire (repli)
     w = hist[-12:] if len(hist) >= 12 else hist
     x = np.arange(len(w))
     return float(np.polyval(np.polyfit(x, w, 1), len(w)))
@@ -88,33 +81,44 @@ def _forecast(q: np.ndarray, method: str, h: int = 3) -> List[float]:
     return preds
 
 
-# ── Calcul principal ────────────────────────────────────────────────────────
 def compute_supply_demand(filters: Optional[Dict[str, Any]] = None,
                           data_dir: Optional[Path] = None) -> Dict[str, Any]:
     con = _connect(data_dir)
     out: Dict[str, Any] = {}
 
-    # 1) Demande mensuelle (volume d'articles)
+    # PÉRIMÈTRE. Un filtre client restreint la demande : celle d'un
+    # établissement se prévoit comme celle de l'entreprise entière, tant qu'il
+    # reste assez d'historique mensuel. En dessous, le modèle refuse plutôt que
+    # d'extrapoler sur trois points — et le dit.
+    clients = list((filters or {}).get("selected_clients") or [])
+    ou = ""
+    if clients:
+        vals = ",".join("'" + str(c).replace("'", "''") + "'" for c in clients)
+        ou = f" AND client IN ({vals})"
+    out["perimetre"] = {
+        "n_clients": len(clients),
+        "libelle": (f"{len(clients)} client(s) filtré(s)" if clients
+                    else "entreprise entière"),
+    }
+
     rows = con.execute(
         "SELECT strftime(date,'%Y-%m') m, sum(nbr_article) q "
-        "FROM sales WHERE date IS NOT NULL GROUP BY m ORDER BY m"
+        f"FROM sales WHERE date IS NOT NULL{ou} GROUP BY m ORDER BY m"
     ).fetchall()
     months = [r[0] for r in rows]
     q = np.array([float(r[1] or 0) for r in rows])
     out["demande_mensuelle"] = [{"period": m, "qte": float(v)} for m, v in zip(months, q)]
 
-    # ── Prévision de demande ────────────────────────────────────────────────
-    # Le module `demande_hybride` est préféré quand il est disponible : il élit sa
-    # méthode sur le SEUL jeu d'entraînement, borne l'horizon à ce que les données
-    # soutiennent, et accompagne chaque prévision d'un intervalle construit sur
-    # les écarts réellement constatés. Le backtest local ci-dessous reste en repli
-    # — il choisit sa méthode en regardant toute la série, ce qui flatte la MAPE
-    # annoncée.
     fait = False
     try:
         from ml_engine.forecasting import demande_hybride as dh
 
-        mois_h, serie = dh.charger_serie()
+        mois_h, serie = dh.charger_serie(clients=clients or None)
+        if len(serie) < dh.MIN_TRAIN and clients:
+            out["demande_motif"] = (
+                f"Historique trop court pour prévoir sur ce périmètre : "
+                f"{len(serie)} mois de commandes, {dh.MIN_TRAIN} nécessaires. "
+                "La prévision reste disponible sans filtre client.")
         if len(serie) >= dh.MIN_TRAIN:
             ev = dh.evaluer(mois_h, serie)
             if ev.get("applicable"):
@@ -142,7 +146,6 @@ def compute_supply_demand(filters: Optional[Dict[str, Any]] = None,
         bt = _backtest(q)
         best = min(bt, key=bt.get) if bt else "saisonnier"
         fc = _forecast(q, best, h=3)
-        # mois de prévision
         from datetime import datetime
         last = datetime.strptime(months[-1], "%Y-%m")
         fut = []
@@ -161,7 +164,25 @@ def compute_supply_demand(filters: Optional[Dict[str, Any]] = None,
         out["demande_prevision"] = []
         out["demande_mape"] = None
 
-    # 2) Concentration fournisseurs (risque d'approvisionnement)
+    # FIABILITÉ. Une prévision dont l'erreur dépasse le seuil déclaré reste
+    # affichée — la cacher laisserait croire à une panne — mais elle est
+    # étiquetée comme non exploitable, avec son chiffre. Un directeur doit
+    # pouvoir distinguer « 8 200 articles ± 16 % » de « 266 ± 228 % ».
+    mape = out.get("demande_mape")
+    out["demande_seuil_mape"] = MAPE_MAXIMALE_EXPLOITABLE
+    out["demande_exploitable"] = bool(
+        mape is not None and mape <= MAPE_MAXIMALE_EXPLOITABLE)
+    if mape is not None and not out["demande_exploitable"]:
+        out["demande_reserve"] = (
+            f"Erreur moyenne de {mape:.0f} % sur les mois de contrôle, pour un "
+            f"maximum exploitable fixé à {MAPE_MAXIMALE_EXPLOITABLE:.0f} %. "
+            + ("La demande d'un seul établissement arrive par à-coups : une "
+               "moyenne mensuelle n'y a pas de sens. Cette prévision situe un "
+               "ordre de grandeur, elle ne se budgète pas."
+               if clients else
+               "Cette prévision situe un ordre de grandeur, elle ne se "
+               "budgète pas."))
+
     sup = con.execute(
         "SELECT fournisseur, sum(ttc) t, count(*) n FROM purchases "
         "WHERE fournisseur IS NOT NULL GROUP BY fournisseur ORDER BY t DESC NULLS LAST"
@@ -185,17 +206,13 @@ def compute_supply_demand(filters: Optional[Dict[str, Any]] = None,
 
 
 def save_metrics_report(d: Optional[Dict[str, Any]] = None) -> Path:
-    """Écrit reports/demand_forecast_metrics.json (méthodologie + backtest MAPE).
-
-    Reproductible : `python -m ml_engine.analytics.demand_engine` (déterministe,
-    aucun aléa — le backtest est un walk-forward exact sur l'historique).
-    """
+    """Écrit reports/demand_forecast_metrics.json (méthodologie + backtest MAPE)."""
     import json
     d = d or compute_supply_demand()
     reports = Path(__file__).resolve().parents[2] / "reports"
     reports.mkdir(parents=True, exist_ok=True)
     metrics = {
-        "cible": "volume mensuel d'articles vendus (proxy de la demande, sans stock ERP)",
+        "cible": "volume mensuel d'articles vendus, faute de relevé de stock",
         "validation": "backtest walk-forward sur les 12 derniers mois (MAPE par méthode)",
         "methodes_testees": _METHODS,
         "backtest_mape_par_methode": d.get("demande_backtest_mape"),
@@ -210,8 +227,8 @@ def save_metrics_report(d: Optional[Dict[str, Any]] = None) -> Path:
             "niveau": d.get("dependance_fournisseur"),
         },
         "limites": (
-            "La demande est mesurée en volume d'articles facturés (nbr_article), "
-            "faute de données de stock/mouvements produit dans l'ERP exporté. "
+            "La demande est mesurée en volume d'articles facturés , "
+            "faute de relevé de stock ou de mouvements par produit. "
             "Ce proxy capte la demande servie, pas la demande latente (ruptures invisibles)."
         ),
     }
@@ -220,7 +237,6 @@ def save_metrics_report(d: Optional[Dict[str, Any]] = None) -> Path:
     return p
 
 
-# ── CLI ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys
     try:

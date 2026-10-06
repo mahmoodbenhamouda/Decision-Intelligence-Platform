@@ -1,28 +1,4 @@
-"""
-scripts/audit_toutes_sources.py
-================================
-Etend aux ACHATS et aux LIGNES DE FACTURE l'audit mene sur les ventes.
-
-Le meme defaut peut exister partout
------------------------------------
-Les ventes surevaluaient le CA de 5,44 % pour deux raisons : les avoirs etaient
-ajoutes au lieu d'etre retranches (le signe est dans `MONTANTSIGNE_DEV`, pas
-dans `TTC_DEV`), et 1 324 factures figuraient en double (la cle metier est
-`PIECENOFULL`, pas `ENT_ID`).
-
-`Facture_achat_ent_v.csv` porte exactement les memes colonnes. Si le meme
-defaut s'y trouve, alors le DPO, le besoin en fonds de roulement et le cycle de
-tresorerie sont faux eux aussi.
-
-`ZZ_Facture_vente_mouv.csv` porte `MONTANT_DEV` (non signe) ET
-`MONTANTSIGNE_DEV` (signe), plus `SENS`. Les agregats produits utilisent
-aujourd'hui la version NON signee : le CA par produit et par famille inclut
-donc les retours en positif.
-
-Ce script mesure. Il ne corrige rien.
-
-    .venv\\Scripts\\python.exe scripts\\audit_toutes_sources.py
-"""
+"""Etend aux ACHATS et aux LIGNES DE FACTURE l'audit mene sur les ventes."""
 
 from __future__ import annotations
 
@@ -54,7 +30,6 @@ def main() -> int:
     con = duckdb.connect()
     num = "TRY_CAST({} AS DOUBLE)"
 
-    # ══ ACHATS ══════════════════════════════════════════════════════════════
     titre("ACHATS -- Facture_achat_ent_v.csv")
     a = lu("achats_entetes")
     ttc, ht, sig = num.format("TTC_DEV"), num.format("HT_DEV"), num.format("MONTANTSIGNE_DEV")
@@ -97,7 +72,6 @@ def main() -> int:
               f"({ecart / float(s_ttc) * 100:.2f} %)")
         print("  -> Impacte le DPO, le BFR et le cycle de tresorerie.")
 
-    # ══ LIGNES DE FACTURE ═══════════════════════════════════════════════════
     titre("LIGNES DE FACTURE -- ZZ_Facture_vente_mouv.csv")
     L = lu("ventes_lignes")
     mt, mts = num.format("MONTANT_DEV"), num.format("MONTANTSIGNE_DEV")
@@ -126,7 +100,6 @@ def main() -> int:
     for s, k in rows:
         print(f"    SENS = {s or '(vide)':<6} : {k:,}".replace(",", " "))
 
-    # Marge : l'exclusion « ca > 0 » ecarte-t-elle les avoirs ?
     titre("MARGE -- effet du filtre `ca > 0`")
     r = con.execute(f"""
         SELECT
@@ -152,7 +125,6 @@ def main() -> int:
               f"({e / marge_actuelle * 100:.2f} %)")
         print("  -> Le filtre `ca > 0` garde la vente et oublie le retour.")
 
-    # Doublons de lignes, en echo aux 1 324 factures dupliquees
     titre("LIGNES : y a-t-il des doublons, en echo aux 1 324 factures ?")
     r = con.execute(f"""
         WITH d AS (

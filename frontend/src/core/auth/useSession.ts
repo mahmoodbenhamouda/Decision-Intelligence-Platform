@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * useSession — garde d'authentification des écrans protégés.
- * Pas de session → écran de connexion. La session n'est lue qu'une fois montée
- * (le stockage local n'existe pas côté serveur).
- */
 import { useSyncExternalStore } from "react";
 import { getSession, type SessionInfo } from "@/core/auth/session";
 

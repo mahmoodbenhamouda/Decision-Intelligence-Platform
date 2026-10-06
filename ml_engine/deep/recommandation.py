@@ -1,73 +1,4 @@
-"""
-ml_engine/deep/recommandation.py
-================================
-Recommandation de produits par apprentissage profond — réseau **Wide & Deep**.
-
-La question posée
------------------
-> Quels produits ce client, qui ne les a JAMAIS achetés, va-t-il adopter dans les
-> six prochains mois ?
-
-C'est la question de la **vente croisée**. Elle diffère des autres modules du
-projet sur un point qui justifie le deep learning : la sortie n'est pas un score
-par client ou par produit, mais un **classement de centaines de produits pour
-chacun des clients** — un espace client × produit de plus de 400 000 couples,
-où la similarité entre produits et entre profils d'établissement s'apprend par
-des **embeddings** (représentations vectorielles denses).
-
-Pourquoi cette cible est honnête
---------------------------------
-* **Observée, jamais construite** : le client a acheté le produit pour la
-  première fois dans la fenêtre, ou non. Aucun seuil déclaré, aucune simulation.
-* **Non triviale** : les rachats sont exclus. Prédire qu'un laboratoire rachètera
-  son réactif habituel ne sert à rien — le service achat le sait déjà.
-* **Actionnable** : une adoption probable est un argument de prospection.
-* **Mesurable sans fuite** : les variables se calculent sur `]-∞, t]`, la cible
-  se lit sur `]t, t+6 mois]`.
-
-Architecture — Wide & Deep (Cheng et al., Google, 2016)
-------------------------------------------------------
-    score(client, produit) =  wide(x)  +  deep( x ⊕ E_produit ⊕ E_famille ⊕ E_type )
-
-* la partie **wide** (linéaire) mémorise les signaux directs — popularité,
-  similarité de co-achat ;
-* la partie **deep** (perceptron à deux couches cachées, ReLU, dropout) croise
-  ces signaux avec trois embeddings appris : le produit (16 dimensions), sa
-  famille ERP (16) et le type d'établissement du client (4) ;
-* un **dropout d'identifiant** remplace aléatoirement 30 % des produits par un
-  vecteur « inconnu » : le réseau apprend ainsi à recommander aussi un produit
-  récent, dont l'embedding n'a pas encore vu d'exemples.
-
-Protocole — walk-forward à trois origines
------------------------------------------
-Pour chaque origine `T`, les exemples d'entraînement sont construits à des dates
-trimestrielles `t ≤ T − 6 mois` : leur fenêtre cible se termine donc au plus tard
-en `T`. Aucun exemple d'entraînement ne voit la période de test.
-
-Le nombre d'époques est choisi par **validation interne** — entraînement sur
-`t ≤ T − 12 mois`, validation en `T − 6 mois` — jamais sur le test.
-
-Six méthodes sont mesurées sur exactement les mêmes clients et candidats :
-
-| Famille              | Méthodes                                               |
-|----------------------|--------------------------------------------------------|
-| références triviales | popularité 12 mois, popularité par type d'établissement, item-kNN (co-achat) |
-| modèles non profonds | régression logistique, LightGBM                        |
-| deep learning        | Wide & Deep                                            |
-
-Règles de décision — déclarées AVANT la mesure
-----------------------------------------------
-1. **L'apprentissage doit être utile** : le meilleur modèle appris doit battre la
-   meilleure référence triviale de `SEUIL_GAIN_NDCG` en NDCG@10 agrégé, avec un
-   intervalle de confiance apparié (bootstrap sur les clients) entièrement positif.
-2. **Parcimonie** : parmi les modèles appris, le plus SIMPLE est servi sauf si un
-   plus complexe est **significativement** meilleur (IC95 de l'écart > 0). Le
-   Wide & Deep n'est donc servi que s'il bat LightGBM ET la régression logistique
-   au-delà du bruit d'échantillonnage.
-3. Sans PyTorch, le deep learning n'est pas mesuré ; le rapport le dit.
-
-Reproduction :  python -m ml_engine.deep.recommandation
-"""
+"""Recommandation de produits par apprentissage profond — réseau **Wide & Deep**."""
 
 from __future__ import annotations
 
@@ -95,39 +26,37 @@ ARTEFACT = MODELS_DIR / "recommandation_wide_deep.pt"
 
 SEED = 42
 HORIZON_MOIS = 6
-PAS_MOIS = 3                     # une date d'exemples par trimestre
-DEBUT_HISTORIQUE = "2021-01-01"  # le trou 2019-2020 est une bascule d'ERP
-K = 10                           # taille de la liste recommandée
+PAS_MOIS = 3
+DEBUT_HISTORIQUE = "2021-01-01"
+K = 10
 NEGATIFS_PAR_POSITIF = 10
 N_ORIGINES = 3
 EPOQUES_CANDIDATES = (3, 6, 9, 12)
 SEUIL_GAIN_NDCG = 0.02
 N_TIRAGES = 2000
 
-# Ordre de SIMPLICITÉ : sert la règle de parcimonie.
 MODELES_APPRIS = ("regression_logistique", "lightgbm", "wide_deep")
 REFERENCES = ("popularite_12m", "popularite_par_type", "item_knn")
 
 VARIABLES = [
-    "log_acheteurs_12m",       # popularité récente
-    "log_acheteurs_3m",        # popularité très récente
-    "tendance",                # log(3m × 4) − log(12m) : produit qui monte
-    "log_acheteurs_meme_type", # adopté par des établissements du même type
-    "part_meme_type",          # … rapporté à la taille de ce type
-    "knn_somme",               # similarité de co-achat avec l'historique du client
-    "knn_max",                 # produit le plus proche déjà acheté
+    "log_acheteurs_12m",
+    "log_acheteurs_3m",
+    "tendance",
+    "log_acheteurs_meme_type",
+    "part_meme_type",
+    "knn_somme",
+    "knn_max",
     "anciennete_produit_ans",
     "log_ca_produit_12m",
     "log_n_references_client",
     "log_ca_client_12m",
     "mois_actifs_client_12m",
     "recence_client_ans",
-    "part_famille_client",     # poids de la famille du produit chez ce client
+    "part_famille_client",
     "famille_deja_achetee",
 ]
 
 
-# ── Données ─────────────────────────────────────────────────────────────────
 def _connect():
     import duckdb
     from ml_engine.analytics.kpi_engine import STORE_PATH
@@ -135,12 +64,7 @@ def _connect():
 
 
 def charger_achats(con=None) -> Tuple[pd.DataFrame, Dict[str, str]]:
-    """Couples (client, référence, date) des ventes réelles, hors prestations.
-
-    Les prestations (`SERVICE SAV`, `SERVICE DIVERS`…) sont exclues : un contrat
-    de maintenance n'est pas un produit qu'on recommande, il suit un équipement.
-    Les avoirs (montant ≤ 0) sont exclus : une annulation n'est pas une adoption.
-    """
+    """Couples (client, référence, date) des ventes réelles, hors prestations."""
     from ml_engine.models.demand_features import classer_etablissement
 
     ferme = con is None
@@ -172,11 +96,7 @@ def charger_achats(con=None) -> Tuple[pd.DataFrame, Dict[str, str]]:
 
 
 def dates_de_coupure(df: pd.DataFrame) -> Tuple[pd.Timestamp, List[pd.Timestamp]]:
-    """Dernier mois COMPLET, puis dates trimestrielles dont la cible est complète.
-
-    Le dernier mois de l'export est presque toujours partiel : il est écarté,
-    comme dans les autres modules de prévision du projet.
-    """
+    """Dernier mois COMPLET, puis dates trimestrielles dont la cible est complète."""
     fin = df["date"].max()
     complet = (fin + pd.offsets.MonthEnd(0)).normalize()
     if fin.normalize() < complet:
@@ -194,14 +114,7 @@ def dates_de_coupure(df: pd.DataFrame) -> Tuple[pd.Timestamp, List[pd.Timestamp]
 def construire_exemples(df: pd.DataFrame, coupure: pd.Timestamp,
                         etiquettes: bool = True,
                         graine: Optional[int] = None) -> pd.DataFrame:
-    """Couples (client, produit JAMAIS acheté par ce client) vus à la date `coupure`.
-
-    Si `graine` est fournie (exemples d'ENTRAÎNEMENT), les négatifs sont
-    sous-échantillonnés à `NEGATIFS_PAR_POSITIF` par positif et les clients sans
-    adoption sont écartés. Sinon (évaluation, prédiction), TOUS les candidats sont
-    conservés : le classement se mesure sur le catalogue entier, pas sur un
-    échantillon qui faciliterait la tâche.
-    """
+    """Couples (client, produit JAMAIS acheté par ce client) vus à la date `coupure`."""
     coupure = pd.Timestamp(coupure)
     passe = df[df["date"] <= coupure]
     r12 = passe[passe["date"] > coupure - pd.DateOffset(months=12)]
@@ -229,7 +142,6 @@ def construire_exemples(df: pd.DataFrame, coupure: pd.Timestamp,
     adoption_type = (r12.groupby(["type_etab", "reference"])["client"].nunique()
                      .unstack(fill_value=0).reindex(columns=catalogue, fill_value=0))
 
-    # Matrice client × produit (achats passés) et similarité cosinus produit-produit.
     X = np.zeros((len(tous), len(catalogue)), dtype=np.float32)
     p2 = passe[passe["reference"].isin(ii)]
     X[p2["client"].map(ci).to_numpy(), p2["reference"].map(ii).to_numpy()] = 1.0
@@ -305,14 +217,9 @@ def construire_exemples(df: pd.DataFrame, coupure: pd.Timestamp,
     return out
 
 
-# ── Métriques de classement ─────────────────────────────────────────────────
 def metriques_classement(exemples: pd.DataFrame, score: np.ndarray,
                          k: int = K) -> Tuple[Dict[str, Any], pd.DataFrame]:
-    """HitRate, précision, rappel, NDCG et MAP à k — par client, puis moyennés.
-
-    Seuls les clients ayant au moins une adoption dans la fenêtre sont évalués :
-    un client qui n'adopte rien ne permet pas de juger un classement.
-    """
+    """HitRate, précision, rappel, NDCG et MAP à k — par client, puis moyennés."""
     d = exemples[["client", "reference", "y"]].assign(s=np.asarray(score, float))
     d = d.sort_values(["client", "s", "reference"], ascending=[True, False, True])
     d["rang"] = d.groupby("client").cumcount()
@@ -368,7 +275,6 @@ def comparer_ndcg(a: np.ndarray, b: np.ndarray, graine: int = SEED) -> Dict[str,
     }
 
 
-# ── Modèles ─────────────────────────────────────────────────────────────────
 def _torch_disponible() -> bool:
     try:
         import torch  # noqa: F401
@@ -387,7 +293,7 @@ def _construire_reseau(n_variables: int, n_produits: int, n_familles: int, n_typ
         def __init__(self) -> None:
             super().__init__()
             d = 16
-            self.emb_produit = nn.Embedding(n_produits + 1, d)    # 0 = inconnu
+            self.emb_produit = nn.Embedding(n_produits + 1, d)
             self.emb_famille = nn.Embedding(n_familles + 1, d)
             self.emb_type = nn.Embedding(n_types + 1, 4)
             self.wide = nn.Linear(n_variables, 1)
@@ -471,7 +377,6 @@ def entrainer_wide_deep(train: pd.DataFrame, epoques: int,
         for debut in range(0, len(y), 1024):
             idx = ordre[debut:debut + 1024]
             produit = P[idx].clone()
-            # Dropout d'identifiant : apprendre à recommander un produit inconnu.
             produit[torch.rand(len(idx), generator=gen) < 0.3] = 0
             perte = torch.nn.functional.binary_cross_entropy_with_logits(
                 reseau(X[idx], produit, F[idx], T[idx]), y[idx], pos_weight=poids_positif)
@@ -486,7 +391,7 @@ def entrainer_wide_deep(train: pd.DataFrame, epoques: int,
 
 def _scores_references(ex: pd.DataFrame) -> Dict[str, np.ndarray]:
     """Directions fixées A PRIORI, jamais révisées au vu du résultat."""
-    depart = 1e-3 * ex["log_acheteurs_12m"].to_numpy()      # départage stable
+    depart = 1e-3 * ex["log_acheteurs_12m"].to_numpy()
     return {
         "popularite_12m": ex["log_acheteurs_12m"].to_numpy(),
         "popularite_par_type": ex["part_meme_type"].to_numpy() + depart,
@@ -513,12 +418,11 @@ def _entrainer_non_profonds(train: pd.DataFrame) -> Dict[str, Callable[[pd.DataF
     }
 
 
-# ── Évaluation walk-forward ─────────────────────────────────────────────────
 def evaluer(df: pd.DataFrame, verbose: bool = True) -> Dict[str, Any]:
     _, coupures = dates_de_coupure(df)
     if len(coupures) < N_ORIGINES + 4:
         return {"applicable": False, "motif": f"{len(coupures)} dates de coupure seulement"}
-    origines = coupures[::-2][:N_ORIGINES][::-1]      # les plus récentes, espacées de 6 mois
+    origines = coupures[::-2][:N_ORIGINES][::-1]
     avec_torch = _torch_disponible()
 
     cache_train: Dict[pd.Timestamp, pd.DataFrame] = {}
@@ -555,7 +459,6 @@ def evaluer(df: pd.DataFrame, verbose: bool = True) -> Dict[str, Any]:
             scores[nom] = f(test)
 
         if avec_torch:
-            # Nombre d'époques choisi en validation INTERNE, jamais sur le test.
             T_val = (T - pd.DateOffset(months=HORIZON_MOIS)) + pd.offsets.MonthEnd(0)
             train_int = exemples_train(T_val)
             val = construire_exemples(df, T_val)
@@ -581,7 +484,6 @@ def evaluer(df: pd.DataFrame, verbose: bool = True) -> Dict[str, Any]:
                                for n, r in bloc["methodes"].items())
                   + f" ({bloc['duree_s']} s)")
 
-    # ── Agrégation sur les trois origines ────────────────────────────────────
     agrege: Dict[str, Dict[str, Any]] = {}
     ndcg_client: Dict[str, np.ndarray] = {}
     for nom, blocs in par_client.items():
@@ -602,10 +504,9 @@ def evaluer(df: pd.DataFrame, verbose: bool = True) -> Dict[str, Any]:
     appris = [m for m in MODELES_APPRIS if m in agrege]
     meilleur_appris = max(appris, key=lambda n: agrege[n][f"ndcg_at_{K}"])
 
-    # Règle 2 — parcimonie : le plus simple non significativement inférieur au meilleur.
     comparaisons_parcimonie = {}
     retenu = meilleur_appris
-    for m in appris:                                   # ordre de simplicité
+    for m in appris:
         if m == meilleur_appris:
             retenu = m
             break
@@ -615,7 +516,6 @@ def evaluer(df: pd.DataFrame, verbose: bool = True) -> Dict[str, Any]:
             retenu = m
             break
 
-    # Règle 1 — utilité de l'apprentissage.
     vs_ref = comparer_ndcg(ndcg_client[retenu], ndcg_client[meilleure_ref])
     gain = agrege[retenu][f"ndcg_at_{K}"] - agrege[meilleure_ref][f"ndcg_at_{K}"]
     utile = bool(vs_ref["significatif"] and gain >= SEUIL_GAIN_NDCG)
@@ -648,7 +548,6 @@ def evaluer(df: pd.DataFrame, verbose: bool = True) -> Dict[str, Any]:
     }
 
 
-# ── Entraînement complet ────────────────────────────────────────────────────
 def train(verbose: bool = True) -> Dict[str, Any]:
     from ml_engine.determinisme import limiter_threads
 
@@ -671,7 +570,6 @@ def train(verbose: bool = True) -> Dict[str, Any]:
     servie = ev["methode_servie"]["nom"]
     complet, coupures = dates_de_coupure(df)
 
-    # ── Modèle final : toutes les fenêtres complètes, puis prédiction à la fin ──
     blocs = [construire_exemples(df, t, graine=SEED + int(t.strftime("%Y%m")))
              for t in coupures]
     train_final = pd.concat([b for b in blocs if not b.empty], ignore_index=True)
@@ -687,7 +585,7 @@ def train(verbose: bool = True) -> Dict[str, Any]:
         torch.save(modele.etat(), ARTEFACT)
     else:
         if ARTEFACT.exists():
-            ARTEFACT.unlink()          # un artefact présent finit par être chargé
+            ARTEFACT.unlink()
         if servie in ("regression_logistique", "lightgbm"):
             score = _entrainer_non_profonds(train_final)[servie](candidats)
         else:
@@ -760,8 +658,6 @@ def _formater(df: pd.DataFrame, candidats: pd.DataFrame, score: np.ndarray,
     """Top K par client, enrichi de ce qui rend la recommandation vérifiable."""
     r12 = df[df["date"] > date_ref - pd.DateOffset(months=12)]
     designation = df.groupby("reference")["designation"].agg(lambda x: x.mode().iat[0])
-    # Montant annuel médian dépensé par un acheteur de ce produit : un ORDRE DE
-    # GRANDEUR observé, pas une prévision de chiffre d'affaires.
     ca_par_acheteur = (r12.groupby(["reference", "client"])["montant"].sum()
                        .groupby("reference").median())
     c = candidats.assign(score=np.asarray(score, float))
@@ -794,26 +690,15 @@ def _ecrire(rapport: Dict[str, Any]) -> None:
               indent=2, ensure_ascii=False, default=str)
 
 
-# ── Lecture (API, agents) — aucune dépendance à PyTorch ─────────────────────
 def _avec_raisons(produit: Dict[str, Any],
                   type_etab: Optional[str] = None) -> Dict[str, Any]:
-    """Pourquoi CE produit est proposé à CE client.
-
-    Les recommandations sont précalculées : le modèle n'est pas rejoué ici. Mais
-    les trois grandeurs qui fondent son classement sont, elles, déjà dans le
-    fichier — combien d'établissements l'achètent, quelle part des établissements
-    du même type l'a adopté, et ce que cela représente par an. Les rendre
-    lisibles suffit à justifier la proposition ; inventer une attribution à
-    partir d'un fichier de sortie serait, lui, malhonnête.
-    """
+    """Pourquoi CE produit est proposé à CE client."""
     acheteurs = int(produit.get("acheteurs_12m") or 0)
     adoption = float(produit.get("adoption_meme_type_pct") or 0.0)
     montant = float(produit.get("montant_annuel_median_par_acheteur_dt") or 0.0)
 
     raisons: List[Dict[str, Any]] = []
     if adoption > 0:
-        # Le type d'établissement sert de comparaison ; quand il vaut « autre »,
-        # le nommer donnerait « 13,9 % des autre l'achètent déjà ».
         t = (type_etab or "").strip().lower()
         comparables = ("établissements comparables"
                        if not t or t in {"autre", "autres", "inconnu"}
@@ -841,12 +726,8 @@ def _avec_raisons(produit: Dict[str, Any],
 
 
 def predire(client: Optional[str] = None, limite: int = 10,
-            n_clients: int = 15) -> Dict[str, Any]:
-    """Recommandations précalculées, si le registre l'autorise.
-
-    `client` fourni : la liste de ce client. Sinon : les clients dont les
-    recommandations pèsent le plus, pour l'agent Commercial.
-    """
+            n_clients: int = 15, clients_filtre: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Recommandations précalculées, si le registre l'autorise."""
     from ml_engine.registre import est_deploye, etat_modele
 
     if not est_deploye("recommandation"):
@@ -863,6 +744,9 @@ def predire(client: Optional[str] = None, limite: int = 10,
             "date_de_reference": doc.get("date_de_reference"),
             "horizon_mois": doc.get("horizon_mois")}
     clients = doc.get("clients") or {}
+    if clients_filtre is not None:
+        garde = {str(c) for c in clients_filtre}
+        clients = {k: v for k, v in clients.items() if str(k) in garde}
     if client is not None:
         c = clients.get(str(client))
         if not c:

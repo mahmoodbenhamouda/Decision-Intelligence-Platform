@@ -9,7 +9,7 @@ Le projet a été conduit à deux niveaux, avec une méthode pour chacun :
 
 Le planning réel est dans le diagramme de Gantt
 [`docs/Gantt_PFE_Overlyne_27avril-27octobre_2026.xlsx`](Gantt_PFE_Overlyne_27avril-27octobre_2026.xlsx) :
-du 27 avril au 27 octobre 2026, **7 phases, 33 tâches, 4 jalons**. Ce document
+du 27 avril au 27 octobre 2026, **7 phases, 34 tâches, 4 jalons**. Ce document
 renvoie aux numéros de tâches du Gantt (1.1, 3.4, J2…).
 
 ---
@@ -22,7 +22,8 @@ départ. Aucun des deux n'était vrai ici :
 - **Le besoin s'est précisé en construisant.** « Aide à la décision » est
   devenu, au fil des itérations : un briefing de direction classé par un
   arbitre (4.2), puis une boucle qui transforme une alerte en tâche confiée et
-  en mesure le résultat (5.5).
+  en mesure le résultat (5.5), enfin une flotte qui confie elle-même le
+  travail d'exécution et laisse les décisions au directeur (5.8).
 - **Les données ont réservé des surprises.** Le dictionnaire des données (1.4)
   a révélé l'absence de dates de règlement dans l'ERP, ce qui a changé la façon
   de calculer le recouvrement (`docs/DONNEES_MANQUANTES.md`).
@@ -74,7 +75,7 @@ de l'incrément visé. C'est la raison du mot « inspirée ».
 Les tâches du Gantt se chevauchent : une itération en recouvre parfois une
 autre. Le tableau regroupe les tâches par **incrément livré**. Les tests
 (7.1) ne forment pas un incrément : ils ont été écrits en continu, du 13/07 au
-27/09, avec chaque fonction.
+29/09, avec chaque fonction.
 
 | Incrément | Période | Tâches du Gantt | Ce qui tournait à la fin | Jalon |
 |---|---|---|---|---|
@@ -82,11 +83,11 @@ autre. Le tableau regroupe les tâches par **incrément livré**. Les tests
 | **2. Plateforme intégrée** | 08/06 → 29/07 | 2.3, 3.2, 3.3, 4.2, 4.3, 4.4, 5.1 | KPI, modèles clients et ventes, flotte d'agents, copilote et RAG, tableau de bord | **J2** — plateforme intégrée (29/07) |
 | **3. Plateforme multi-comptes** | 20/07 → 12/09 | 5.2, 5.3, 5.4, 5.6, 5.7 | comptes et rôles, isolation des clients, simulation d'encaissement, Docker et intégration continue | — |
 | **4. Fiabilisation et boucle d'action** | 01/09 → 22/09 | 3.4, 3.5, 3.6, 4.5, 4.6, 5.5, 6.1, 6.2 | évaluation hors période, registre des modèles, explicabilité, boucle d'action, lecture des factures | **J3** — LayoutLMv3 intégré (21/09) |
-| **5. Consolidation** | 13/09 → 28/09 | 3.7, 7.2 | demande par référence, architecture en couches, documentation | — |
+| **5. Consolidation** | 13/09 → 29/09 | 3.7, 5.8, 7.2 | demande par référence, architecture en couches, délégation autonome de la flotte, documentation | — |
 | **Clôture** | 21/09 → 27/10 | 7.3, 7.4 | rapport de PFE, soutenance | **J4** — fin du stage (27/10) |
 
 Chaque ligne du Gantt indique d'où vient sa date (colonne *Source*) :
-11 tâches sont datées par un commit git, 7 par des fichiers datés, 7 par des
+11 tâches sont datées par un commit git, 7 par des fichiers datés, 8 par des
 travaux de session datés, 1 est prévue, et **7 sont des estimations à
 confirmer** (1.1, 1.2, 2.3, 3.2, 5.3, 5.4, 5.6). Le dépôt git n'a pas été
 alimenté à chaque itération : les dates des fichiers complètent l'historique.
@@ -151,7 +152,7 @@ affiché comme tel (`docs/ARCHITECTURE_AGENTS.md`).
 Un incrément est « terminé » quand :
 
 1. **il tourne** : l'API et l'interface démarrent, la fonction est accessible ;
-2. **les tests passent** : 642 tests aujourd'hui, dont 20 tests « vitrine »
+2. **les tests passent** : 666 tests aujourd'hui, dont 22 tests « vitrine »
    rejouables devant un jury (`python -m pytest -m vitrine -v`, détail dans
    `docs/TESTS.md`). L'intégration continue les relance à chaque envoi sur
    GitHub (`.github/workflows/ci.yml`) ;

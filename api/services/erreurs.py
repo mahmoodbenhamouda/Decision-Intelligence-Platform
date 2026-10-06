@@ -1,13 +1,4 @@
-"""
-api/services/erreurs.py
-=======================
-Erreurs métier levées par les services.
-
-Un service ne connaît pas HTTP : il dit CE QUI ne va pas (accès refusé, donnée
-introuvable, conflit…), et `api/core/erreurs.py` décide du code de retour. La
-réponse garde la forme habituelle de FastAPI, `{"detail": …}`, où `detail` est
-un texte ou, quand l'appelant a besoin de plus, un objet.
-"""
+"""Erreurs métier levées par les services."""
 
 from __future__ import annotations
 

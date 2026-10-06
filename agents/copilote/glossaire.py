@@ -1,15 +1,9 @@
-"""
-agents/copilote/glossaire.py
-============================
-Glossaire financier : les définitions que le copilote cite telles quelles,
-plutôt que de laisser un modèle de langage les reformuler.
-"""
+"""Glossaire financier : les définitions que le copilote cite telles quelles, plutôt que de laisser…"""
 
 from __future__ import annotations
 
 from typing import Dict, List
 
-# ── Glossaire financier bilingue (FR/AR) utilisé dans le système-prompt ──────
 FINANCIAL_GLOSSARY: Dict[str, str] = {
     "DSO": (
         "Days Sales Outstanding (Délai Moyen de Recouvrement) : nombre de jours "
@@ -133,9 +127,7 @@ def detect_glossary_terms(question: str) -> List[str]:
 
 def build_glossary_section(terms: List[str], question_themes: List[str]) -> str:
     """Construit la section glossaire à injecter dans le prompt."""
-    # Termes explicitement demandés
     relevant = set(terms)
-    # Termes liés aux thèmes détectés (automatique)
     theme_to_terms = {
         "change": ["TND"],
         "recouvrement": ["DSO", "Aging des créances", "Recouvrement", "Encours clients"],

@@ -1,42 +1,4 @@
-"""
-ml_engine/stock/positions_historiques.py
-=========================================
-Position de stock RÉELLE, mois par mois — le socle qui rend un modèle possible.
-
-Ce que ce module débloque
--------------------------
-`flux_reels.py` calcule une position **finale** : une photo, un chiffre par
-référence. C'est suffisant pour constater un surstock, et insuffisant pour
-apprendre quoi que ce soit — un modèle supervisé a besoin d'un historique
-d'états, pas d'un état.
-
-Or le même calcul fonctionne **à chaque date de coupure** :
-
-    position(référence, fin du mois m) = Σ entrées ≤ m − Σ sorties ≤ m
-
-On obtient une série temporelle de positions par référence, entièrement issue des
-factures. Les deux modèles de risque produit existants (`ml_engine/models/`)
-apprenaient leurs variables de position sur le module **simulé** ; ce module leur
-donne enfin un substrat réel, et rend mesurable une question qui ne l'était pas.
-
-La limite est héritée, pas ajoutée
-----------------------------------
-C'est toujours une **variation cumulée**, non un inventaire : le stock antérieur
-à la première facture connue reste inconnu, et le décalage constant qui en
-résulte affecte chaque mois de la même manière. Conséquence à assumer : une
-position négative ne signifie pas un stock négatif.
-
-Ce décalage est constant par référence. Il est donc **inoffensif pour tout ce qui
-raisonne en variation** — tendance, accélération, rythme d'achat — et
-**trompeur pour tout ce qui raisonne en niveau absolu**. Cette distinction
-gouverne le choix des variables du modèle de réapprovisionnement, et elle est
-rappelée là où chacune est construite.
-
-Sortie : table `stock_position_mensuelle` + `reports/positions_metrics.json`
-
-Lancement :
-    python -m ml_engine.stock.positions_historiques
-"""
+"""Position de stock RÉELLE, mois par mois — le socle qui rend un modèle possible."""
 
 from __future__ import annotations
 
@@ -52,10 +14,6 @@ except Exception:  # pragma: no cover
 
 REPORTS_DIR = BASE / "reports"
 
-# Une référence n'entre dans le panneau que si elle a été à la fois achetée et
-# vendue. Sans les deux flux, la position n'a aucun sens : une référence jamais
-# achetée donnerait une position négative pure, une référence jamais vendue une
-# accumulation sans consommation. Ni l'une ni l'autre n'est modélisable.
 MIN_MOIS_HISTORIQUE = 6
 
 
@@ -66,13 +24,7 @@ def _connect():
 
 
 def construire(con=None) -> Dict[str, Any]:
-    """Matérialise `stock_position_mensuelle`.
-
-    Dépend de `stock_flux_reel`, qui fournit la liste des références rapprochées
-    et la valeur d'`INDICMVTSTOCK` retenue. Refuser de s'exécuter sans elle est
-    volontaire : recalculer ici la sémantique du champ ERP créerait deux sources
-    de vérité pour une même décision empirique.
-    """
+    """Matérialise `stock_position_mensuelle`."""
     fermer = con is None
     con = con or _connect()
     try:
@@ -90,7 +42,6 @@ def construire(con=None) -> Dict[str, Any]:
         if val_mvt is None:
             return {"error": "valeur de mouvement de stock non identifiable"}
 
-        # ── Entrées mensuelles ──────────────────────────────────────────────
         con.execute(f"""
             CREATE OR REPLACE TABLE achats_mensuels AS
             SELECT
@@ -107,7 +58,6 @@ def construire(con=None) -> Dict[str, Any]:
             GROUP BY 1, 2
         """)
 
-        # ── Sorties mensuelles ──────────────────────────────────────────────
         con.execute("""
             CREATE OR REPLACE TABLE ventes_mensuelles AS
             SELECT
@@ -122,12 +72,6 @@ def construire(con=None) -> Dict[str, Any]:
             GROUP BY 1, 2
         """)
 
-        # ── Grille référence × mois ─────────────────────────────────────────
-        #
-        # Le produit cartésien est indispensable : un mois SANS mouvement est une
-        # information — la position ne bouge pas, la couverture se consomme. Ne
-        # garder que les mois mouvementés donnerait une série à trous où « rien
-        # ne s'est passé » deviendrait invisible.
         con.execute("""
             CREATE OR REPLACE TABLE stock_position_mensuelle AS
             WITH refs AS (
@@ -204,8 +148,6 @@ def construire(con=None) -> Dict[str, Any]:
         if not n_lignes:
             return {"error": "aucune ligne produite — vérifier sales_lines"}
 
-        # Combien de références disposent d'un historique exploitable ? C'est ce
-        # nombre, et non le total, qui borne la taille du panneau d'apprentissage.
         n_exploitables = con.execute(f"""
             SELECT count(*) FROM (
                 SELECT cle FROM stock_position_mensuelle

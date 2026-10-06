@@ -1,33 +1,4 @@
-"""
-api/core/erreurs.py
-===================
-Traduction des erreurs en réponses HTTP — le seul endroit où un code de retour
-est associé à une erreur métier.
-
-Base d'authentification injoignable : 503, jamais 500
------------------------------------------------------
-Défaut observé : PostgreSQL arrêté, et `/api/auth/login` renvoyait un **500
-Internal Server Error** accompagné d'une trace SQLAlchemy complète. Trois
-problèmes distincts dans un seul événement :
-
-  1. **Le mauvais code.** 500 signifie « le serveur a un bug ». Ici le serveur
-     va bien : c'est une dépendance externe qui est absente. C'est un 503, et
-     un client — navigateur, sonde de supervision, reverse proxy — n'a aucune
-     raison de réessayer sur un 500 alors qu'il doit réessayer sur un 503.
-
-  2. **Une fuite d'information.** La trace exposait les chemins du disque, la
-     version de SQLAlchemy, le dialecte et l'hôte de la base. Rien de tout cela
-     ne regarde le client.
-
-  3. **Un défaut détecté puis ignoré.** Le démarrage affichait déjà
-     « base d'auth inaccessible — le login échouera », et laissait pourtant la
-     requête planter. Constater une panne sans la traiter est le motif que ce
-     projet corrige partout ailleurs.
-
-Le message renvoyé indique la cause ET la sortie, parce que c'est ce dont un
-utilisateur a besoin : démarrer PostgreSQL, ou retirer `AUTH_DATABASE_URL` du
-`.env` pour basculer sur SQLite.
-"""
+"""Traduction des erreurs en réponses HTTP — le seul endroit où un code de retour est associé à une…"""
 
 from __future__ import annotations
 
@@ -44,7 +15,6 @@ from api.services.erreurs import (AccesRefuse, Conflit, DonneesInvalides,
 
 logger = logging.getLogger("api")
 
-#: Erreur métier → code HTTP.
 CODES_HTTP = {
     DonneesInvalides: 422,
     IdentifiantsInvalides: 401,
@@ -64,7 +34,6 @@ def code_http(exc: ErreurMetier) -> int:
 
 
 def _erreur_metier(request: Request, exc: ErreurMetier) -> JSONResponse:
-    # Même forme que HTTPException : {"detail": ...}
     return JSONResponse(status_code=code_http(exc), content={"detail": exc.detail})
 
 
@@ -78,18 +47,15 @@ def _base_indisponible(request: Request, exc: OperationalError) -> JSONResponse:
                        "pas vérifier les identifiants."),
             "cause_probable": "le serveur PostgreSQL n'est pas démarré",
             "que_faire": [
-                "démarrer PostgreSQL, ou",
-                "retirer AUTH_DATABASE_URL du fichier .env pour utiliser SQLite",
+                "démarrer PostgreSQL",
+                "vérifier AUTH_DATABASE_URL dans le fichier .env",
             ],
-            # Aucune trace, aucun chemin de disque, aucun nom d'hôte : la cause
-            # technique complète reste dans les journaux du serveur.
         },
         headers={"Retry-After": "30"},
     )
 
 
 def installer_gestion_erreurs(app: FastAPI) -> None:
-    """À appeler sur toute application qui monte des routeurs de l'API — y
-    compris une application de test qui n'en monte qu'un."""
+    """À appeler sur toute application qui monte des routeurs de l'API — y compris une application de…"""
     app.add_exception_handler(ErreurMetier, _erreur_metier)
     app.add_exception_handler(OperationalError, _base_indisponible)

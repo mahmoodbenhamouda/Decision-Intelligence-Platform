@@ -1,46 +1,4 @@
-"""
-scripts/maintenance.py
-=======================
-Une seule commande pour garder la plateforme à jour — et signaler ce qui cloche.
-
-Le problème résolu
-------------------
-« Qui maintient tout ça quand vous partez ? » Personne dans l'équipe ne sait
-enchaîner sept commandes Python dans le bon ordre. Sans réponse à cette question,
-la plateforme cesse d'être fiable en quelques mois sans que personne ne s'en
-aperçoive — c'est précisément ce qui rend la dérive dangereuse : elle est
-silencieuse.
-
-Ce que fait ce script
----------------------
-Il enchaîne, dans l'ordre des dépendances : reconstruction de l'entrepôt,
-contrôles d'intégrité, ré-entraînement des modèles, surveillance de dérive,
-mesure d'impact. Puis il écrit un **rapport court**, lisible par quelqu'un qui
-n'est pas développeur.
-
-Principe de conception : **il ne signale que ce qui mérite attention**. Un rapport
-qui dit « tout va bien » chaque jour n'est plus lu au bout d'une semaine, et la
-première vraie alerte passe inaperçue.
-
-Codes de sortie
----------------
-    0  tout est à jour, rien à signaler
-    1  attention requise (dérive, contrôle en échec, modèle refusé)
-    2  échec technique — une étape n'a pas pu s'exécuter
-
-Le code 1 est distinct du 2 délibérément : une dérive détectée n'est pas une
-panne, c'est le système qui fait son travail.
-
-Planification (Windows, hebdomadaire, lundi 6 h)
--------------------------------------------------
-    schtasks /create /tn "Overlyne - maintenance" /tr ^
-      "C:\\chemin\\.venv\\Scripts\\python.exe C:\\chemin\\scripts\\maintenance.py" ^
-      /sc weekly /d MON /st 06:00
-
-Lancement manuel :
-    python scripts/maintenance.py
-    python scripts/maintenance.py --verifier-seulement
-"""
+"""Une seule commande pour garder la plateforme à jour — et signaler ce qui cloche."""
 
 from __future__ import annotations
 
@@ -84,7 +42,6 @@ class Etape:
                     "critique": self.critique}
 
 
-# ── Étapes ──────────────────────────────────────────────────────────────────
 def _entrepot() -> Dict[str, Any]:
     from etl.construire import construire
     from ml_engine.analytics.kpi_engine import STORE_PATH
@@ -103,22 +60,13 @@ def _integrite() -> Dict[str, Any]:
         "statut": r.get("statut"),
         "n_erreurs": len(erreurs),
         "n_alertes": len(alertes),
-        # Les erreurs invalident un chiffre publié ; les alertes signalent une
-        # anomalie sans le remettre en cause. La distinction est celle du module
-        # d'intégrité, on ne la réinvente pas ici.
         "details": [e.get("message", "") for e in (erreurs + alertes)][:5],
         "resume": r.get("resume", ""),
     }
 
 
 def _synchro() -> Dict[str, Any]:
-    """Réentraîne UNIQUEMENT les modèles dont les données ont changé.
-
-    Remplace le réentraînement systématique : inutile de refaire tourner six
-    modèles quand l'export n'a pas bougé. La comparaison se fait par empreinte
-    des données, pas par date de fichier — copier un CSV sans le modifier ne
-    déclenche donc rien.
-    """
+    """Réentraîne UNIQUEMENT les modèles dont les données ont changé."""
     from ml_engine.synchro import synchroniser
     r = synchroniser()
     if r.get("erreur"):
@@ -172,8 +120,6 @@ ETAPES_COMPLETES: List[Etape] = [
     Etape("registre", "État du registre des modèles", _registre),
 ]
 
-# Vérification seule : aucun ré-entraînement, aucune écriture lourde. Utile pour
-# un contrôle quotidien, là où le ré-entraînement reste hebdomadaire.
 ETAPES_VERIFICATION: List[Etape] = [
     Etape("integrite", "Contrôles d'intégrité comptable", _integrite, critique=True),
     Etape("derive", "Surveillance de dérive", _derive),
@@ -182,13 +128,8 @@ ETAPES_VERIFICATION: List[Etape] = [
 ]
 
 
-# ── Synthèse ────────────────────────────────────────────────────────────────
 def analyser(resultats: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Ne retient QUE ce qui appelle une action.
-
-    Un rapport qui énumère tout ce qui va bien n'est plus lu au bout d'une
-    semaine, et la première vraie alerte y passe inaperçue.
-    """
+    """Ne retient QUE ce qui appelle une action."""
     alertes: List[str] = []
     pannes: List[str] = []
 

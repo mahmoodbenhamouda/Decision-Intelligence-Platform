@@ -1,6 +1,3 @@
-/**
- * Formatage des montants et des axes du tableau de bord.
- */
 
 export function fMoney(v: number | null | undefined) {
   if (v == null || Number.isNaN(v)) return "N/A";

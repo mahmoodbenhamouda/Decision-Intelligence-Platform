@@ -1,24 +1,4 @@
-"""
-scripts/audit_ca_corrige.py
-============================
-Chiffrage exact des deux anomalies confirmees, et CA corrige.
-
-Ce que les deux audits precedents ont etabli
---------------------------------------------
-1. AVOIRS. `MONTANTSIGNE_DEV` porte le signe comptable : il vaut +HT pour une
-   facture et -HT pour un avoir. 5 761 lignes sont negatives. Or l'ETL somme
-   `TTC_DEV`, toujours positif : les avoirs sont donc AJOUTES au chiffre
-   d'affaires au lieu d'en etre RETRANCHES. Chaque avoir compte double.
-
-2. DOUBLONS. `ENT_ID` est unique (identifiant technique d'export), mais
-   `PIECENOFULL` -- le numero de facture, cle metier -- se repete sur 1 324
-   pieces, avec meme client, meme date et meme montant.
-
-Ce script chiffre l'un et l'autre, puis recalcule le CA et les indicateurs qui
-en derivent. Il ne modifie rien.
-
-    .venv\\Scripts\\python.exe scripts\\audit_ca_corrige.py
-"""
+"""Chiffrage exact des deux anomalies confirmees, et CA corrige."""
 
 from __future__ import annotations
 
@@ -53,7 +33,6 @@ def main() -> int:
     ca_actuel = con.execute("SELECT sum(ttc) FROM sales").fetchone()[0]
     n_actuel = con.execute("SELECT count(*) FROM sales").fetchone()[0]
 
-    # ── 1. Les avoirs ──────────────────────────────────────────────────────
     titre("1. AVOIRS -- pieces que l'ERP compte en negatif")
     n_av, ttc_av, ht_av = con.execute(
         f"SELECT count(*), sum({TTC}), sum({HT}) {OU} AND {SIG} < 0").fetchone()
@@ -73,7 +52,6 @@ def main() -> int:
     for an, n, ca in rows:
         print(f"    {an}  {n:>6,} avoirs   {dt(ca):>18}".replace(",", " "))
 
-    # ── 2. Les doublons de numero de piece ─────────────────────────────────
     titre("2. DOUBLONS -- meme numero, meme client, meme date, meme montant")
     r = con.execute(f"""
         WITH d AS (
@@ -91,7 +69,6 @@ def main() -> int:
     print(f"  CA en trop                : {dt(ca_dup)}")
     print(f"\n  Correction a appliquer    : -{dt(ca_dup)}")
 
-    # ── 3. Le CA corrige ───────────────────────────────────────────────────
     titre("3. CHIFFRE D'AFFAIRES CORRIGE")
     corr_av = 2 * float(ttc_av or 0)
     ca_corrige = float(ca_actuel) - corr_av - float(ca_dup)
@@ -103,7 +80,6 @@ def main() -> int:
     print(f"  CA CORRIGE                          : {dt(ca_corrige)}")
     print(f"\n  Surevaluation : {dt(ecart)}  soit {ecart / float(ca_actuel) * 100:.2f} % du CA affiche")
 
-    # ── 4. Les autres indicateurs touches ─────────────────────────────────
     titre("4. INDICATEURS DERIVES")
     n_corrige = n_actuel - int(n_av or 0) - int(surnum or 0)
     zeros = con.execute("SELECT count(*) FROM sales WHERE ttc = 0").fetchone()[0]
@@ -117,7 +93,6 @@ def main() -> int:
     print(f"\n  (dont {zeros} factures a 0 DT, qui abaissent le panier moyen "
           "sans toucher au CA)")
 
-    # ── 5. Palmares client : avant / apres ────────────────────────────────
     titre("5. PALMARES CLIENT -- effet de la correction")
     avant = con.execute("""
         SELECT coalesce(d.client_name, s.client) AS nom, sum(s.ttc) AS ca

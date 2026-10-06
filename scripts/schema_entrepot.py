@@ -1,15 +1,4 @@
-"""
-scripts/schema_entrepot.py
-==========================
-Dessine le schéma en étoile de l'entrepôt À PARTIR DE L'ENTREPÔT LUI-MÊME :
-tables, colonnes, volumes, et liens fait → dimension déclarés par les contrôles
-d'intégrité de l'ETL (`etl/qualite.py`). Le schéma ne peut donc pas diverger
-du modèle réellement construit.
-
-    python scripts/schema_entrepot.py            # → docs/data_warehouse/schema_etoile.{svg,png}
-
-Nécessite Graphviz (`dot`) : https://graphviz.org/download/
-"""
+"""Dessine le schéma en étoile de l'entrepôt À PARTIR DE L'ENTREPÔT LUI-MÊME : tables, colonnes,…"""
 
 from __future__ import annotations
 
@@ -44,7 +33,6 @@ CLES_DIM = {"dim_client": "client_code", "dim_produit": "reference",
             "dim_mode_reglement": "mode_cle", "dim_date": "date"}
 VENTES = ["fait_vente", "fait_ligne_vente", "fait_devis", "fait_livraison"]
 ACHATS = ["fait_achat", "fait_ligne_achat"]
-# Liens de date (rôles « date de pièce » et « échéance ») : dessinés en pointillés.
 DATES = ["fait_vente", "fait_ligne_vente", "fait_achat", "fait_ligne_achat",
          "fait_devis", "fait_livraison"]
 
@@ -106,8 +94,6 @@ def dessiner(entrepot: Path, sortie: Path) -> list[Path]:
                                     {cle}, set()))
     con.close()
 
-    # Les faits d'achat sont placés À DROITE des dimensions : leurs liens sont
-    # déclarés de la dimension vers le fait, et dessinés dans le bon sens.
     def lien(fait, col, dim, cle, **style):
         if fait in ACHATS:
             dot.edge(f"{dim}:{cle}", f"{fait}:{col}", dir="back", **style)

@@ -1,35 +1,4 @@
-"""
-scripts/setup_avatar.py
-=======================
-Installe un modèle 3D d'avatar EN LOCAL (option « photoréaliste »).
-
-    python scripts/setup_avatar.py --file mon-avatar.glb   # installer un GLB
-    python scripts/setup_avatar.py --url  https://…/x.glb  # depuis une URL
-    python scripts/setup_avatar.py --check                 # état actuel
-
-CE SCRIPT EST OPTIONNEL. Sans GLB, l'avatar utilise la **tête 3D procédurale**
-générée par Three.js sur le poste : mêmes visèmes calés sur la voix, mêmes
-émotions, mêmes gestes, **aucun téléchargement**. C'est le mode par défaut, et
-le plus sûr pour une soutenance (rien à charger, rien qui puisse échouer).
-
-Pourquoi pas de téléchargement automatique ?
---------------------------------------------
-Le sous-domaine public de Ready Player Me (`models.readyplayer.me`) a été
-retiré : il ne résout plus dans le DNS public. Dépendre d'un CDN externe au
-démarrage d'une application de démonstration est de toute façon un point de
-panne inutile. Le projet ne dépend donc plus d'aucun service tiers.
-
-Obtenir un GLB compatible (si vous voulez un avatar photoréaliste)
-------------------------------------------------------------------
-Le fichier doit contenir des **morph targets** (blendshapes) nommés selon la
-convention ARKit (`jawOpen`, `mouthSmileLeft`, `eyeBlinkLeft`…) et/ou les
-visèmes Oculus (`viseme_aa`, `viseme_O`…). Sources possibles :
-  • https://readyplayer.me — créez un avatar, exportez le .glb avec
-    l'option « ARKit blendshapes » ;
-  • Character Creator, Blender (add-on FaceIt), Mixamo + retargeting ;
-  • toute bibliothèque 3D fournissant un glTF binaire avec blendshapes faciaux.
-Puis : python scripts/setup_avatar.py --file <chemin-du-fichier>
-"""
+"""Installe un modèle 3D d'avatar EN LOCAL (option « photoréaliste »)."""
 
 from __future__ import annotations
 
@@ -44,13 +13,9 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parents[1]
 DEST = BASE / "frontend" / "public" / "avatar" / "finbot.glb"
-MIN_SIZE = 100_000          # un GLB avec blendshapes pèse plusieurs centaines de Ko
+MIN_SIZE = 100_000
 
 
-# Morphs réellement pilotés par le composant (FinBotAvatar3D.tsx → DRIVEN).
-# Un GLB sans aucun de ces noms se chargerait mais resterait FIGÉ : ni parole,
-# ni clignement, ni émotion. Mieux vaut le refuser à l'installation que de
-# laisser l'utilisateur croire que l'avatar est cassé.
 _MORPHS_ATTENDUS = {
     "jawOpen", "mouthSmileLeft", "mouthSmileRight", "mouthFunnel", "mouthPucker",
     "mouthFrownLeft", "mouthFrownRight", "mouthStretchLeft", "mouthStretchRight",
@@ -61,16 +26,7 @@ _MORPHS_ATTENDUS = {
 
 
 def _morphs_du_glb(path: Path) -> set[str] | None:
-    """Extrait les noms de morph targets d'un GLB, sans dépendance externe.
-
-    Un GLB est un conteneur binaire : en-tête de 12 octets, puis des « chunks »
-    (4 octets de longueur, 4 octets de type, données). Le premier chunk, de type
-    `JSON`, contient la description glTF. Les noms de morphs y figurent dans
-    `meshes[].extras.targetNames` — la convention utilisée par Ready Player Me,
-    Blender et Character Creator.
-
-    Renvoie None si la structure n'a pas pu être lue (le GLB reste alors accepté :
-    on ne rejette pas un fichier au seul motif qu'on n'a pas su l'inspecter)."""
+    """Extrait les noms de morph targets d'un GLB, sans dépendance externe."""
     try:
         with open(path, "rb") as f:
             entete = f.read(12)
@@ -104,7 +60,7 @@ def _valide(path: Path) -> tuple[bool, str]:
 
         morphs = _morphs_du_glb(path)
         if morphs is None:
-            return True, ""                      # inspection impossible : on accepte
+            return True, ""
         if not morphs:
             return False, ("aucun morph target dans le fichier — l'avatar serait "
                            "affiché mais totalement figé (pas de parole, pas de "

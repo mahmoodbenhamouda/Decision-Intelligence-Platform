@@ -1,48 +1,43 @@
 "use client";
 
-/**
- * Vue — le contenu de l'onglet ouvert.
- *
- * Les onglets financiers (synthèse, performance, risque, clients, produits)
- * sont composés ici à partir des graphes et des cartes du tableau de bord ;
- * les autres délèguent à la fonctionnalité correspondante.
- */
 import {
   Activity, AlertTriangle, BarChart3, Boxes, CalendarClock, Gauge, Layers,
-  PieChart as PieIcon, ShieldAlert, Target, TrendingUp, Truck, UserMinus, Users, Wallet,
+  PieChart as PieIcon, ShieldAlert, Target, TrendingUp, UserMinus, Users, Wallet,
 } from "lucide-react";
 import AdminPanel from "@/features/admin/AdminPanel";
 import BriefingPanel from "@/features/briefing/BriefingPanel";
+import CaAttenduCarte from "@/features/commercial/CaAttenduCarte";
 import ChurnPanel from "@/features/churn/ChurnPanel";
 import CommercialPanel from "@/features/commercial/CommercialPanel";
 import Copilot from "@/features/copilote/Copilot";
-import ClientSpace from "@/features/espace-client/ClientSpace";
+import ImpactPanel from "@/features/impact/ImpactPanel";
+import RecommandationsPanel from "@/features/commercial/RecommandationsPanel";
+import MargePanel from "@/features/marge/MargePanel";
 import DocumentsOCR from "@/features/ocr/DocumentsOCR";
 import StockPanel from "@/features/stock/StockPanel";
-import SupplyCard from "@/features/stock/SupplyCard";
 import TachesPanel from "@/features/taches/TachesPanel";
+import PanneauMasque from "@/shared/ui/PanneauMasque";
+import CarteDelais from "./CarteDelais";
 import { Alerte, ChartCard, MiniGauge, PanelCard } from "./composants/Cartes";
 import { fInt, fMoney } from "./format";
 import type { TableauDeBord } from "./useTableauDeBord";
 
 export default function ContenuVue({ t }: { t: TableauDeBord }) {
-  const { view, setView, kpis, filtersData, isClient, session, clientFocus, gauges, onExpand, g } = t;
-  const { selectedClients, filterPayload } = t.filtres;
-  const { rMonthly, rFlow, rYoY, rSeason, rAging, rCash, rPareto, rPayMix, rProd, rFourn, rPriority } = g;
+  const { view, setView, kpis, filtersData, session, clientFocus, gauges, onExpand, g } = t;
+  const { filterPayload } = t.filtres;
+  const { rMonthly, rFlow, rYoY, rSeason, rAging, rCash, rPareto, rPayMix, rProd, rPriority } = g;
 
   return (
     <div className="view-grid" key={view}>
-      {/* SYNTHÈSE — page d'accueil. Elle répond à une seule question :
-          « qu'est-ce qui demande mon attention aujourd'hui ? ». D'abord ce
-          qui appelle une décision, ensuite la tendance, enfin la santé. */}
       {view === "synthese" && <>
         <div style={{ gridColumn: "span 12", display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(215px,1fr))", gap: 12 }}>
           <Alerte
             couleur="#DC2626"
             icone={<UserMinus size={16} />}
             titre="Clients sur le départ"
-            valeur={`${kpis?.churn_anticipe?.n_au_dessus_de_0_5 ?? 0}`}
-            detail={kpis?.churn_anticipe?.enjeu_total_dt
+            valeur={kpis?.churn_anticipe?.masque ? "—" : `${kpis?.churn_anticipe?.n_au_dessus_de_0_5 ?? 0}`}
+            detail={kpis?.churn_anticipe?.masque ? "prévision masquée par vos filtres"
+              : kpis?.churn_anticipe?.enjeu_total_dt
               ? `${fMoney(kpis.churn_anticipe.enjeu_total_dt)} en jeu`
               : "aucun compte majeur menacé"}
             onClick={() => setView("retention")}
@@ -81,10 +76,11 @@ export default function ContenuVue({ t }: { t: TableauDeBord }) {
           </div>
         </PanelCard>
 
+        {/* Le chiffre d'affaires attendu prolonge la courbe au-dessus : sa place
+            est ici, sous l'évolution dont il est la suite, et non dans un onglet
+            commercial où il arrivait sans contexte. */}
+        <CaAttenduCarte />
       </>}
-      {/* Trois cartes au lieu de cinq. Le chiffre d'affaires annuel
-          répétait ce que montre déjà le comparatif, et la distribution des
-          montants de facture n'appelle aucune décision. */}
       {view === "performance" && <>
         <ChartCard title={`${kpis?.yoy_comparison?.current_year ?? "Cette année"} face à ${kpis?.yoy_comparison?.previous_year ?? "l'an dernier"}`} icon={<TrendingUp size={17} />} span={12} h={260} render={rYoY}
           hint={kpis?.yoy_comparison?.delta_pct != null ? `${kpis.yoy_comparison.delta_pct >= 0 ? "+" : ""}${kpis.yoy_comparison.delta_pct.toFixed(1)} % sur les mois comparables` : undefined} onExpand={onExpand} />
@@ -98,14 +94,11 @@ export default function ContenuVue({ t }: { t: TableauDeBord }) {
             {(kpis?.clients_a_risque || []).length ? (kpis?.clients_a_risque || []).map((c, i) => (<div className="dt-row three" key={i}><span className="dt-name" title={c.client}>{c.nom || c.client}</span><span className="risk-tag">{fMoney(c.montant_risque)}</span><span>{fInt(c.factures)}</span></div>)) : <p className="muted-note">Aucun client concerné.</p>}
           </div>
         </PanelCard>
-        <ChartCard title="Délais de paiement accordés" icon={<CalendarClock size={17} />} span={12} render={rAging} onExpand={onExpand} />
+        <CarteDelais d={kpis?.delais} />
+        <ChartCard title="Échelonnement des délais accordés" icon={<CalendarClock size={17} />} span={12} render={rAging} onExpand={onExpand} />
       </>}
       {view === "clients" && <>
         <PanelCard title="Vos principaux clients" icon={<Users size={17} />} span={7} hidden={clientFocus}>
-          {/* La dernière colonne affichait « Score IA » et un nombre de 0 à
-              100 que personne ne pouvait interpréter. Ce nombre traduit une
-              réalité simple : le client bénéficie-t-il d'un délai de paiement
-              long ? On l'écrit donc en clair. */}
           <div className="data-table"><div className="dt-head six"><span>#</span><span>Client</span><span>CA TTC</span><span>Part</span><span>Créances</span><span>Délai accordé</span></div>
             {(kpis?.top_clients || []).map(c => (<div className="dt-row six" key={c.rank}><span className="dt-rank">{c.rank}</span><span className="dt-name" title={c.client}>{c.nom || c.client}</span><span>{fMoney(c.revenue)}</span><span><span className="share-bar"><i style={{ width: `${Math.min(100, c.share)}%` }} /></span>{c.share.toFixed(1)}%</span><span className={c.risque ? "risk-tag" : "ok-tag"}>{c.risque ? fMoney(c.risque) : "—"}</span><span>{c.risk_score == null ? <span title="Trop peu de factures pour établir une habitude de paiement">Non établi</span> : <span className="score-pill" title={c.risk_score > 50 ? "Ce client règle habituellement à plus de 60 jours" : "Ce client règle habituellement sous 60 jours"} style={{ background: c.risk_score > 50 ? "rgba(239,68,68,0.15)" : "rgba(16,185,129,0.15)", color: c.risk_score > 50 ? "#EF4444" : "#10B981" }}>{c.risk_score > 50 ? "Long" : "Standard"}</span>}</span></div>))}
           </div>
@@ -114,11 +107,9 @@ export default function ContenuVue({ t }: { t: TableauDeBord }) {
         <ChartCard title="Créances arrivant à échéance" icon={<Wallet size={17} />} span={7} render={rCash} onExpand={onExpand} />
         <ChartCard title="Modes de paiement" icon={<PieIcon size={17} />} span={5} render={rPayMix} onExpand={onExpand} />
 
-        {/* Typologie — la seule vue qui parle de CATÉGORIES de clients.
-            Le reste de l'onglet parle de clients nommés ; ici on regarde
-            la clientèle par types, ce qui est l'échelle d'une politique
-            commerciale. La colonne « menacés » vient du croisement avec
-            le modèle de décrochage. */}
+        {kpis?.segmentation?.masque && (
+          <PanneauMasque motif={`Types de clients : ${kpis.segmentation.motif ?? ""}`} />
+        )}
         {kpis?.segmentation?.servi && (kpis.segmentation.segments || []).length > 0 && (
           <PanelCard title="Types de clients" icon={<Layers size={17} />} span={12}>
             <div className="data-table">
@@ -158,64 +149,47 @@ export default function ContenuVue({ t }: { t: TableauDeBord }) {
           </PanelCard>
         )}
       </>}
+      {/* CATALOGUE : ce qui se vend. La prévision de demande et les
+          fournisseurs ont rejoint Stock & achats, où ils servent une décision
+          de réapprovisionnement ; ici restent les références et leur adoption. */}
       {view === "produits" && <>
-        <SupplyCard />
-        <ChartCard title="Produits les plus vendus" icon={<Boxes size={17} />} span={7} h={260} render={rProd} onExpand={onExpand} />
-        <ChartCard title="Principaux fournisseurs" icon={<Truck size={17} />} span={5} h={260} render={rFourn} onExpand={onExpand} />
+        <ChartCard title="Produits les plus vendus" icon={<Boxes size={17} />} span={12} h={280} render={rProd} onExpand={onExpand} />
+        <RecommandationsPanel />
       </>}
 
-      {/* Rétention — le seul panneau PROSPECTIF du tableau de bord. Les
-          autres vues décrivent ce qui s'est produit ; celle-ci estime ce
-          qui va se produire, sur des clients encore actifs. Il occupe
-          toute la largeur car sa lecture croise deux dimensions (risque
-          et valeur du compte) qu'une demi-colonne écraserait. */}
       {view === "retention" && (
         <div style={{ gridColumn: "span 12" }}>
           <ChurnPanel clientNames={filtersData?.client_names} />
         </div>
       )}
 
-      {/* Devis & marge — cycle commercial et rentabilité. Deux modèles
-          appris sur données réelles, servis seulement si le registre les
-          autorise : chacun affiche le motif de son refus plutôt qu'un
-          tableau vide, car un classement non démontré orienterait le
-          travail commercial sans le justifier. */}
-      {view === "commercial" && !isClient && (
+      {view === "impact" && <ImpactPanel />}
+
+      {view === "commercial" && (
         <CommercialPanel />
       )}
 
-      {/* Priorités — la sortie de la flotte d'agents. C'est la seule vue
-          qui arbitre ENTRE les domaines : relancer un débiteur ou
-          déstocker ? Aucun autre écran ne pose cette question, chacun
-          restant dans son périmètre. */}
+      {view === "marge" && <MargePanel />}
+
       {view === "priorites" && (
         <div style={{ gridColumn: "span 12" }}>
           <BriefingPanel filterPayload={filterPayload}
-            peutConfier={!isClient} />
+            peutConfier />
         </div>
       )}
 
-      {/* Suivi des actions — le prolongement direct de Priorités : une
-          alerte confiée devient une tâche, puis un résultat mesuré. */}
-      {view === "taches" && !isClient && (
+      {view === "taches" && (
         <div style={{ gridColumn: "span 12" }}>
           <TachesPanel role={session?.role || "directeur"} />
         </div>
       )}
 
       {view === "copilot" && <Copilot filterPayload={filterPayload} />}
-      {view === "stock" && !isClient && (
-        <StockPanel
-         
-          selectedClient={selectedClients[0]}
-          selectedClientName={selectedClients[0]
-            ? (filtersData?.client_names?.[selectedClients[0]] ?? selectedClients[0])
-            : undefined}
-        />
+      {view === "stock" && (
+        <StockPanel />
       )}
       {view === "ocr" && <DocumentsOCR />}
-      {view === "espace" && isClient && <ClientSpace />}
-      {view === "admin" && !isClient && <AdminPanel />}
+      {view === "admin" && <AdminPanel />}
     </div>
   );
 }

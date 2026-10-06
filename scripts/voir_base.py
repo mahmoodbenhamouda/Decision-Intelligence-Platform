@@ -1,14 +1,4 @@
-"""Ouvre l'interface web de DuckDB sur l'entrepôt, en LECTURE SEULE.
-
-    python scripts/voir_base.py
-
-Puis http://localhost:4213 — les tables sont sous la base « erp »
-(ex. SELECT * FROM erp.factures_importees).
-
-La base est rattachée à une connexion en mémoire : l'interface peut y écrire
-son propre état (_duckdb_ui) sans jamais pouvoir modifier l'entrepôt, et l'API
-peut continuer à enregistrer des factures pendant la consultation.
-"""
+"""Ouvre l'interface web de DuckDB sur l'entrepôt, en LECTURE SEULE."""
 from pathlib import Path
 
 import duckdb

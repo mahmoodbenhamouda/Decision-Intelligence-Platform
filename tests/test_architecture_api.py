@@ -1,16 +1,4 @@
-"""
-tests/test_architecture_api.py
-==============================
-Les règles de l'architecture en couches de l'API (docs/ARCHITECTURE_API.md),
-vérifiées sur le code plutôt que seulement décrites :
-
-1. une route ne calcule rien et n'interroge aucune base ;
-2. un service ne connaît pas FastAPI ;
-3. l'API n'importe aucun module de modèle ni aucun nom privé du moteur :
-   elle passe par la passerelle, qui applique les décisions du registre ;
-4. toute erreur métier a un code HTTP ;
-5. l'application expose les routes attendues, chacune une seule fois.
-"""
+"""Les règles de l'architecture en couches de l'API (docs/ARCHITECTURE_API.md), vérifiées sur le…"""
 
 from __future__ import annotations
 
@@ -24,11 +12,12 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-# Si ce module importe l'application le premier, la base d'authentification
-# est temporaire : la vraie (output/auth.db) n'est jamais ouverte.
-os.environ.setdefault("AUTH_DATABASE_URL",
-                      f"sqlite:///{Path(tempfile.mkdtemp()).as_posix()}/auth.db")
-os.environ.setdefault("JWT_SECRET_KEY", "secret-de-test-uniquement")
+os.environ.setdefault(
+    "AUTH_DATABASE_URL",
+    os.environ.get("AUTH_TEST_DATABASE_URL")
+    or "postgresql+psycopg2://postgres:postgres@localhost:5432/finance_auth_test")
+os.environ.setdefault("JWT_SECRET_KEY",
+                      "secret-de-test-uniquement-assez-long-pour-hs256")
 
 API = Path(__file__).resolve().parents[1] / "api"
 
@@ -48,7 +37,6 @@ def _imports(chemin: Path):
             yield noeud.module, [a.name for a in noeud.names]
 
 
-# ── 1. Routes ───────────────────────────────────────────────────────────────
 _INTERDITS_ROUTES = ("ml_engine", "duckdb", "pandas", "agents", "connectors", "sqlalchemy")
 
 
@@ -56,12 +44,10 @@ _INTERDITS_ROUTES = ("ml_engine", "duckdb", "pandas", "agents", "connectors", "s
 def test_une_route_ne_calcule_rien(fichier):
     fautifs = [m for m, noms in _imports(fichier)
                if m.split(".")[0] in _INTERDITS_ROUTES
-               # la session de base est un paramètre transmis au service
                and not (m == "sqlalchemy.orm" and noms == ["Session"])]
     assert not fautifs, f"{fichier.name} accède directement à : {fautifs}"
 
 
-# ── 2. Services ─────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("fichier", _fichiers("services") + _fichiers("donnees"),
                          ids=lambda p: p.name)
 def test_un_service_ne_connait_pas_fastapi(fichier):
@@ -70,9 +56,6 @@ def test_un_service_ne_connait_pas_fastapi(fichier):
     assert not fautifs, f"{fichier.name} dépend de la couche HTTP : {fautifs}"
 
 
-# ── 3. Chemin unique vers les modèles ───────────────────────────────────────
-# Même liste que pour les agents (tests/test_passerelle_agents.py), plus la
-# prévision d'encaissements et le registre, consultés par la passerelle.
 _MODULES_DE_MODELE = re.compile(
     r"^ml_engine\.(models|analytics\.(churn_model|conversion_devis|marge_client|"
     r"credit_risk_model|segmentation)|stock\.(reappro_model|fin_de_vie)|deep|"
@@ -90,7 +73,6 @@ def test_l_api_passe_par_la_passerelle():
     assert not fautifs, "l'API contourne la passerelle :\n" + "\n".join(fautifs)
 
 
-# ── 4. Erreurs métier ───────────────────────────────────────────────────────
 def test_toute_erreur_metier_a_un_code_http():
     from api.core.erreurs import CODES_HTTP
     from api.services import erreurs
@@ -125,7 +107,6 @@ def test_une_erreur_metier_garde_la_forme_de_fastapi():
     assert r.status_code == 409 and r.json() == {"detail": {"statut_client": "doublon"}}
 
 
-# ── 5. Table des routes ─────────────────────────────────────────────────────
 def test_chaque_route_est_declaree_une_seule_fois():
     from api.main import app
     ops = [(m, p) for p, d in app.openapi()["paths"].items() for m in d]
@@ -134,28 +115,28 @@ def test_chaque_route_est_declaree_une_seule_fois():
     for attendu in ("/api/health", "/api/auth/login", "/api/dashboard", "/api/copilot",
                     "/api/copilot/upload", "/api/fleet/briefing", "/api/churn",
                     "/api/commercial/devis", "/api/stock", "/api/models/metrics",
-                    "/api/taches", "/api/portal/actions", "/api/admin/users"):
+                    "/api/taches", "/api/admin/users"):
         assert attendu in chemins, attendu
+    for retire in ("/api/portal/actions", "/api/portal/invoices", "/api/admin/requests"):
+        assert retire not in chemins, f"{retire} : le rôle client a été retiré"
 
 
-# ── 6. Règle de périmètre (service pur, sans HTTP) ──────────────────────────
-def test_regle_de_perimetre_par_role():
-    from types import SimpleNamespace
+def test_regle_de_portee_des_filtres_sur_les_modeles():
+    """Une seule règle décide ce que les modèles montrent sous des filtres."""
+    from ml_engine import portee as po
 
-    from api.schemas.filtres import FilterRequest
-    from api.services.erreurs import AccesRefuse
-    from api.services.perimetre import code_client_impose, restreindre
-
-    directeur = SimpleNamespace(role="directeur", client_code=None)
-    client = SimpleNamespace(role="client", client_code="CLI_A")
-    assert code_client_impose(directeur) is None
-    assert code_client_impose(client) == "CLI_A"
-    assert restreindre(FilterRequest(selected_clients=["CLI_B"]), client).selected_clients == ["CLI_A"]
-    assert restreindre(FilterRequest(selected_clients=["CLI_B"]), directeur).selected_clients == ["CLI_B"]
-    # Un employé n'a aucun périmètre de données, même si un code lui a été
-    # attribué par erreur ; un client sans code n'en a pas non plus.
-    for refuse in (SimpleNamespace(role="employe", client_code=None),
-                   SimpleNamespace(role="employe", client_code="CLI_A"),
-                   SimpleNamespace(role="client", client_code=None)):
-        with pytest.raises(AccesRefuse):
-            code_client_impose(refuse)
+    assert po.portee({})["mode"] == po.GLOBAL
+    assert po.portee({"selected_clients": ["CLI_A"]}) == {
+        "mode": po.CLIENTS, "clients": ["CLI_A"], "motif": po.MOTIF_GLOBAL}
+    for periode in ({"selected_years": [2024]}, {"date_start": "2024-01-01"},
+                    {"date_end": "2024-12-31"}):
+        assert po.portee(periode)["mode"] == po.MASQUE
+        assert po.portee(periode)["motif"] == po.MOTIF_PERIODE
+    for facture in ({"payment_modes": ["CHQ"]}, {"risk_level": "Critique > 90j"},
+                    {"min_amount": 10}, {"max_amount": 10}):
+        assert po.portee(facture)["motif"] == po.MOTIF_FACTURE
+    # Une période l'emporte sur un filtre client : une prévision ne se recalcule pas pour le passé.
+    assert po.portee({"selected_clients": ["CLI_A"], "selected_years": [2024]})["mode"] == po.MASQUE
+    p = po.portee({"selected_clients": ["CLI_A"]})
+    assert po.pour_analyse_globale(p)["masque"] is True
+    assert po.pour_analyse_par_client(p) is None

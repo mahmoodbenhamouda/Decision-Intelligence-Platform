@@ -1,16 +1,11 @@
 "use client";
 
-/**
- * Vue — panneau de filtres de la barre latérale. En colonne, chaque filtre
- * porte son libellé et affiche ce qui est SÉLECTIONNÉ — l'ancienne bande
- * horizontale ne montrait qu'un compteur, faute de largeur.
- */
 import { X } from "lucide-react";
 import type { FiltersData } from "./tableauDeBord.types";
 import type { Filtres } from "./useFiltres";
 
-export default function PanneauFiltres({ f, filtersData, isClient }: {
-  f: Filtres; filtersData: FiltersData | null; isClient: boolean;
+export default function PanneauFiltres({ f, filtersData }: {
+  f: Filtres; filtersData: FiltersData | null;
 }) {
   return (
     <>
@@ -43,29 +38,27 @@ export default function PanneauFiltres({ f, filtersData, isClient }: {
       )}
     </div>
 
-    {!isClient && (
-      <div className="bl-champ">
-        <label>Clients</label>
-        <div className="bl-controle">
-          <select onChange={e => f.toggleClient(e.target.value)} value="" className="mini">
-            <option value="" disabled>+ Ajouter un client</option>
-            {filtersData?.available_clients.map(c => (
-              <option key={c} value={c}>{filtersData?.client_names?.[c] ?? c}</option>
-            ))}
-          </select>
-        </div>
-        {f.selectedClients.length > 0 && (
-          <div className="bl-chips">
-            {f.selectedClients.map(c => (
-              <span key={c} className="bl-chip" title={filtersData?.client_names?.[c] ?? c}>
-                <span>{filtersData?.client_names?.[c] ?? c}</span>
-                <button onClick={() => f.toggleClient(c)} title="Retirer"><X size={11} /></button>
-              </span>
-            ))}
-          </div>
-        )}
+    <div className="bl-champ">
+      <label>Clients</label>
+      <div className="bl-controle">
+        <select onChange={e => f.toggleClient(e.target.value)} value="" className="mini">
+          <option value="" disabled>+ Ajouter un client</option>
+          {filtersData?.available_clients.map(c => (
+            <option key={c} value={c}>{filtersData?.client_names?.[c] ?? c}</option>
+          ))}
+        </select>
       </div>
-    )}
+      {f.selectedClients.length > 0 && (
+        <div className="bl-chips">
+          {f.selectedClients.map(c => (
+            <span key={c} className="bl-chip" title={filtersData?.client_names?.[c] ?? c}>
+              <span>{filtersData?.client_names?.[c] ?? c}</span>
+              <button onClick={() => f.toggleClient(c)} title="Retirer"><X size={11} /></button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
 
     <div className="bl-champ">
       <label>Fidélité</label>

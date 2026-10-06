@@ -39,13 +39,13 @@ Ouvrez ensuite http://localhost:4000/login, connectez-vous **une fois** en direc
 
 ---
 
-## 2. Scénario minuté (12 minutes)
+## 2. Scénario minuté (15 min 30)
 
 Fil narratif unique : **« transformer des données ERP dormantes en décisions chiffrées, traçables et cloisonnées. »** Chaque séquence y répond.
 
 ### Séquence 1 — Le problème (1 min, sans écran)
 
-> « Overlyne distribue du matériel de diagnostic médical en Tunisie. Son ERP contient **128 000 factures sur 9 ans** — et personne ne les regarde. Les décisions se prennent à l'intuition : qui relancer, quel devis suivre, quel client est en train de partir. Ma plateforme répond à ces questions avec des chiffres. »
+> « Overlyne édite des logiciels de gestion. L'un de ses clients distribue du matériel de diagnostic médical en Tunisie. Son ERP contient **128 000 factures sur 9 ans** — et personne ne les regarde. Les décisions se prennent à l'intuition : qui relancer, quel devis suivre, quel client est en train de partir. Ma plateforme répond à ces questions avec des chiffres. »
 
 Annoncez le plan : *données → agents → décision → sécurité*.
 
@@ -83,15 +83,17 @@ Pointez le score et son explication (*montant identique · même date · nom sim
    > « L'isolation n'est pas un masquage d'interface. Le `client_code` est **forcé côté serveur**, et 31 tests le prouvent, dont : le client A demande les données du client B → il reçoit les siennes. »
 4. Retour en directeur → onglet Administration : la demande du client est arrivée, vous la traitez. Montrez le **journal d'audit**.
 
-### Séquence 5 bis — La boucle d'action (2 min) — **ce qui rend le projet réel**
+### Séquence 5 bis — La boucle d'action (3 min) — **ce qui rend le projet réel**
 
 > « Un tableau de bord qui signale un problème sans que personne ne soit chargé de le régler ne sert à rien. »
 
 1. En **directeur**, onglet Priorités : sur la première carte, cliquez **« Confier »**. La fenêtre arrive pré-remplie — intitulé, domaine, client, montant en jeu — et propose la bonne personne, avec sa charge actuelle. Confiez la tâche.
 2. Onglet **Suivi des actions** : la tâche apparaît dans sa colonne, avec son échéance calculée depuis la gravité de l'alerte.
-3. Connectez-vous en **employé** (`recouvrement@overlyne.tn` / `Employe#2026`) : il ne voit **que ses tâches**, aucun chiffre d'affaires, aucun client. Il prend la tâche en charge, puis la clôture avec un résultat : *payé, 12 400 DT*.
-4. Retour en **directeur** : la tuile « Récupéré grâce aux actions » a bougé, et le graphe mensuel aussi.
-5. La phrase à dire :
+3. Carte **Délégation autonome** : cliquez **« Lancer maintenant »** (30 à 60 secondes). La flotte confie elle-même le reste du travail d'exécution : chaque tâche porte le badge « Confiée par la flotte », à l'employé du bon métier le moins chargé. La tâche confiée à l'étape 1 apparaît en « déjà en cours » : elle n'est pas recréée. Montrez la liste **« Laissées à votre décision »** :
+   > « La flotte confie l'exécution, jamais la décision. Relancer une créance, commander une rupture : c'est le travail d'un employé. Renégocier les délais fournisseurs ou choisir un second fournisseur engage l'entreprise : cela reste à la direction, et c'est chaque agent qui le déclare. La délégation est désactivée par défaut ; c'est le directeur qui l'active, et elle tourne alors chaque matin. »
+4. Connectez-vous en **employé** (`recouvrement@overlyne.tn` / `Employe#2026`) : il ne voit **que ses tâches**, aucun chiffre d'affaires, aucun client. Il prend la tâche en charge, puis la clôture avec un résultat : *payé, 12 400 DT*.
+5. Retour en **directeur** : la tuile « Récupéré grâce aux actions » a bougé, et le graphe mensuel aussi. La carte Délégation autonome compare ce qu'ont donné les tâches confiées par la flotte et celles confiées par la direction.
+6. La phrase à dire :
    > « Les résultats ne servent pas qu'à l'écran : ils repartent dans l'entrepôt au ré-entraînement. La recommandation de produits reçoit ainsi ses premiers retours réels — un client qui dit "ça m'intéresse" est l'étiquette qui manquait. Et tant que ces retours sont peu nombreux, l'interface le dit : les modèles restent entraînés sur l'historique. »
 
 Détails : `docs/BOUCLE_ACTION.md`.
@@ -106,7 +108,7 @@ C'est le moment le plus important de la soutenance. Un jury retient cette phrase
 
 ### Séquence 7 — Clôture (30 s)
 
-> « 642 tests automatisés, intégration continue, déploiement conteneurisé en une commande. Les limites sont documentées : pas de date de paiement réelle, pas de stock ERP. »
+> « 666 tests automatisés, intégration continue, déploiement conteneurisé en une commande. Les limites sont documentées : pas de date de paiement réelle, pas de stock ERP. »
 
 Terminez par la phrase d'unification :
 
@@ -121,7 +123,7 @@ Terminez par la phrase d'unification :
 | **Pas de réseau** | Rien à faire | « Tout fonctionne hors-ligne : replis déterministes du copilote, tête 3D procédurale générée localement, scraper avec cache. Le projet ne dépend d'aucun CDN. » |
 | **API lente au démarrage** | Attendre, ne pas relancer | « Le premier import charge pandas, DuckDB et scikit-learn. » Démarrez l'API **avant** d'entrer en salle. |
 | **Erreur Turbopack** (cache corrompu) | Supprimer `frontend\.next`, relancer `npm run dev` | Ne commentez pas, corrigez en silence. |
-| **PostgreSQL injoignable** | Commenter `AUTH_DATABASE_URL` dans `.env` → repli SQLite | « La base d'auth est portable : SQLAlchemy, une URL à changer. » |
+| **PostgreSQL injoignable** | Le démarrer : `docker compose -f docker-compose.postgres.yml up -d` | « Il n'y a pas de repli : l'application refuse de servir sans sa base, plutôt que de servir sur une autre. » |
 | **Pas de clé LLM / quota** | Continuer | « Le copilote a un repli déterministe chiffré : la démo ne dépend pas d'un service externe. » **C'est un argument, pas une excuse.** |
 | **Tesseract absent** | Utiliser un PDF texte | « L'OCR se dégrade proprement : les PDF natifs restent exploitables. » |
 | **Avatar en mode orbe** | Continuer | « Chaîne de repli : GLB local optionnel → tête 3D procédurale → orbe SVG si WebGL absent. » |
@@ -173,7 +175,7 @@ Terminez par la phrase d'unification :
 ## 5. Checklist de la veille
 
 - [ ] `python scripts/preflight_demo.py` → tout vert
-- [ ] `python -m pytest tests/ -q` → 642 tests verts (capture d'écran gardée)
+- [ ] `python -m pytest tests/ -q` → 666 tests verts (capture d'écran gardée)
 - [ ] Avatar vérifié : `python scripts/setup_avatar.py --check` (tête procédurale = OK)
 - [ ] Facture papier imprimée **et** sa version image sur le bureau, testée dans l'onglet OCR
 - [ ] Vidéo de secours de la démo enregistrée

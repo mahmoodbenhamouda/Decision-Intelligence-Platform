@@ -1,49 +1,4 @@
-"""
-ml_engine/stock/fin_de_vie.py
-==============================
-Fin de commercialisation à 6 mois — un modèle sur données **entièrement réelles**.
-
-Pourquoi cette question, et pas une autre
------------------------------------------
-Tous les refus du domaine stock remontent à un seul fait mesuré : **la série de
-demande n'a aucun signal exploitable au-delà des méthodes naïves**. Trois
-horizons de prévision refusés, un correcteur appris désactivé, un modèle de
-réapprovisionnement battu de peu par un simple comptage d'achats.
-
-Conséquence logique : toute question qui se ramène à *« quelle sera la demande ? »*
-sera tranchée par une règle arithmétique. Pour obtenir un modèle accepté
-honnêtement, il faut changer la **question**, jamais les seuils.
-
-Celle-ci est d'une autre nature :
-
-    cette référence va-t-elle CESSER de se vendre dans les 6 mois ?
-
-Ce n'est pas une prévision de volume, c'est une **rupture de régime**. Et le
-projet dispose d'une preuve que cette famille de questions est apprenable : le
-modèle de décrochage CLIENT, structurellement identique, a été accepté avec
-+0,0222 d'AUC sur la simple fréquence de commande. Ce qui l'a fait gagner — le mix
-de clientèle, la dérive des prix, les tendances — est disponible ici aussi.
-
-Ce que cette question vaut, économiquement
-------------------------------------------
-6 389 778 DT sont immobilisés. Savoir quelles références vont s'arrêter de vendre
-dit **quoi déstocker maintenant, et quoi ne plus commander**. Une référence qui
-cesse de se vendre alors qu'on la détient encore devient une perte sèche, quelle
-que soit sa date de péremption.
-
-Aucune donnée simulée
----------------------
-* positions et flux : `stock_position_mensuelle`, reconstruite des factures ;
-* mix de clientèle et prix : `sales_lines`, lignes de facture réelles ;
-* cible : **observée** — la référence s'est vendue, ou non.
-
-Ni inventaire, ni date d'expiration, ni quantité générée n'intervient.
-
-Sorties : `models/fin_de_vie.joblib` + `reports/fin_de_vie_metrics.json`
-
-Lancement :
-    python -m ml_engine.stock.fin_de_vie
-"""
+"""Fin de commercialisation à 6 mois — un modèle sur données **entièrement réelles**."""
 
 from __future__ import annotations
 
@@ -66,42 +21,24 @@ MODELS_DIR = BASE / "models"
 REPORTS_DIR = BASE / "reports"
 
 SEED = 42
-HORIZON_MOIS = 6            # fenêtre d'observation de la cible
+HORIZON_MOIS = 6
 
-# Une référence doit être VIVANTE au moment de l'observation, sinon la question ne
-# se pose pas : prédire l'arrêt d'une référence déjà arrêtée est une tautologie,
-# et c'est exactement le piège qui donnait AUC = 1,0000 au premier modèle de
-# risque de stock. On exige donc des ventes sur au moins 2 des 3 derniers mois.
 MOIS_ACTIFS_MINIMUM = 2
 FENETRE_VIVANTE = 3
-MIN_MOIS_HISTORIQUE = 12    # avant cela, aucune moyenne sur 12 mois n'existe
+MIN_MOIS_HISTORIQUE = 12
 
-# Seuils déclarés AVANT toute mesure. Les écrire ici plutôt que de les choisir
-# après coup est ce qui distingue une règle d'un arrangement.
 SEUIL_AUC_MINIMALE = 0.70
 SEUIL_GAIN_MINIMAL = 0.02
-SEUIL_ECART_TRAIN_VALID = 0.10      # au-delà, candidat non éligible
+SEUIL_ECART_TRAIN_VALID = 0.10
 ECART_PARCIMONIE = 0.01
 
 CANDIDATS = ["regression_logistique", "gradient_boosting"]
 
-# ── Réglages candidats, déclarés ─────────────────────────────────────────────
-#
-# La première version n'essayait qu'un seul réglage par famille. Le gradient
-# boosting atteignait 0,8713 d'AUC — au-dessus du seuil d'acceptation — mais
-# affichait un écart de +0,1079 et se voyait donc disqualifié. Un modèle
-# performant ET sur-apprenant ne se refuse pas : il se RÉGULARISE.
-#
-# La grille reste volontairement petite et déclarée ici. Elle explore la capacité
-# du modèle (profondeur, taille de feuille, régularisation), pas des seuils de
-# décision. Et elle est parcourue sur une validation INTERNE à la période
-# d'entraînement — jamais sur le jeu de test, ce qui reviendrait à choisir son
-# modèle en regardant sa note.
 REGLAGES: Dict[str, List[Dict[str, Any]]] = {
     "regression_logistique": [
         {"C": 1.0},
-        {"C": 0.1},          # plus régularisé
-        {"C": 0.01},         # fortement régularisé
+        {"C": 0.1},
+        {"C": 0.01},
     ],
     "gradient_boosting": [
         {"max_depth": 4, "min_samples_leaf": 40, "l2_regularization": 2.0,
@@ -115,11 +52,6 @@ REGLAGES: Dict[str, List[Dict[str, Any]]] = {
     ],
 }
 
-# ── Variables, par famille et par raison ────────────────────────────────────
-#
-# Les variables de FLUX décrivent le rythme propre de la référence. Ce sont
-# celles qu'un comptage sait déjà exploiter, et c'est pourquoi elles ne peuvent
-# pas suffire à battre la référence triviale.
 VARIABLES_FLUX = [
     "conso_1m", "conso_3m", "conso_6m", "conso_12m",
     "tendance_conso", "volatilite_conso",
@@ -127,17 +59,11 @@ VARIABLES_FLUX = [
     "mois_depuis_dernier_achat", "anciennete_mois",
 ]
 
-# Les variables de CLIENTÈLE sont le pari de ce module. C'est exactement ce qui a
-# fait gagner le modèle de décrochage client : une référence dont la demande se
-# concentre sur un seul acheteur meurt quand cet acheteur s'en va, et aucun
-# comptage de volumes ne peut le voir.
 VARIABLES_CLIENTELE = [
     "n_clients_12m", "n_clients_3m", "erosion_clients",
     "concentration_hhi", "part_premier_client", "n_nouveaux_clients_6m",
 ]
 
-# Les variables de PRIX : une référence en fin de vie se solde, ou se renchérit
-# faute de volume négocié. Les deux sont des signaux, en sens opposés.
 VARIABLES_PRIX = [
     "prix_moyen_3m", "derive_prix", "volatilite_prix", "marge_relative",
 ]
@@ -163,12 +89,7 @@ def _connect():
 
 
 def charger_brut(con=None) -> pd.DataFrame:
-    """Flux mensuels réels enrichis du mix de clientèle et des prix.
-
-    La jointure se fait sur la désignation en majuscules, la même clé que
-    `stock_flux_reel` et `stock_position_mensuelle` : trois tables construites
-    indépendamment doivent pouvoir se rapprocher sans ambiguïté.
-    """
+    """Flux mensuels réels enrichis du mix de clientèle et des prix."""
     fermer = con is None
     con = con or _connect()
     try:
@@ -176,8 +97,6 @@ def charger_brut(con=None) -> pd.DataFrame:
         if "stock_position_mensuelle" not in tables:
             return pd.DataFrame()
 
-        # Mix de clientèle et prix, par référence et par mois. Tout vient des
-        # lignes de facture réelles.
         con.execute("""
             CREATE OR REPLACE TABLE mix_clientele_mensuel AS
             SELECT
@@ -225,13 +144,7 @@ def charger_brut(con=None) -> pd.DataFrame:
 
 def construire_panel(brut: Optional[pd.DataFrame] = None,
                      pour_prediction: bool = False) -> pd.DataFrame:
-    """Variables au mois m, cible sur ]m, m+6].
-
-    Prévention de fuite, appliquée sans exception : chaque variable se calcule par
-    `rolling`/`expanding` sur les lignes passées ou courantes, la cible par un
-    `shift` NÉGATIF. Aucune variable n'utilise `shift(-k)`, et un test le vérifie
-    mécaniquement plutôt que par relecture.
-    """
+    """Variables au mois m, cible sur ]m, m+6]."""
     if brut is None:
         brut = charger_brut()
     if brut is None or brut.empty:
@@ -242,15 +155,11 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
     df = df.sort_values(["cle", "mois"]).reset_index(drop=True)
 
     def par_ref(colonne: str):
-        # Groupement reconstruit à chaque usage : un objet `groupby` fige les
-        # colonnes présentes à sa création, et lever une colonne ajoutée ensuite
-        # échoue silencieusement selon les versions de pandas.
         return df.groupby("cle", sort=False)[colonne]
 
     df["rang_ref"] = df.groupby("cle", sort=False).cumcount() + 1
     df["anciennete_mois"] = df["rang_ref"].astype(float)
 
-    # ── Flux ────────────────────────────────────────────────────────────────
     df["conso_1m"] = df["sorties"].astype(float)
     for f in (3, 6, 12):
         df[f"conso_{f}m"] = par_ref("sorties").transform(
@@ -276,15 +185,11 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
         df["rang_ref"] - par_ref("_rang_achat").transform(lambda s: s.ffill())
     ).fillna(df["rang_ref"]).astype(float)
 
-    # ── Clientèle — le pari de ce module ────────────────────────────────────
     df["n_clients"] = df["n_clients"].astype(float)
     df["n_clients_12m"] = par_ref("n_clients").transform(
         lambda s: s.rolling(12, min_periods=1).max())
     df["n_clients_3m"] = par_ref("n_clients").transform(
         lambda s: s.rolling(3, min_periods=1).max())
-    # Érosion : la référence a-t-elle perdu des acheteurs ? C'est le signal que
-    # le comptage de volumes ne peut pas voir — une référence peut garder son
-    # volume tout en le concentrant sur un client de moins en moins nombreux.
     df["erosion_clients"] = 1.0 - (df["n_clients_3m"]
                                    / (df["n_clients_12m"] + _EPS))
 
@@ -292,13 +197,10 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
         lambda s: s.ffill()).fillna(1.0)
     df["part_premier_client"] = par_ref("part_premier").transform(
         lambda s: s.ffill()).fillna(1.0)
-    # Renouvellement : une référence sans nouvel acheteur depuis six mois vit sur
-    # son parc installé.
     df["_nouveaux"] = (df["n_clients"] > 0).astype(float) * df["n_clients"]
     df["n_nouveaux_clients_6m"] = par_ref("_nouveaux").transform(
         lambda s: s.rolling(6, min_periods=1).mean())
 
-    # ── Prix et marge ───────────────────────────────────────────────────────
     df["_prix_unitaire"] = df["montant"] / (df["sorties"] + _EPS)
     df["_prix_unitaire"] = df["_prix_unitaire"].where(df["sorties"] > 0)
     df["prix_moyen_3m"] = par_ref("_prix_unitaire").transform(
@@ -311,30 +213,17 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
     df["marge_relative"] = ((df["montant"] - df["cout_revient"])
                             / (df["montant"].abs() + _EPS))
 
-    # ── Contexte ────────────────────────────────────────────────────────────
     df["mois_calendaire"] = df["mois"].dt.month.astype(float)
     df["log_valeur_stock"] = np.log1p(
         (df["position_fin"].clip(lower=0)
          * df["cout_unitaire"].fillna(0.0).clip(lower=0)))
 
-    # ── Cible : plus AUCUNE vente sur les 6 mois suivants ───────────────────
-    #
-    # `shift(-k)` est le SEUL endroit du fichier où le futur est regardé, et il
-    # ne sert qu'à la cible. Les lignes dont l'horizon dépasse la fin des données
-    # sont écartées : conserver un « plus de ventes » qu'on n'a pas pu observer
-    # apprendrait une mort fictive.
     futurs = [df.groupby("cle", sort=False)["_vendu"].shift(-k)
               for k in range(1, HORIZON_MOIS + 1)]
     fut = pd.concat(futurs, axis=1)
     df["y"] = (fut.sum(axis=1) == 0).astype(float)
     df["_horizon_observe"] = fut.notna().all(axis=1)
 
-    # ── La référence doit être VIVANTE au moment de l'observation ────────────
-    #
-    # Sans cette condition, le panneau contiendrait des références déjà arrêtées,
-    # dont l'arrêt futur est certain. Le modèle apprendrait « ce qui est mort
-    # reste mort » — vrai, inutile, et affichant une AUC flatteuse. C'est la même
-    # précaution que « client ENCORE ACTIF » dans le modèle de décrochage.
     df["_vivante"] = par_ref("_vendu").transform(
         lambda s: s.rolling(FENETRE_VIVANTE, min_periods=1).sum()
     ) >= MOIS_ACTIFS_MINIMUM
@@ -350,25 +239,15 @@ def construire_panel(brut: Optional[pd.DataFrame] = None,
     return df.reset_index(drop=True)
 
 
-# ── Références triviales : une variable, aucun apprentissage ────────────────
-#
-# Elles jugent le DÉPLOIEMENT. Chaque direction est posée a priori et jamais
-# révisée au vu du résultat : inverser un signe après avoir vu l'AUC reviendrait
-# à entraîner la référence elle-même, et elle cesserait d'être une référence.
 def _references_triviales(te: pd.DataFrame) -> Dict[str, float]:
     from sklearn.metrics import roc_auc_score
 
     refs = {
         "classe_majoritaire": 0.5,
-        # Peu de mois actifs sur douze -> référence qui s'éteint.
         "inverse_mois_actifs_12m": -te["mois_actifs_12m"],
-        # Silence récent -> arrêt probable.
         "silence_recent": te["mois_depuis_derniere_vente"],
-        # Volume faible -> référence marginale.
         "inverse_conso_3m": -te["conso_3m"],
-        # Tendance en baisse -> extinction en cours.
         "inverse_tendance_conso": -te["tendance_conso"],
-        # Plus approvisionnée -> fin de vie décidée par l'acheteur.
         "abandon_approvisionnement": te["mois_depuis_dernier_achat"],
     }
     out: Dict[str, float] = {}
@@ -385,7 +264,7 @@ def _references_triviales(te: pd.DataFrame) -> Dict[str, float]:
 
 def _modele(nom: str = "gradient_boosting",
             reglage: Optional[Dict[str, Any]] = None):
-    """Un candidat, avec son réglage. Tous voient exactement les mêmes variables."""
+    """Un candidat, avec son réglage."""
     r = dict(reglage or {})
     if nom == "regression_logistique":
         from sklearn.linear_model import LogisticRegression
@@ -407,10 +286,6 @@ def _modele(nom: str = "gradient_boosting",
         random_state=SEED)
 
 
-# Deux jeux de variables mis en concurrence. L'ablation de la première version
-# suggérait que la clientèle et les prix DÉGRADAIENT le modèle — mais elle était
-# mesurée sur le jeu de test, ce qui en faisait un choix de variables guidé par
-# la note finale. Les deux jeux sont donc départagés sur la validation interne.
 JEUX_DE_VARIABLES: Dict[str, List[str]] = {
     "tout": FEATURES,
     "flux_seul": VARIABLES_FLUX + VARIABLES_CONTEXTE,
@@ -418,23 +293,7 @@ JEUX_DE_VARIABLES: Dict[str, List[str]] = {
 
 
 def selectionner(tr: pd.DataFrame) -> Dict[str, Any]:
-    """Choisit famille, réglage et jeu de variables — SANS jamais voir le test.
-
-    Deux grandeurs distinctes, que la première version confondait
-    -----------------------------------------------------------
-    L'écart était calculé entre l'AUC d'entraînement et l'AUC **hors période**.
-    Or cet écart mélange deux phénomènes sans rapport :
-
-      * le **sur-apprentissage** — le modèle mémorise son échantillon. Il se
-        mesure contre une validation tirée de la MÊME période ;
-      * la **dérive temporelle** — le régime a changé entre les deux périodes.
-        Elle n'est pas un défaut du modèle, et aucune régularisation ne la réduit.
-
-    Les confondre conduit à disqualifier un bon modèle pour un changement de
-    conjoncture, ou à croire régulariser une dérive. La sélection se fait donc sur
-    une coupure INTERNE à la période d'entraînement, avec la même marge
-    anti-fuite, et la dérive est mesurée séparément ensuite.
-    """
+    """Choisit famille, réglage et jeu de variables — SANS jamais voir le test."""
     from sklearn.metrics import roc_auc_score
 
     from ml_engine.determinisme import limiter_threads
@@ -467,8 +326,6 @@ def selectionner(tr: pd.DataFrame) -> Dict[str, Any]:
                         "variables": nom_jeu,
                         "auc_train_interne": round(auc_tr, 4),
                         "auc_valid_interne": round(auc_va, 4),
-                        # Sur-apprentissage AU SENS STRICT : même période des
-                        # deux côtés, donc aucune dérive possible dans l'écart.
                         "surapprentissage": round(auc_tr - auc_va, 4),
                     })
 
@@ -487,8 +344,6 @@ def selectionner(tr: pd.DataFrame) -> Dict[str, Any]:
 
     meilleur = max(eligibles, key=lambda e: e["auc_valid_interne"])
 
-    # Parcimonie : à performance interne équivalente, le modèle linéaire sur le
-    # jeu de variables le plus petit est préféré — interprétable et plus stable.
     for e in eligibles:
         if (e["famille"] == "regression_logistique"
                 and meilleur["auc_valid_interne"] - e["auc_valid_interne"]
@@ -520,14 +375,7 @@ def selectionner(tr: pd.DataFrame) -> Dict[str, Any]:
 
 
 def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
-    """Entraînement sur le passé, test sur le futur — avec marge anti-fuite.
-
-    La marge est le point délicat. La cible d'une observation d'entraînement se
-    lit sur ]m, m+6] : sans exiger `m + 6 mois <= coupure`, les derniers mois du
-    train verraient le début de la période de test. C'est l'écart qui avait
-    révélé la fuite du modèle de crédit (0,8116 en validation croisée contre
-    0,5973 hors période).
-    """
+    """Entraînement sur le passé, test sur le futur — avec marge anti-fuite."""
     from sklearn.metrics import (average_precision_score, brier_score_loss,
                                  confusion_matrix, f1_score, precision_score,
                                  recall_score, roc_auc_score)
@@ -544,7 +392,6 @@ def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
         return {"applicable": False,
                 "motif": f"train={len(tr)} test={len(te)} — effectifs insuffisants"}
 
-    # ── Sélection, sur la seule période d'entraînement ──────────────────────
     sel = selectionner(tr)
     if not sel.get("applicable"):
         return {"applicable": False,
@@ -554,7 +401,6 @@ def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
     choix = sel["retenu"]
     jeu = JEUX_DE_VARIABLES[choix["variables"]]
 
-    # ── UNE SEULE évaluation sur le hors période ────────────────────────────
     with limiter_threads(1):
         m = _modele(choix["famille"], choix["reglage"])
         m.fit(tr[jeu], tr["y"])
@@ -565,24 +411,12 @@ def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
     triv = _references_triviales(te)
     meilleure = max(triv, key=triv.get)
 
-    # ── Métriques au seuil qui DÉCIDE, et non à 0,5 ─────────────────────────
-    #
-    # Le taux de base est de 2,7 %. Au seuil de 0,5, le modèle ne prédit aucun
-    # positif : précision et rappel valent tous deux 0, ce qui ne dit rien de sa
-    # capacité de classement. Publier ces deux zéros serait aussi trompeur que
-    # publier l'AUC seule sur un problème à 88 % de positifs.
-    #
-    # La décision réelle est : « quelles références est-ce que j'examine ? ». On
-    # mesure donc au seuil du décile supérieur — les 10 % les mieux classés — et
-    # l'on publie le lift, qui dit combien de fois mieux que le hasard.
     n_dec = max(int(len(te) * 0.10), 1)
     seuil_decile = float(np.sort(p)[-n_dec])
     pred_dec = (p >= seuil_decile).astype(int)
     taux_base = float(te["y"].mean())
     prec_dec = float(precision_score(te["y"], pred_dec, zero_division=0))
 
-    # Le seuil de 0,5 est conservé, uniquement pour montrer POURQUOI il ne vaut
-    # rien ici. L'effacer laisserait croire qu'on l'a évité par commodité.
     pred_05 = (p >= 0.5).astype(int)
 
     sans_mix_deja_teste = choix["variables"] == "flux_seul"
@@ -609,12 +443,9 @@ def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
         "auc": round(auc, 4),
         "average_precision": round(float(average_precision_score(te["y"], p)), 4),
         "brier": round(float(brier_score_loss(te["y"], p)), 4),
-        # Métriques homogènes entre modèles : accuracy, balanced accuracy, MCC,
-        # spécificité — au seuil 0,5 et au seuil choisi sur l'entraînement seul.
         "classification": metriques_classification(
             te["y"], p, y_train=tr["y"], p_train=p_tr),
 
-        # Sur-apprentissage et dérive, désormais SÉPARÉS.
         "surapprentissage_interne": choix["surapprentissage"],
         "derive_temporelle": round(choix["auc_valid_interne"] - auc, 4),
         "lecture_des_deux_ecarts": (
@@ -674,11 +505,7 @@ def evaluer_hors_periode(panel: pd.DataFrame) -> Dict[str, Any]:
 def evaluer_groupkfold(panel: pd.DataFrame, modele: str,
                        reglage: Optional[Dict[str, Any]] = None,
                        variables: Optional[List[str]] = None) -> Dict[str, Any]:
-    """Par référence — INDICATIF seulement : ce protocole brasse les périodes.
-
-    Conservé pour que l'écart avec le protocole hors période reste visible. C'est
-    cet écart, et non sa valeur absolue, qui informe.
-    """
+    """Par référence — INDICATIF seulement : ce protocole brasse les périodes."""
     from sklearn.metrics import roc_auc_score
     from sklearn.model_selection import GroupKFold
 
@@ -709,8 +536,7 @@ def importance_permutation(panel: pd.DataFrame, modele: str,
                            reglage: Optional[Dict[str, Any]] = None,
                            variables: Optional[List[str]] = None
                            ) -> Dict[str, float]:
-    """Mesurée sur le TEST hors période : une variable très utilisée à
-    l'entraînement peut n'apporter aucune généralisation."""
+    """Mesurée sur le TEST hors période : une variable très utilisée à l'entraînement peut n'apporter…"""
     from sklearn.inspection import permutation_importance
 
     from ml_engine.determinisme import limiter_threads
@@ -826,16 +652,6 @@ def train() -> Dict[str, Any]:
     base["decision_deploiement"] = {"modele_deploye": bool(deploye),
                                     "motif": motif}
 
-    # ── Ce qui est servi quand le modèle est refusé ──────────────────────────
-    #
-    # Un refus ne doit pas laisser l'écran vide. La référence triviale qui a battu
-    # le modèle est une RÈGLE, auditable et gratuite, et son utilité se mesure
-    # exactement comme celle du modèle. C'est la même décision que pour la
-    # prévision de demande, où la baseline saisonnière est servie, et pour la
-    # détection de rupture, arithmétique.
-    #
-    # La mesurer est indispensable : sans cela, on servirait une règle en
-    # espérant qu'elle vaille quelque chose.
     if not deploye:
         base["regle_servie_a_la_place"] = _mesurer_regle_servie(panel, hp)
     base["portee_et_limite"] = (
@@ -849,9 +665,6 @@ def train() -> Dict[str, Any]:
             m = _modele(retenu, reglage)
             m.fit(panel[jeu], panel["y"])
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        # `features` porte le JEU RETENU, pas la liste complète : servir un modèle
-        # avec un autre ensemble de colonnes que celui sur lequel il a été
-        # entraîné est une panne silencieuse classique.
         joblib.dump({"modele": m, "features": jeu, "nom": retenu,
                      "reglage": reglage, "jeu_de_variables": hp["variables_retenues"],
                      "horizon_mois": HORIZON_MOIS, "seed": SEED},
@@ -861,7 +674,7 @@ def train() -> Dict[str, Any]:
         ancien = MODELS_DIR / "fin_de_vie.joblib"
         if ancien.exists():
             try:
-                ancien.unlink()      # un artefact présent finit par être chargé
+                ancien.unlink()
             except Exception:
                 pass
 
@@ -871,16 +684,7 @@ def train() -> Dict[str, Any]:
 
 def _mesurer_regle_servie(panel: pd.DataFrame,
                           hp: Dict[str, Any]) -> Dict[str, Any]:
-    """Utilité de la RÈGLE qui a battu le modèle, mesurée sur le même test.
-
-    La règle servie est `mois_actifs_12m` : le nombre de mois, sur les douze
-    derniers, où la référence s'est vendue. Moins elle a été active, plus elle est
-    près de s'arrêter. Une seule variable, aucun apprentissage, aucun
-    réentraînement, aucune dérive possible.
-
-    Mesurée au même seuil de décile que le modèle, pour que la comparaison soit
-    lisible : on ne compare pas une AUC à une intuition.
-    """
+    """Utilité de la RÈGLE qui a battu le modèle, mesurée sur le même test."""
     from sklearn.metrics import (average_precision_score, f1_score,
                                  precision_score, recall_score, roc_auc_score)
 
@@ -889,8 +693,6 @@ def _mesurer_regle_servie(panel: pd.DataFrame,
     if te.empty or te["y"].nunique() < 2:
         return {"applicable": False}
 
-    # Score de la règle : l'inverse du nombre de mois actifs. Direction posée
-    # a priori, identique à celle de la référence triviale.
     score = -te["mois_actifs_12m"].to_numpy(dtype=float)
     taux_base = float(te["y"].mean())
     tr = panel[panel["mois"] + pd.DateOffset(months=HORIZON_MOIS) <= coupure]
@@ -906,7 +708,6 @@ def _mesurer_regle_servie(panel: pd.DataFrame,
         "regle": ("classer les références par nombre de mois actifs sur les 12 "
                   "derniers, croissant : les moins actives d'abord"),
         "variable_unique": "mois_actifs_12m",
-        # Score de règle, pas une probabilité : le seuil est choisi sur le train.
         "classification": metriques_classification(
             te["y"], score, y_train=tr["y"],
             p_train=-tr["mois_actifs_12m"].to_numpy(dtype=float),
@@ -943,12 +744,7 @@ def _ecrire(metriques: Dict[str, Any]) -> None:
 
 
 def _raisons_ligne(r: Any) -> List[Dict[str, Any]]:
-    """Pourquoi CETTE référence est signalée comme en fin de commercialisation.
-
-    Ce sont les faits qui ont fondé la règle servie : des mois sans vente, une
-    clientèle qui se réduit, un stock qui dort. Un magasinier peut vérifier
-    chacun d'eux dans l'ERP — c'est ce qui distingue une règle d'un score opaque.
-    """
+    """Pourquoi CETTE référence est signalée comme en fin de commercialisation."""
     try:
         from ml_engine.explication import raisons_seuils
     except Exception:
@@ -964,24 +760,17 @@ def _raisons_ligne(r: Any) -> List[Dict[str, Any]]:
         "n_clients_12m": _f("n_clients_12m"),
         "stock_actuel": max(0.0, _f("position_fin")),
     }
+    # Les phrases sont composées par `raisons_seuils` à partir du libellé, de la
+    # valeur et du seuil déclaré ici — un seul endroit où le seuil est écrit.
     return raisons_seuils(valeurs, [
-        {"variable": "mois_sans_vente", "seuil": 6, "sens": "sup", "poids": 3.0,
-         "phrase": f"{valeurs['mois_sans_vente']:.0f} mois sans la moindre vente sur les 12 derniers"},
-        {"variable": "n_clients_12m", "seuil": 3, "sens": "inf", "poids": 2.0,
-         "phrase": (f"plus que {valeurs['n_clients_12m']:.0f} client(s) acheteur(s) sur 12 mois"
-                    if valeurs["n_clients_12m"] else "plus aucun client acheteur sur 12 mois")},
-        {"variable": "stock_actuel", "seuil": 1, "sens": "sup", "poids": 1.0,
-         "phrase": f"{valeurs['stock_actuel']:.0f} unité(s) encore en stock"},
+        {"variable": "mois_sans_vente", "seuil": 6, "sens": "sup", "poids": 3.0},
+        {"variable": "n_clients_12m", "seuil": 3, "sens": "inf", "poids": 2.0},
+        {"variable": "stock_actuel", "seuil": 1, "sens": "sup", "poids": 1.0},
     ], n=3)
 
 
 def predire(limite: int = 15) -> Dict[str, Any]:
-    """Références à déstocker en priorité, si le registre l'autorise.
-
-    Le classement suit le **capital exposé** — probabilité × valeur du stock
-    détenu — et non la probabilité seule. Une référence condamnée à 40 DT
-    n'appelle aucune décision ; une référence probable à 80 000 DT en appelle une.
-    """
+    """Références à déstocker en priorité, si le registre l'autorise."""
     from ml_engine.registre import est_deploye
 
     modele_servi = est_deploye("fin_de_vie")
@@ -1001,17 +790,6 @@ def predire(limite: int = 15) -> Dict[str, Any]:
             nature = "modele_appris"
             lecture_nature = "probabilité issue du modèle appris"
         else:
-            # ── Repli : la RÈGLE, mesurée et assumée ────────────────────────
-            #
-            # Le modèle a été refusé parce qu'une règle d'une variable le battait.
-            # Servir cette règle plutôt que rien est la conclusion de la mesure,
-            # pas un pis-aller : elle ne coûte aucun artefact, aucun
-            # réentraînement, aucune dérive, et un directeur peut la vérifier à la
-            # main.
-            #
-            # Le score est normalisé en [0, 1] pour rester lisible, mais ce n'est
-            # PAS une probabilité — et le champ `nature` le dit, pour qu'aucun
-            # calcul de perte attendue ne s'appuie dessus par erreur.
             actifs = dernier["mois_actifs_12m"].to_numpy(dtype=float)
             p = 1.0 - (actifs / 12.0).clip(0.0, 1.0)
             nature = "regle_deterministe"

@@ -1,13 +1,4 @@
-"""
-config/settings.py
-==================
-Configuration centralisée de la plateforme Finance AI Agent.
-Utilise Pydantic Settings pour la validation et la gestion des variables d'environnement.
-
-Usage :
-    from config.settings import settings
-    print(settings.llm_provider)
-"""
+"""Configuration centralisée de la plateforme Finance AI Agent."""
 
 from __future__ import annotations
 
@@ -31,23 +22,17 @@ except ImportError:  # pragma: no cover — repli sans pydantic-settings
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PATHS
-# ─────────────────────────────────────────────────────────────────────────────
-
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 class Settings(BaseSettings):
     """Configuration principale de la plateforme Finance AI Agent."""
 
-    # ── Application ───────────────────────────────────────────────────────────
     app_name: str = "Finance AI Agent"
     app_version: str = "2.0.0"
     app_description: str = "Plateforme Intelligence Artificielle Agentique pour l'Analyse Financière"
     debug: bool = False
     environment: Literal["development", "staging", "production"] = "development"
 
-    # ── Paths ─────────────────────────────────────────────────────────────────
     base_dir: Path = BASE_DIR
     data_dir: Path = BASE_DIR / "data_pfe"
     models_dir: Path = BASE_DIR / "models"
@@ -56,40 +41,31 @@ class Settings(BaseSettings):
     rag_dir: Path = BASE_DIR / "rag"
     plots_dir: Path = BASE_DIR / "reports" / "plots"
 
-    # ── LLM Configuration ─────────────────────────────────────────────────────
     llm_provider: Literal["openai", "anthropic", "groq", "ollama", "google"] = "groq"
-    llm_model: str = "openai/gpt-oss-120b"              # Groq — modèle production courant (2026)
+    llm_model: str = "openai/gpt-oss-120b"
     llm_temperature: float = 0.1
     llm_max_tokens: int = 4096
     llm_timeout: int = 60
 
-    # OpenAI
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
 
-    # Anthropic
     anthropic_api_key: Optional[str] = None
     anthropic_model: str = "claude-3-haiku-20240307"
 
-    # Groq (API gratuite — recommandée pour PFE)
-    # NB : Groq a retiré llama-3.1/3.3 en 2026 → modèle production courant = openai/gpt-oss-120b
     groq_api_key: Optional[str] = None
     groq_model: str = "openai/gpt-oss-120b"
 
-    # Google Gemini
     google_api_key: Optional[str] = None
     google_model: str = "gemini-1.5-flash"
 
-    # Ollama (modèle local — 0 coût)
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "mistral:7b-instruct"
 
-    # ── Embeddings ────────────────────────────────────────────────────────────
     embedding_provider: Literal["openai", "huggingface", "ollama"] = "huggingface"
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     embedding_dimension: int = 384
 
-    # ── RAG ───────────────────────────────────────────────────────────────────
     rag_enabled: bool = True
     rag_vectorstore: Literal["faiss", "chroma"] = "faiss"
     rag_chunk_size: int = 500
@@ -97,14 +73,12 @@ class Settings(BaseSettings):
     rag_top_k: int = 4
     rag_score_threshold: float = 0.5
 
-    # ── Memory ────────────────────────────────────────────────────────────────
     memory_enabled: bool = True
     memory_backend: Literal["sqlite", "redis"] = "sqlite"
     memory_db_path: Path = BASE_DIR / "memory" / "sessions.db"
     memory_max_history: int = 20
     redis_url: str = "redis://localhost:6379"
 
-    # ── ML Pipeline ───────────────────────────────────────────────────────────
     ml_n_cv_folds: int = 5
     ml_optuna_trials: int = 30
     ml_optuna_timeout: int = 120
@@ -113,15 +87,13 @@ class Settings(BaseSettings):
     ml_run_shap: bool = True
     ml_n_test_periods: int = 12
 
-    # ── Agent Configuration ───────────────────────────────────────────────────
     agent_max_iterations: int = 10
     agent_verbose: bool = True
     agent_handle_parsing_errors: bool = True
     supervisor_temperature: float = 0.0
-    confidence_threshold: float = 0.7     # Sous ce seuil → human review
-    human_in_loop_enabled: bool = False   # Activer en production
+    confidence_threshold: float = 0.7
+    human_in_loop_enabled: bool = False
 
-    # ── API ───────────────────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     api_prefix: str = "/api/v1"
@@ -130,31 +102,25 @@ class Settings(BaseSettings):
     api_token_expire_minutes: int = 480
     cors_origins: List[str] = ["http://localhost:8501", "http://localhost:3000"]
 
-    # ── Monitoring ────────────────────────────────────────────────────────────
     langsmith_enabled: bool = False
     langsmith_api_key: Optional[str] = None
     langsmith_project: str = "finance-ai-agent"
     langsmith_endpoint: str = "https://api.smith.langchain.com"
 
-    # ── Cache ─────────────────────────────────────────────────────────────────
     cache_enabled: bool = True
-    cache_ttl_seconds: int = 3600         # 1 heure
+    cache_ttl_seconds: int = 3600
     llm_cache_enabled: bool = True
 
-    # ── Business Context ──────────────────────────────────────────────────────
-    default_currency: str = "DT"          # Dinar Tunisien
+    default_currency: str = "DT"
     default_locale: str = "fr_TN"
     fiscal_year_start_month: int = 1
     late_payment_threshold_days: int = 30
     critical_payment_threshold_days: int = 90
 
-    # ── Logging ───────────────────────────────────────────────────────────────
     log_level: str = "INFO"
     log_format: str = "json"
     log_file: Optional[Path] = BASE_DIR / "logs" / "overlyne.log"
 
-    # Configuration Pydantic v2 : `model_config` remplace `class Config`,
-    # déprécié depuis Pydantic 2.0 et supprimé en v3.
     model_config = _SETTINGS_CONFIG
 
 
@@ -164,13 +130,8 @@ def get_settings() -> Settings:
     return Settings()
 
 
-# Instance globale
 settings = get_settings()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
 
 def ensure_dirs() -> None:
     """Crée tous les répertoires nécessaires s'ils n'existent pas."""
@@ -188,23 +149,16 @@ def ensure_dirs() -> None:
 
 
 def get_llm(model: Optional[str] = None):
-    """
-    Instancie le LLM configuré.
-    Lit les clés API depuis os.environ à chaque appel (bypass du cache Settings)
-    pour que les clés définies dans .env ou via la sidebar Streamlit soient toujours prises en compte.
-    `model` permet de forcer un modèle précis (utile pour un repli si un modèle est déprécié).
-    """
+    """Instancie le LLM configuré."""
     from dotenv import load_dotenv
-    load_dotenv(override=False)  # recharge .env sans écraser les vars déjà définies
+    load_dotenv(override=False)
 
-    # Lire depuis os.environ directement (pas depuis le singleton caché)
     provider     = os.environ.get("LLM_PROVIDER", settings.llm_provider)
     groq_key     = os.environ.get("GROQ_API_KEY", "") or settings.groq_api_key or ""
     openai_key   = os.environ.get("OPENAI_API_KEY", "") or settings.openai_api_key or ""
     anthropic_key= os.environ.get("ANTHROPIC_API_KEY", "") or settings.anthropic_api_key or ""
     google_key   = os.environ.get("GOOGLE_API_KEY", "") or settings.google_api_key or ""
 
-    # Modèle Groq : override explicite > variable d'env GROQ_MODEL > défaut settings
     groq_model   = model or os.environ.get("GROQ_MODEL", "") or settings.groq_model
     openai_model = model or settings.openai_model
 
@@ -258,7 +212,6 @@ def get_llm(model: Optional[str] = None):
         except ImportError:
             pass
 
-    # Essai auto : Groq si une clé est présente (peu importe le provider déclaré)
     if groq_key:
         try:
             from langchain_groq import ChatGroq
@@ -271,7 +224,6 @@ def get_llm(model: Optional[str] = None):
         except Exception:
             pass
 
-    # Fallback : Ollama local (0 coût)
     try:
         from langchain_ollama import ChatOllama
         return ChatOllama(
@@ -282,7 +234,6 @@ def get_llm(model: Optional[str] = None):
     except ImportError:
         pass
 
-    # Fallback ultime : mode mock pour développement sans LLM
     class MockChatModel:
         def invoke(self, *args, **kwargs):
             class MockResponse:
@@ -306,7 +257,6 @@ def get_embeddings():
         except ImportError:
             pass
 
-    # HuggingFace local (gratuit, multilingue)
     try:
         from langchain_huggingface import HuggingFaceEmbeddings
         return HuggingFaceEmbeddings(
@@ -317,7 +267,6 @@ def get_embeddings():
     except ImportError:
         pass
 
-    # Fallback : Ollama embeddings
     try:
         from langchain_ollama import OllamaEmbeddings
         return OllamaEmbeddings(

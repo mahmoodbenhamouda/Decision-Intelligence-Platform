@@ -1,8 +1,4 @@
-"""
-api/routers/modeles.py
-======================
-GET /api/models/metrics — tableau comparatif des modules du registre (directeur).
-"""
+"""GET /api/models/metrics — tableau comparatif des modules du registre (directeur)."""
 
 from __future__ import annotations
 

@@ -1,12 +1,10 @@
-/**
- * Model — domaines des agents, ordre des gravités, et l'alerte « compte à
- * signaux multiples » telle qu'elle part en tâche.
- */
+
 import type { ReactNode } from "react";
 import {
   FileSignature, Landmark, Percent, Truck, UserMinus, Wallet, Warehouse,
 } from "lucide-react";
 import type { Origine } from "@/features/taches/taches.types";
+import type { Cible, ClientMultiSignaux, Constat } from "./briefing.types";
 
 export const TECHNIQUE = "Qualité des modèles";
 
@@ -31,17 +29,34 @@ export function premierePhrase(t: string) {
   return i > 20 ? t.slice(0, i + 1) : t;
 }
 
-/**
- * L'alerte « ce compte cumule plusieurs signaux », telle qu'elle part en tâche.
- *
- * Fabriquée à un seul endroit : son `titre` sert à la fois d'intitulé de
- * l'alerte et de clé pour savoir si elle est déjà confiée. Deux formulations
- * différentes, et le bouton reviendrait sur une action déjà traitée.
- */
-export function origineClient(c: { client: string; domaines: string[]; montant_cumule_dt: number }): Origine {
+/** Clé stable d'une tâche issue d'une ligne de constat — même règle que la flotte
+ * (agents/fleet/delegation.py::origine_cible) : une même ligne n'est jamais confiée deux fois. */
+export function cleCible(titreConstat: string, nom: string): string {
+  return `${titreConstat} — ${nom}`.slice(0, 255);
+}
+
+export function origineCible(a: Constat, c: Cible, estClient: boolean): Origine {
+  return {
+    titre: cleCible(a.titre, c.nom),
+    titre_tache: c.tache.titre,
+    categorie: a.categorie,
+    libelle: DOMAINE[a.categorie]?.label,
+    severite: a.severite,
+    montant_dt: c.enjeu_dt ?? c.montant_dt,
+    client_nom: estClient ? c.nom : undefined,
+    client_code: estClient ? (c.code || undefined) : undefined,
+    details: `${c.motif}. Contexte : ${a.titre}.`,
+    execution: a.execution ? { poste: a.execution.poste, type: c.tache.type } : null,
+  };
+}
+
+export function origineClient(c: ClientMultiSignaux): Origine {
+  const categorie = c.categorie || c.domaines[0] || "Clients";
   return {
     titre: `Faire le point avec ${c.client}`,
-    categorie: c.domaines[0] || "Clients",
+    categorie,
+    libelle: DOMAINE[categorie]?.label,
+    execution: c.execution,
     severite: "haute",
     montant_dt: c.montant_cumule_dt,
     client_nom: c.client,

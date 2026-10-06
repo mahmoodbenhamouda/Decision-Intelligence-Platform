@@ -29,9 +29,9 @@ def _importer(numero, corrige=None, moteur="layoutlmv3+regles", relue=True):
 
 
 def test_exactitude_par_champ(entrepot):
-    _importer("F1", {"montant_tva": 364.65})           # TVA fausse
+    _importer("F1", {"montant_tva": 364.65})
     _importer("F2", {"montant_tva": 364.65})
-    _importer("F3")                                     # rien à corriger
+    _importer("F3")
     _importer("F4", {"montant_tva": 364.65, "numero": "F4-BIS"})
     m = mesure_production()["par_moteur"]["layoutlmv3+regles"]
     assert m["n_factures"] == 4 and m["n_sans_correction"] == 1

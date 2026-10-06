@@ -51,17 +51,28 @@
 | 11 | `dso_jours` | `avg(payment_delay_days)` sur `sales` = délai moyen accordé |
 | 12 | `dpo_jours` | `avg(payment_delay_days)` sur `purchases` |
 | 13 | `cash_conversion_cycle` | `dso_jours − dpo_jours` |
-| 14 | `retards_30j` | `count(*) WHERE payment_delay_days > 30` |
-| 15 | `retards_60j` | `count(*) WHERE payment_delay_days > 60` |
-| 16 | `retards_critiques` | `count(*) WHERE payment_delay_days > 90` |
-| 17 | `paiements_total_analyses` | `count(*) WHERE payment_delay_days IS NOT NULL` (factures avec échéance) |
-| 18 | `paiements_a_risque_count` | identique à `retards_60j` |
-| 19 | `paiements_a_risque_pct` | `retards_60j ÷ paiements_total_analyses × 100` |
-| 20 | `montant_risque_ttc` | `sum(ttc) WHERE payment_delay_days > 60` |
-| 21 | `montant_critique_ttc` | `sum(ttc) WHERE payment_delay_days > 90` |
-| 22 | `ca_retard_historique_ttc` | = `montant_risque_ttc`. **Nom volontairement explicite** : cumul historique de comportement de paiement, **pas un encours dû aujourd'hui** (le schéma n'a ni statut payé/impayé ni solde) |
-| 23 | `ca_retard_historique_critique_ttc` | = `montant_critique_ttc` |
-| 24 | `exposition_recente_periode` | libellé `"échéances des 6 mois jusqu'à <YYYY-MM>"`, calculé depuis `max(echeance)` du périmètre |
+| 14 | `factures_delai_sup_30j` | `count(*) WHERE payment_delay_days > 30` |
+| 15 | `factures_delai_sup_60j` | `count(*) WHERE payment_delay_days > 60` |
+| 16 | `factures_delai_sup_90j` | `count(*) WHERE payment_delay_days > 90` |
+| 17 | `part_factures_delai_sup_60j_pct` | `factures_delai_sup_60j ÷ count(*) WHERE payment_delay_days IS NOT NULL × 100` |
+| 18 | `montant_delai_sup_60j_ttc` | `sum(ttc) WHERE payment_delay_days > 60` |
+| 19 | `montant_delai_sup_90j_ttc` | `sum(ttc) WHERE payment_delay_days > 90` |
+| 20 | `exposition_recente_periode` | libellé `"échéances des 6 mois jusqu'à <YYYY-MM>"`, calculé depuis `max(echeance)` du périmètre |
+
+> **Renommage (et pourquoi).** Ces champs s'appelaient `retards_30j`, `retards_60j`,
+> `retards_critiques`, `paiements_a_risque_*`, `montant_risque_ttc`,
+> `montant_critique_ttc`, `ca_retard_historique_ttc`. Les noms disaient « retard »
+> alors que la limite annoncée en tête de ce document dit l'inverse : `payment_delay_days`
+> est le délai **accordé**. Le copilote en avait déduit la phrase « de CA réglé avec
+> >60 j de retard », le rapport proposait de « lancer le recouvrement », et une jauge
+> « Ponctualité paiements » valait `100 − part des délais accordés`. Trois affirmations
+> fausses nées d'un nom. Les noms portent désormais ce qui est mesuré.
+>
+> Quatre champs ont disparu plutôt que d'être renommés : `paiements_a_risque_count`
+> et `ca_retard_historique_ttc` étaient des **alias exacts** d'autres champs — deux
+> noms pour un même nombre, personne ne sachant s'ils devaient coïncider ;
+> `paiements_total_analyses` et `ca_retard_historique_critique_ttc` n'étaient lus
+> par aucun écran, aucun agent, aucun test.
 
 ## A4. Exposition récente — le chiffre actionnable (3)
 
@@ -105,7 +116,6 @@ FROM sales WHERE W AND echeance >= (SELECT md FROM ref) - INTERVAL 6 MONTH
 | 38 | `marge_source` | `"cout_revient_erp"` ou `"indisponible"` |
 | 39 | `marge_lignes_exclues` | lignes écartées par le nettoyage : **387** |
 | 39b | `marge_lignes_exclues_pct` | part correspondante : **0,12 %** des lignes facturées |
-| 40 | `marge_cout_articles_offerts_dt` | coût des articles livrés à montant nul (consommables offerts) |
 
 **Nettoyage des aberrations (indispensable et documenté).** 318 lignes sur 340 912 portent un coût **supérieur à 10× le prix de vente** — par exemple un panel vendu 28 300 DT avec un coût déclaré de 665 450 DT : erreur de saisie manifeste. Le moteur écarte les lignes dont `coût > 5 × CA` (seuil conservateur : la marge se stabilise entre 5× et 2×, et seules 387 lignes sont exclues). Le nombre de lignes écartées est **exposé dans les KPI** pour que l'utilisateur puisse juger.
 
@@ -116,7 +126,7 @@ FROM sales WHERE W AND echeance >= (SELECT md FROM ref) - INTERVAL 6 MONTH
 | **coût ≤ 5× CA** (retenu) | **329 300** | **28,3 %** |
 | coût ≤ 3× CA | 328 922 | 29,3 % |
 
-**Cas particulier des articles offerts** : 3 208 lignes ont un montant nul mais un coût réel (2,2 M DT) — consommables offerts avec les automates, pratique courante du secteur. Ils sont comptabilisés séparément (`marge_cout_articles_offerts_dt`) et n'entrent pas dans le taux, qui porte sur les lignes facturées.
+**Cas particulier des articles offerts** : 3 208 lignes ont un montant nul mais un coût réel (2,2 M DT) — consommables offerts avec les automates, pratique courante du secteur. Ils n'entrent pas dans le taux, qui porte sur les lignes facturées. Le champ `marge_cout_articles_offerts_dt` qui les exposait a été retiré : aucun écran ne le lisait.
 
 `marge_brute` ne vaut `None` que si le périmètre ne contient **aucune ligne exploitable**.
 
@@ -136,9 +146,7 @@ FROM sales WHERE W AND echeance >= (SELECT md FROM ref) - INTERVAL 6 MONTH
 | 40 | `montant_devis_total` | `sum(ttc) FROM devis` |
 | 41 | `taux_conversion_devis` | **`devis transformés ÷ total devis × 100`** = **9,0 %** (415 / 4 621) |
 | 42 | `nb_bl` | `count(*) FROM bl` (bons de livraison, **non filtré**) |
-| 43 | `montant_bl_total` | `None` — le fichier BL ne porte pas de montant fiable ; laissé nul plutôt qu'inventé |
 | 43b | `devis_transformes` | `count(*) WHERE ETATPIECE = '8'` = **415** |
-| 43c | `montant_devis_transforme` | `sum(ttc) WHERE transforme` |
 | 43d | `taux_conversion_source` | `"etat_piece_erp"` |
 | 43e | `taux_conversion_note` | texte explicatif accompagnant le taux |
 
@@ -173,7 +181,7 @@ Alimenté par `models/credit_risk_model.joblib` → `output/client_risk.json` :
 
 | # | Clé | Formule exacte |
 |---|---|---|
-| 48 | `anomalies_detectees` | **`retards_critiques + count(ttc < 0) + count(ttc = 0)`** |
+| 48 | `anomalies_detectees` | **`factures_delai_sup_90j + count(ttc < 0) + count(ttc = 0)`** |
 
 ---
 
@@ -201,7 +209,7 @@ Alimenté par `models/credit_risk_model.joblib` → `output/client_risk.json` :
 
 | Clé | n | Formule |
 |---|---|---|
-| `aging_creances` | 5 | `sum(ttc)` par tranche de `payment_delay_days` : **Comptant** (≤ 0), **0-30 j**, **31-60 j**, **61-90 j**, **90 j +** → `{bucket, montant}` |
+| `echelonnement_delais_accordes` | 5 | `sum(ttc)` par tranche de `payment_delay_days` : **Comptant** (≤ 0), **0-30 j**, **31-60 j**, **61-90 j**, **90 j +** → `{bucket, montant}` |
 | `amount_distribution` | 6 | `count(*)` par tranche de `ttc` : `< 500`, `0.5-1K`, `1-5K`, `5-10K`, `10-50K`, `50K +` → `{tranche, count}` |
 | `payment_mix` | 8 | `sum(ttc)`, `count(*)` par mode de règlement (top 8) → `{mode, montant, count}`. Libellés **normalisés** : trim, espaces multiples réduits, `"90JOURS"` → `"90 JOURS"`, vide/`NULL` → `"Non renseigné"` ; le libellé affiché est la variante **la plus fréquente** de chaque groupe |
 
@@ -218,7 +226,7 @@ Alimenté par `models/credit_risk_model.joblib` → `output/client_risk.json` :
 | `share` | `revenue ÷ g × 100` |
 | `rank` | rang (1 à 10) |
 | `risque` | `sum(ttc) FILTER (WHERE payment_delay_days > 30)` |
-| `risk_score` | score ML `P(délai > 60 j) × 100` (si modèle actif) |
+| `risk_score` | **RÈGLE, pas un modèle** : 100 si la médiane des délais passés du client dépasse 60 j, 0 sinon (taux de base sous 3 factures). Le modèle appris a été **refusé** — voir ci-dessous. |
 
 ### `clients_fideles` (8) — la fidélité = **récurrence**, pas le CA
 
@@ -308,8 +316,8 @@ Liste **vide** si la marge est non attribuable (voir A6) ou si `ca_total_ht` est
 
 | Message | Condition |
 |---|---|
-| « N facture(s) avec délai accordé > 90 jours » | `retards_critiques > 0` |
-| « N facture(s) avec délai accordé de 30 à 90 jours » | `retards_30j − retards_critiques > 0` |
+| « N facture(s) avec délai accordé > 90 jours » | `factures_delai_sup_90j > 0` |
+| « N facture(s) avec délai accordé de 30 à 90 jours » | `factures_delai_sup_30j − factures_delai_sup_90j > 0` |
 | « N facture(s) avec montant négatif (avoirs) » | `count(ttc < 0) > 0` |
 | « N facture(s) avec montant nul » | `count(ttc = 0) > 0` |
 | « Forte concentration client (HHI=… > 2500) » | `hhi_clients > 2500` |
@@ -394,7 +402,8 @@ factures (`reports/METRICS_REPORT.md`, §2).
 
 | Modèle | Cible | Formule du score |
 |---|---|---|
-| **Risque crédit** | `P(payment_delay_days > 60)` | HistGradientBoosting ; `risk_score = moyenne des probabilités du client × 100` ; `priority = score ÷ 100 × exposure` |
+| **Risque crédit** | `payment_delay_days > 60` | **RÈGLE DÉTERMINISTE SERVIE, aucun apprentissage.** `risk_score = 100` si la médiane des délais passés du client dépasse 60 j, 0 sinon ; `priority = score ÷ 100 × exposure`. AUC hors période de la règle : **0,9200**, couverture 85,3 %. Le `HistGradientBoostingClassifier` calibré a été **refusé** : le délai accordé a un écart-type de **1,07 jour à l'intérieur d'un client** contre 20 entre clients — il est négocié, pas aléatoire, et un modèle n'a rien à y apprendre. Détail dans `reports/credit_risk_metrics.json`, clé `production`. |
+| **CA client à venir** | `sum(montant)` des H mois suivants, H ∈ {3, 12} | Ridge sur `log1p` ou HistGradientBoostingRegressor selon la parcimonie ; référence à battre = **persistance** (le CA des H derniers mois reporté tel quel) ; décision sur l'erreur absolue **médiane** + Spearman ≥ 0,70. Sert aussi le **top 10 prédit** et ses entrants/sortants. |
 | **Prévision trésorerie** | encaissements mensuels | série `log1p` standardisée → LSTM ou Holt-Winters amorti ; **bande = `expm1(prévision ± 1,96 σ_résidus)`**, bornée à `[0.6 × centre, 1.7 × centre]` |
 | **Prévision demande** | volume d'articles | `argmin(MAPE)` parmi 4 méthodes (voir partie C) |
 
@@ -407,7 +416,7 @@ factures (`reports/METRICS_REPORT.md`, §2).
 | Panier moyen | 2 254,64 DT | = CA TTC ÷ nb factures ✓ |
 | DSO / DPO | 44,3 j / 33,7 j | délais moyens accordés |
 | Cycle de conversion | 10,6 j | = 44,3 − 33,7 ✓ |
-| Factures à risque | 39,26 % | = retards_60j ÷ paiements_total_analyses ✓ |
+| Part des délais accordés > 60 j | 39,26 % | = factures_delai_sup_60j ÷ factures avec échéance ✓ |
 | Taux de marge | **28,3 %** | = (CA lignes − coût de revient) ÷ CA lignes ✓ — **marge réelle** (l'ancienne approximation donnait 77 %) |
 | HHI clients | 32 | portefeuille **peu concentré**, aucune alerte |
 | Pareto | 401 clients / 1 137 pour 80 % du CA | cohérent avec le HHI faible |

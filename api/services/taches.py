@@ -1,20 +1,4 @@
-"""
-api/services/taches.py
-======================
-La BOUCLE D'ACTION : une alerte devient une tâche, la tâche est confiée, puis
-son résultat est consigné et mesuré.
-
-Trois règles structurent le module :
-
-1. **Qui peut toucher à quoi** est décidé ici, sur le serveur. Un employé ne
-   peut ni réaffecter une tâche, ni en lire une qui ne lui est pas confiée,
-   même en demandant son identifiant directement.
-2. **Rien ne se perd** : chaque changement écrit une ligne dans
-   `evenements_tache`, et la clôture d'une tâche née d'une action client
-   répond automatiquement à ce client.
-3. **Une alerte ne se confie qu'une fois** : tant qu'une tâche ouverte porte le
-   même signalement, la création d'une seconde est refusée (`Conflit`).
-"""
+"""La BOUCLE D'ACTION : une alerte devient une tâche, la tâche est confiée, puis son résultat est…"""
 
 from __future__ import annotations
 
@@ -28,18 +12,22 @@ from api.auth.journal import audit
 from api.auth.models import (EVENEMENT_TYPES, RESULTAT_LABEL, RESULTATS_GAGNANTS,
                              ROLE_DIRECTEUR, ROLE_EMPLOYE, STATUTS_OUVERTS,
                              TACHE_RESULTATS, TACHE_STATUTS, TACHE_TYPE_LABEL,
-                             TACHE_TYPES, ClientRequest, EvenementTache, Tache, User)
+                             TACHE_TYPES, EvenementTache, Tache, User)
 from api.schemas.taches import TacheCreate, TacheUpdate
 from api.services.erreurs import (AccesRefuse, Conflit, DonneesInvalides,
                                   Introuvable)
 
-#: Délai par défaut accordé selon la gravité de l'alerte d'origine. Une alerte
-#: « urgente » qui reçoit la même échéance qu'une alerte « à suivre » n'a plus
-#: aucun sens : l'échéance est le seul endroit où la gravité se traduit en acte.
 DELAI_PAR_SEVERITE = {"critique": 2, "haute": 5, "moyenne": 10, "faible": 20}
 
 
-# ── Journal ─────────────────────────────────────────────────────────────────
+ORIGINES = ("direction", "flotte")
+
+
+def origine_de(t: Tache) -> str:
+    """`flotte` si la délégation autonome l'a confiée, `direction` sinon."""
+    return "flotte" if t.delegation_auto else "direction"
+
+
 def _evt(db: Session, tache: Tache, user: Optional[User], type_: str,
          detail: str) -> None:
     """Ajoute une ligne d'histoire (sans commit : le geste appelant commite)."""
@@ -50,7 +38,6 @@ def _evt(db: Session, tache: Tache, user: Optional[User], type_: str,
                           type=type_, detail=detail[:500]))
 
 
-# ── Échéances ───────────────────────────────────────────────────────────────
 def echeance_par_defaut(severite: str) -> datetime:
     """Aujourd'hui + le délai accordé à cette gravité."""
     jours = DELAI_PAR_SEVERITE.get(severite, 10)
@@ -68,7 +55,6 @@ def _lire_echeance(valeur: Optional[str], severite: str) -> datetime:
     return echeance_par_defaut(severite)
 
 
-# ── Sérialisation ───────────────────────────────────────────────────────────
 def _en_retard(t: Tache) -> bool:
     if t.statut in ("terminee",) or t.echeance is None:
         return False
@@ -85,7 +71,7 @@ def _tache_dict(t: Tache, users: Dict[int, User]) -> Dict[str, Any]:
         "client_nom": t.client_nom or t.client_code,
         "origine_categorie": t.origine_categorie,
         "origine_titre": t.origine_titre,
-        "venue_du_client": t.request_id is not None,
+        "delegation_auto": bool(t.delegation_auto),
         "type": t.type,
         "type_label": TACHE_TYPE_LABEL.get(t.type, t.type),
         "titre": t.titre,
@@ -113,11 +99,7 @@ def _users_index(db: Session) -> Dict[int, User]:
 
 
 def _tache_visible(db: Session, tache_id: int, user: User) -> Tache:
-    """La tâche, si cet utilisateur a le droit de la voir — `Introuvable` sinon.
-
-    Introuvable et non refusé : répondre « interdit » confirmerait l'existence
-    de la tâche d'un collègue, ce qui est déjà une information.
-    """
+    """La tâche, si cet utilisateur a le droit de la voir — `Introuvable` sinon."""
     t = db.get(Tache, tache_id)
     if t is None:
         raise Introuvable("Tâche introuvable.")
@@ -134,14 +116,8 @@ def _employe_actif(db: Session, user_id: int) -> User:
     return a
 
 
-# ── À qui confier ───────────────────────────────────────────────────────────
 def employes(db: Session) -> Dict[str, Any]:
-    """Employés actifs, avec le nombre de tâches ouvertes de chacun.
-
-    La charge est renvoyée avec la liste pour que le directeur choisisse en
-    connaissance de cause : confier la dixième relance de la semaine à la même
-    personne est le meilleur moyen qu'aucune ne soit faite.
-    """
+    """Employés actifs, avec le nombre de tâches ouvertes de chacun."""
     emps = db.execute(
         select(User).where(User.role == ROLE_EMPLOYE, User.is_active.is_(True))
         .order_by(User.full_name, User.email)).scalars().all()
@@ -158,19 +134,8 @@ def employes(db: Session) -> Dict[str, Any]:
     } for e in emps]}
 
 
-# ── Ce que les actions ont rapporté ─────────────────────────────────────────
 def impact(db: Session, user: User) -> Dict[str, Any]:
-    """Mesure de la boucle : sans elle, personne ne saurait si tout ce travail
-    sert à quelque chose.
-
-    - `en_jeu_dt`      : montant porté par les tâches encore ouvertes ;
-    - `recupere_dt`    : montant réellement obtenu sur les tâches gagnées ;
-    - `par_resultat`   : combien de fois chaque issue s'est produite ;
-    - `par_mois`       : le montant obtenu, mois par mois ;
-    - `delai_moyen_j`  : temps moyen entre la création et la clôture.
-
-    Un employé ne voit que l'impact de SES tâches (même calcul, périmètre réduit).
-    """
+    """Mesure de la boucle : sans elle, personne ne saurait si tout ce travail sert à quelque chose."""
     q = select(Tache)
     if user.role != ROLE_DIRECTEUR:
         q = q.where(Tache.assigne_id == user.id)
@@ -187,8 +152,6 @@ def impact(db: Session, user: User) -> Dict[str, Any]:
                                         "nombre": 0, "montant_dt": 0.0,
                                         "montant_en_jeu_dt": 0.0})
         e["nombre"] += 1
-        # Deux montants distincts, jamais confondus : ce qui a été OBTENU, et ce
-        # qui était en jeu au départ. Les additionner donnerait un gain fictif.
         e["montant_dt"] += float(t.resultat_montant_dt or 0)
         e["montant_en_jeu_dt"] += float(t.montant_dt or 0)
 
@@ -201,6 +164,22 @@ def impact(db: Session, user: User) -> Dict[str, Any]:
         e = par_mois.setdefault(mois, {"mois": mois, "montant_dt": 0.0, "nombre": 0})
         e["montant_dt"] += float(t.resultat_montant_dt or 0)
         e["nombre"] += 1
+
+    par_origine: Dict[str, Dict[str, Any]] = {}
+    for t in taches:
+        o = origine_de(t)
+        e = par_origine.setdefault(o, {"origine": o, "taches": 0, "terminees": 0,
+                                        "gagnees": 0, "recupere_dt": 0.0})
+        e["taches"] += 1
+        if t.statut == "terminee":
+            e["terminees"] += 1
+            if (t.resultat or "") in RESULTATS_GAGNANTS:
+                e["gagnees"] += 1
+                e["recupere_dt"] += float(t.resultat_montant_dt or 0)
+    for e in par_origine.values():
+        e["recupere_dt"] = round(e["recupere_dt"], 2)
+        e["taux_reussite"] = (round(100 * e["gagnees"] / e["terminees"], 1)
+                              if e["terminees"] else None)
 
     delais = []
     for t in terminees:
@@ -216,32 +195,24 @@ def impact(db: Session, user: User) -> Dict[str, Any]:
         "taches_terminees": len(terminees),
         "en_jeu_dt": round(sum(float(t.montant_dt or 0) for t in ouvertes), 2),
         "recupere_dt": round(sum(float(t.resultat_montant_dt or 0) for t in gagnees), 2),
-        # Argent annoncé mais pas encore encaissé : c'est exactement ce que la
-        # prévision d'encaissements doit pouvoir confronter à la réalité.
         "promesses_dt": round(sum(float(t.resultat_montant_dt or t.montant_dt or 0)
                                   for t in terminees if t.resultat == "promesse"), 2),
         "taux_reussite": round(100 * len(gagnees) / len(terminees), 1) if terminees else None,
         "delai_moyen_j": round(sum(delais) / len(delais), 1) if delais else None,
         "par_resultat": sorted(par_resultat.values(), key=lambda e: -e["nombre"]),
         "par_mois": sorted(par_mois.values(), key=lambda e: e["mois"]),
+        "par_origine": [par_origine[o] for o in ORIGINES if o in par_origine],
     }
 
 
 def boucle(db: Session) -> Dict[str, Any]:
-    """Ce qui est déjà reparti vers les modèles.
-
-    Une phrase honnête plutôt qu'une promesse : tant que le nombre de retours
-    est faible, les modèles restent entraînés sur l'historique seul, et l'écran
-    le dit. Les retours sont transférés vers l'entrepôt au ré-entraînement
-    (`python scripts/retrain_all.py`).
-    """
+    """Ce qui est déjà reparti vers les modèles."""
     try:
         from ml_engine.boucle import resume
         r = resume()
     except Exception as e:
         return {"disponible": False, "motif": f"indisponible ({type(e).__name__})"}
 
-    # Ce qui attend le prochain transfert, lu directement dans la base.
     terminees = db.execute(select(func.count()).select_from(Tache)
                            .where(Tache.statut == "terminee")).scalar_one()
     r["resultats_enregistres"] = int(terminees)
@@ -250,21 +221,8 @@ def boucle(db: Session) -> Dict[str, Any]:
     return r
 
 
-# ── Alertes déjà confiées ───────────────────────────────────────────────────
 def confiees(db: Session) -> Dict[str, Any]:
-    """Les alertes déjà transformées en tâche, pour que le tableau de bord
-    affiche « Confiée à … » au lieu de reproposer le bouton.
-
-    Sans cette lecture, l'information ne vivait que dans la mémoire de l'onglet
-    ouvert : au rechargement de la page, la même alerte pouvait être confiée une
-    seconde fois, et deux personnes appelaient le même client.
-
-    La clé est l'intitulé de l'alerte d'origine (`origine_titre`) : c'est la
-    seule valeur stable d'un chargement à l'autre — le titre de la tâche, lui,
-    est modifiable au moment de la confier. Les tâches TERMINÉES ne comptent
-    pas : si l'alerte réapparaît plus tard, elle doit pouvoir donner lieu à une
-    nouvelle action.
-    """
+    """Les alertes déjà transformées en tâche, pour que le tableau de bord affiche « Confiée à … » au…"""
     taches = db.execute(
         select(Tache)
         .where(Tache.statut != "terminee", Tache.origine_titre.isnot(None))
@@ -282,18 +240,14 @@ def confiees(db: Session) -> Dict[str, Any]:
             "assigne_nom": (a.full_name or a.email) if a else None,
             "statut": t.statut,
             "echeance": t.echeance.isoformat() if t.echeance else None,
+            "par_la_flotte": bool(t.delegation_auto),
         }
     return {"confiees": out}
 
 
-# ── Tableau de suivi ────────────────────────────────────────────────────────
 def lister(db: Session, user: User, statut: Optional[str], client_code: Optional[str],
            assigne_id: Optional[int], limite: int) -> Dict[str, Any]:
-    """Les tâches visibles par l'utilisateur, les plus urgentes d'abord.
-
-    Isolation : pour un employé, `assigne_id` est ÉCRASÉ par son propre
-    identifiant — demander les tâches d'un collègue ne renvoie que les siennes.
-    """
+    """Les tâches visibles par l'utilisateur, les plus urgentes d'abord."""
     q = select(Tache)
     if user.role != ROLE_DIRECTEUR:
         q = q.where(Tache.assigne_id == user.id)
@@ -326,10 +280,6 @@ def creer(db: Session, user: User, body: TacheCreate) -> Dict[str, Any]:
     if body.type not in TACHE_TYPES:
         raise DonneesInvalides(f"Type invalide (attendu : {', '.join(TACHE_TYPES)}).")
 
-    # Une alerte déjà confiée ne se confie pas une deuxième fois : deux tâches
-    # pour le même signalement, ce sont deux personnes qui appellent le même
-    # client. Le bouton disparaît déjà de l'écran ; ce contrôle-ci est celui qui
-    # tient, parce qu'il ne dépend pas de ce que l'écran a chargé.
     origine = (body.origine_titre or "").strip() or None
     if origine:
         deja = db.execute(
@@ -345,29 +295,54 @@ def creer(db: Session, user: User, body: TacheCreate) -> Dict[str, Any]:
     if body.assigne_id is not None:
         assigne = _employe_actif(db, body.assigne_id)
 
-    t = Tache(
-        client_code=(body.client_code or "").strip() or None,
-        client_nom=(body.client_nom or "").strip() or None,
-        origine_categorie=(body.origine_categorie or "").strip() or None,
-        origine_titre=(body.origine_titre or "").strip() or None,
-        type=body.type, titre=body.titre.strip(),
-        details=(body.details or "").strip() or None,
-        montant_dt=float(body.montant_dt or 0), severite=body.severite or "moyenne",
-        assigne_id=assigne.id if assigne else None,
-        cree_par_id=user.id,
+    t = inserer_tache(
+        db, auteur=user, assigne=assigne,
+        titre=body.titre, type_=body.type, details=body.details,
+        client_code=body.client_code, client_nom=body.client_nom,
+        origine_categorie=body.origine_categorie, origine_titre=origine,
+        montant_dt=body.montant_dt, severite=body.severite or "moyenne",
         echeance=_lire_echeance(body.echeance, body.severite or "moyenne"),
-        statut="a_faire" if assigne else "a_affecter",
     )
-    db.add(t)
-    db.commit()
-    _evt(db, t, user, "creation",
-         f"Tâche créée à partir de : {t.origine_titre or t.titre}")
-    if assigne:
-        _evt(db, t, user, "affectation", f"Confiée à {assigne.full_name or assigne.email}")
-    db.commit()
     audit(db, user=user, action="tache_create", resource="/api/taches",
           detail=f"#{t.id} {t.titre[:60]} → {assigne.email if assigne else 'à affecter'}")
     return _tache_dict(t, _users_index(db))
+
+
+def inserer_tache(db: Session, *, auteur: Optional[User], assigne: Optional[User],
+                  titre: str, type_: str, details: Optional[str],
+                  client_code: Optional[str], client_nom: Optional[str],
+                  origine_categorie: Optional[str], origine_titre: Optional[str],
+                  montant_dt: float, severite: str, echeance: datetime,
+                  delegation_auto: bool = False,
+                  evenement_creation: Optional[str] = None,
+                  evenement_affectation: Optional[str] = None,
+                  commentaire: Optional[str] = None) -> Tache:
+    """Écrit une tâche et le début de son histoire — un seul chemin pour le directeur (`creer`) et pour…"""
+    t = Tache(
+        client_code=(client_code or "").strip() or None,
+        client_nom=(client_nom or "").strip() or None,
+        origine_categorie=(origine_categorie or "").strip() or None,
+        origine_titre=(origine_titre or "").strip() or None,
+        type=type_, titre=titre.strip()[:200],
+        details=(details or "").strip()[:2000] or None,
+        montant_dt=float(montant_dt or 0), severite=severite or "moyenne",
+        assigne_id=assigne.id if assigne else None,
+        cree_par_id=auteur.id if auteur else None,
+        echeance=echeance,
+        statut="a_faire" if assigne else "a_affecter",
+        delegation_auto=bool(delegation_auto),
+    )
+    db.add(t)
+    db.commit()
+    _evt(db, t, auteur, "creation",
+         evenement_creation or f"Tâche créée à partir de : {t.origine_titre or t.titre}")
+    if assigne:
+        _evt(db, t, auteur, "affectation",
+             evenement_affectation or f"Confiée à {assigne.full_name or assigne.email}")
+    if commentaire:
+        _evt(db, t, auteur, "commentaire", commentaire)
+    db.commit()
+    return t
 
 
 def detail(db: Session, user: User, tache_id: int) -> Dict[str, Any]:
@@ -384,13 +359,7 @@ def detail(db: Session, user: User, tache_id: int) -> Dict[str, Any]:
 
 
 def modifier(db: Session, user: User, tache_id: int, body: TacheUpdate) -> Dict[str, Any]:
-    """Fait avancer une tâche.
-
-    - Le responsable la prend en charge, la bloque, la termine avec un résultat.
-    - Le directeur peut en plus la réaffecter et déplacer l'échéance.
-    - Terminer une tâche EXIGE un résultat : une tâche close sans issue connue
-      ne mesure rien et casse la boucle.
-    """
+    """Fait avancer une tâche."""
     t = _tache_visible(db, tache_id, user)
     est_dir = user.role == ROLE_DIRECTEUR
     changements: List[str] = []
@@ -452,18 +421,6 @@ def modifier(db: Session, user: User, tache_id: int, body: TacheUpdate) -> Dict[
 
     t.updated_at = datetime.now(timezone.utc)
     db.commit()
-
-    # La boucle se referme côté client : sa demande reçoit une réponse au
-    # moment où la tâche qu'elle a déclenchée est close. Sans cela, le client
-    # agit dans le vide et cesse d'agir.
-    if t.request_id and t.statut in ("terminee", "bloquee"):
-        r = db.get(ClientRequest, t.request_id)
-        if r is not None and r.status not in ("traitee", "rejetee"):
-            r.status = "traitee" if t.statut == "terminee" else "en_cours"
-            if t.resultat_commentaire and not r.reponse:
-                r.reponse = t.resultat_commentaire
-            r.updated_at = datetime.now(timezone.utc)
-            db.commit()
 
     audit(db, user=user, action="tache_update", resource="/api/taches",
           detail=f"#{t.id} → {t.statut} ({', '.join(changements) or 'commentaire'})")

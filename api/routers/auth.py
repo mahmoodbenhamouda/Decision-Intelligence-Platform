@@ -1,14 +1,4 @@
-"""
-api/routers/auth.py
-===================
-POST /api/auth/login   connexion : JWT remis en cookie httpOnly ET dans le corps
-POST /api/auth/logout  révocation immédiate du jeton + suppression du cookie
-GET  /api/auth/me      profil de l'utilisateur authentifié
-
-Le jeton est remis de deux façons : cookie httpOnly pour le navigateur
-(inaccessible au JS, donc protégé du vol par XSS ; SameSite=Lax contre le CSRF)
-et corps de réponse pour les clients API et les tests (Bearer).
-"""
+"""POST /api/auth/login connexion : JWT remis en cookie httpOnly ET dans le corps POST…"""
 
 from __future__ import annotations
 
@@ -26,7 +16,6 @@ from api.services import auth as service
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# Cookie "Secure" activé automatiquement hors développement.
 _COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "").lower() in ("1", "true", "yes")
 
 
@@ -42,7 +31,7 @@ def login(body: LoginRequest, request: Request, response: Response,
         max_age=ACCESS_TOKEN_MINUTES * 60, path="/",
     )
     return LoginResponse(access_token=token, role=user.role, email=user.email,
-                         full_name=user.full_name, client_code=user.client_code)
+                         full_name=user.full_name)
 
 
 @router.post("/logout")
@@ -60,5 +49,4 @@ def logout(request: Request, response: Response,
 def me(user: User = Depends(get_current_user)):
     """Profil de l'utilisateur authentifié (pour l'UI : rôle + périmètre)."""
     return MeResponse(email=user.email, role=user.role, full_name=user.full_name,
-                      client_code=user.client_code,
                       last_login=user.last_login.isoformat() if user.last_login else None)

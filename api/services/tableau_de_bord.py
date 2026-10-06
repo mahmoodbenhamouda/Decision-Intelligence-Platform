@@ -1,21 +1,4 @@
-"""
-api/services/tableau_de_bord.py
-===============================
-Indicateurs du tableau de bord et synthèse écrite.
-
-Chaîne de repli, du plus riche au plus simple :
-
-  1. le COPILOTE orchestre les outils et produit tout (indicateurs, scoring ML,
-     prévision, anomalies) avec une trace d'exécution visible ;
-  2. le moteur d'indicateurs direct, sans orchestration ;
-  3. sinon, une erreur explicite. Il n'existe qu'UN entrepôt et qu'un jeu de
-     règles de calcul : afficher des chiffres calculés autrement (l'ancien
-     calcul pandas comptait les avoirs comme des ventes) serait pire que de
-     dire que l'entrepôt est indisponible.
-
-La requête reçue est déjà réduite au périmètre de l'utilisateur
-(`perimetre.restreindre`) ; seules les options de filtre le sont ici.
-"""
+"""Indicateurs du tableau de bord et synthèse écrite."""
 
 from __future__ import annotations
 
@@ -26,7 +9,6 @@ from api.auth.models import User
 from api.core import moteurs
 from api.schemas.filtres import FilterRequest
 from api.services.filtres import filtres_moteur, resume_filtres
-from api.services.perimetre import options_visibles
 from api.services.rapport import build_dynamic_report
 from api.services.serialisation import json_safe
 
@@ -43,7 +25,7 @@ def indicateurs(req: FilterRequest, user: User) -> Dict[str, Any]:
             out = moteurs.copilote.tableau_de_bord(filtres_moteur(req))
             return {
                 "kpis": json_safe(out["kpis"]),
-                "filters": options_visibles(moteurs.kpi_engine.get_filter_options(), user),
+                "filters": moteurs.kpi_engine.get_filter_options(),
                 "active_filters": resume_filtres(req),
                 "agent_trace": out["trace"],
                 "agent": out["meta"],
@@ -56,7 +38,7 @@ def indicateurs(req: FilterRequest, user: User) -> Dict[str, Any]:
             kpis = moteurs.kpi_engine.compute_dashboard(filtres_moteur(req))
             return {
                 "kpis": json_safe(kpis),
-                "filters": options_visibles(moteurs.kpi_engine.get_filter_options(), user),
+                "filters": moteurs.kpi_engine.get_filter_options(),
                 "active_filters": resume_filtres(req),
             }
         except Exception as e:
@@ -67,11 +49,7 @@ def indicateurs(req: FilterRequest, user: User) -> Dict[str, Any]:
 
 
 def synthese(req: FilterRequest) -> Dict[str, Any]:
-    """Synthèse écrite, en mode HYBRIDE.
-
-    - couche LLM (Groq) si une clé est présente → réponse en langage naturel ;
-    - sinon repli déterministe (`build_dynamic_report`) → synthèse fiable codée.
-    """
+    """Synthèse écrite, en mode HYBRIDE."""
     if moteurs.agent_disponible():
         try:
             res = moteurs.copilote.repondre(filtres_moteur(req))

@@ -1,24 +1,4 @@
-"""
-ml_engine/ocr/layoutlm/mots.py
-==============================
-Mots + boîtes d'un document, tels que LayoutLMv3 les attend.
-
-- PDF à VRAIE couche texte (numérique) : mots exacts, lus dans le PDF ;
-- sinon (scan, photo, couche texte de scanner illisible) : **OCR renforcé**,
-  plusieurs lectures Tesseract fusionnées (voir `fusion`).
-
-Pourquoi plusieurs lectures ? Mesuré sur les factures d'évaluation : une seule
-passe rate des blocs entiers — surtout le cadre des totaux quand il est grisé
-ou écrit en blanc sur fond foncé. Chaque mode voit autre chose :
-
-  psm 3   mise en page automatique     → texte courant
-  psm 6   bloc uniforme                → tableaux
-  psm 11  texte épars                  → étiquettes isolées, cadres
-  psm 6 + 11 sur image « dé-inversée » et agrandie ×2
-                                        → texte clair sur fond foncé, petits chiffres
-
-Les pages sont rendues à 200 dpi (même résolution qu'à l'entraînement).
-"""
+"""Mots + boîtes d'un document, tels que LayoutLMv3 les attend."""
 from __future__ import annotations
 
 import io
@@ -29,7 +9,6 @@ DPI = 200
 LANG = "fra+eng"
 
 
-# ── OCR renforcé ────────────────────────────────────────────────────────────
 def desinverser(im):
     import numpy as np
     from PIL import Image, ImageFilter
@@ -67,10 +46,7 @@ def _recouvre(a, b) -> bool:
 
 
 def fusion(passes: List[List[dict]]) -> List[dict]:
-    """Pour chaque zone de la page, le mot le plus sûr ; sans doublon.
-
-    Exception : un nombre plus complet remplace ses morceaux
-    (« 2931/000 » à 41 % remplace « 2931.0 » à 73 % + « 000 »)."""
+    """Pour chaque zone de la page, le mot le plus sûr ; sans doublon."""
     chiffres = lambda t: re.sub(r"\D", "", t)
     tous = sorted((m for p in passes for m in p if m["c"] >= 25 or m["psm"] == 3),
                   key=lambda m: -m["c"])
@@ -101,7 +77,6 @@ def ocr_renforce(image) -> List[dict]:
                    _lecture(di2, 6, 2), _lecture(di2, 11, 2)])
 
 
-# ── couche texte native ─────────────────────────────────────────────────────
 def mots_natifs(page) -> List[dict]:
     """Mots + boîtes (en pixels à 200 dpi) depuis la couche texte d'une page PDF."""
     H = page.get_height()
@@ -144,11 +119,9 @@ def completer(natifs: List[dict], ocr: List[dict]) -> List[dict]:
     return natifs + ajout
 
 
-# ── API ─────────────────────────────────────────────────────────────────────
 def pages_du_document(content: bytes, filename: str, max_pages: int = 4
                       ) -> List[Tuple[object, List[dict], str]]:
-    """[(image PIL RGB, mots, source)] pour chaque page — source « pdf-texte »
-    (couche texte exacte) ou « ocr » (OCR renforcé)."""
+    """[(image PIL RGB, mots, source)] pour chaque page — source « pdf-texte » (couche texte exacte) ou…"""
     from PIL import Image
     from ml_engine.ocr.engine import SEUIL_QUALITE_TEXTE_PDF, qualite_texte
 
@@ -162,14 +135,12 @@ def pages_du_document(content: bytes, filename: str, max_pages: int = 4
             natifs = mots_natifs(page)
             texte = " ".join(m["t"] for m in natifs)
             if len(texte) > 150 and qualite_texte(texte) >= SEUIL_QUALITE_TEXTE_PDF:
-                # texte exact + libellés que seul l'OCR voit (dessinés en vectoriel)
                 mots, src = completer(natifs, _lecture(im.convert("L"), 3)), "pdf-texte"
             else:
                 mots, src = ocr_renforce(im), "ocr"
             out.append((im, ordre_de_lecture(mots), src))
         return out
     im = Image.open(io.BytesIO(content))
-    # photo : ramenée à une taille comparable à une page A4 à 200 dpi
     if max(im.size) < 1600:
         f = 2200 / max(im.size)
         im = im.resize((int(im.width * f), int(im.height * f)), Image.LANCZOS)

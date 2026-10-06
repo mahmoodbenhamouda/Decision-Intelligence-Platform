@@ -1,27 +1,4 @@
-"""
-ml_engine/ocr/engine.py
-=======================
-Moteur OCR réutilisable : bytes d'un document → texte exploitable.
-
-Formats : PNG/JPG/JPEG/TIFF/BMP (OCR Tesseract) et PDF (texte natif d'abord,
-OCR page par page si le PDF est un scan).
-
-Choix d'ingénierie :
-- **Pré-traitement** avant OCR (niveaux de gris, autocontraste, binarisation
-  Otsu si OpenCV présent, agrandissement des petites images) : sur une facture
-  photographiée, cela change radicalement le taux de reconnaissance.
-- **Plusieurs modes de segmentation** Tesseract (`--psm 6/4/3/11`) : on garde
-  le résultat le plus riche, mesuré par la confiance moyenne rendue par
-  Tesseract (`image_to_data`), pas par la simple longueur du texte.
-- **Score de confiance** exposé à l'appelant : un OCR à 45 % ne doit pas être
-  présenté comme une vérité (honnêteté vis-à-vis de l'utilisateur).
-- **Dégradation propre** : sans Tesseract installé, le module ne casse pas —
-  `ocr_available()` renvoie False et le message d'installation est explicite.
-  Un PDF natif reste lisible sans Tesseract.
-
-Langues : français + anglais (`-l fra+eng`), repli automatique sur `eng` si les
-données linguistiques françaises ne sont pas installées.
-"""
+"""Moteur OCR réutilisable : bytes d'un document → texte exploitable."""
 
 from __future__ import annotations
 
@@ -32,12 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Modes de segmentation testés (du plus adapté aux documents au plus général)
 _PSM_MODES = (6, 4, 3, 11)
 
-# Packs de langue embarqués dans le projet (installés sans droits admin par
-# `python scripts/setup_tesseract_fr.py`). Déclarés à Tesseract via
-# TESSDATA_PREFIX, ce qui évite d'écrire dans C:\Program Files.
 _LOCAL_TESSDATA = Path(__file__).resolve().parents[2] / "models" / "tessdata"
 
 
@@ -45,7 +18,7 @@ def _system_tessdata_dirs() -> List[Path]:
     """Emplacements usuels du tessdata système (Windows, Linux, macOS)."""
     cands: List[Path] = []
     env = (os.environ.get("TESSDATA_PREFIX") or "").strip()
-    if env:                                   # NB : Path("") vaut « . » → à écarter
+    if env:
         p = Path(env)
         cands += [p, p / "tessdata"]
     cands += [
@@ -82,8 +55,6 @@ def _mirror_system_tessdata() -> None:
                     copied = True
             except Exception:
                 continue
-        # On s'arrête au premier dossier système qui a fourni quelque chose,
-        # ou dont le pack anglais est déjà présent localement.
         if copied or (_LOCAL_TESSDATA / "eng.traineddata").exists():
             return
 
@@ -98,25 +69,22 @@ def _use_local_tessdata() -> None:
         current = os.environ.get("TESSDATA_PREFIX", "")
         if current and Path(current).resolve() == _LOCAL_TESSDATA.resolve():
             return
-        # Le dossier local devient LA source de vérité pour Tesseract : il doit
-        # donc contenir aussi les packs de l'installation système (eng, osd),
-        # sinon `fra+eng` échouerait. On les y recopie une seule fois.
         _mirror_system_tessdata()
         os.environ["TESSDATA_PREFIX"] = str(_LOCAL_TESSDATA)
     except Exception:
         pass
-_MIN_WIDTH = 1000        # en dessous, l'image est agrandie avant OCR
-_MAX_PDF_OCR_PAGES = 10  # garde-fou : un scan de 200 pages bloquerait l'API
+_MIN_WIDTH = 1000
+_MAX_PDF_OCR_PAGES = 10
 
 
 @dataclass
 class OCRResult:
     """Résultat d'extraction, avec les métadonnées de qualité."""
     text: str = ""
-    confidence: float = 0.0          # 0-100, moyenne Tesseract (0 si texte natif)
-    source: str = ""                 # "image-ocr" | "pdf-texte" | "pdf-ocr"
+    confidence: float = 0.0
+    source: str = ""
     pages: int = 1
-    engine: str = ""                 # "tesseract" | "pypdf" | "pdfminer"
+    engine: str = ""
     warnings: List[str] = field(default_factory=list)
 
     @property
@@ -142,14 +110,13 @@ class OCRResult:
                 "quality": self.quality, "warnings": self.warnings}
 
 
-# ── Disponibilité du moteur ─────────────────────────────────────────────────
 def ocr_available() -> bool:
     """True si Tesseract est réellement utilisable (binaire + wrapper)."""
     try:
         import pytesseract
         from PIL import Image  # noqa: F401
         pytesseract.get_tesseract_version()
-        _use_local_tessdata()          # packs de langue du projet, s'il y en a
+        _use_local_tessdata()
         return True
     except Exception:
         return False
@@ -176,17 +143,11 @@ def _languages() -> str:
         return "fra+eng"
 
 
-# ── Nettoyage du texte ──────────────────────────────────────────────────────
 def clean_text(raw: str) -> str:
-    """Supprime les artefacts OCR sans détruire le contenu utile.
-
-    Conserve accents, symboles monétaires et ponctuation comptable (les
-    montants « 1 234,56 € » doivent survivre au nettoyage).
-    """
+    """Supprime les artefacts OCR sans détruire le contenu utile."""
     if not raw:
         return ""
     text = raw.replace("\r\n", "\n").replace("\r", "\n")
-    # caractères de contrôle → espace (on garde \n et \t)
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", text)
     lines: List[str] = []
     for line in text.split("\n"):
@@ -194,11 +155,9 @@ def clean_text(raw: str) -> str:
         if not stripped:
             lines.append("")
             continue
-        # ligne de bruit pur (ex. "~~~ ..." ou "|| |") → ignorée
         if len(re.sub(r"[\W_]", "", stripped, flags=re.UNICODE)) < 2:
             continue
         lines.append(stripped)
-    # au plus une ligne vide consécutive
     out: List[str] = []
     for line in lines:
         if line == "" and out and out[-1] == "":
@@ -207,18 +166,17 @@ def clean_text(raw: str) -> str:
     return "\n".join(out).strip()
 
 
-# ── Pré-traitement image ────────────────────────────────────────────────────
 def _preprocess(img):
     """Niveaux de gris + autocontraste + agrandissement (+ Otsu si OpenCV)."""
     from PIL import Image, ImageOps
 
-    img = img.convert("L")                     # niveaux de gris
+    img = img.convert("L")
     img = ImageOps.autocontrast(img)
-    if img.width < _MIN_WIDTH:                 # petites images : agrandissement
+    if img.width < _MIN_WIDTH:
         ratio = _MIN_WIDTH / max(1, img.width)
         img = img.resize((int(img.width * ratio), int(img.height * ratio)),
                          Image.LANCZOS)
-    try:                                       # binarisation Otsu (optionnelle)
+    try:
         import cv2
         import numpy as np
         arr = np.array(img)
@@ -252,8 +210,6 @@ def _ocr_image_obj(img, warnings: List[str]) -> tuple[str, float]:
         if not words:
             continue
         conf = sum(confs) / len(confs) if confs else 0.0
-        # On privilégie la confiance, mais un texte deux fois plus riche
-        # à confiance comparable est préférable (tableaux de facture).
         score = conf + min(len(words), 400) / 40.0
         if score > best_conf:
             best_conf = score
@@ -264,18 +220,11 @@ def _ocr_image_obj(img, warnings: List[str]) -> tuple[str, float]:
     return best_text, locals().get("best_conf_real", 0.0)
 
 
-# ── Extraction PDF ──────────────────────────────────────────────────────────
 _SYMBOLES_PARASITES = re.compile(r"[§æûôÆ¤¢£¥|\\{}~^*]")
 
 
 def qualite_texte(texte: str) -> float:
-    """Part des « mots » d'un texte qui ressemblent à de vrais mots ou nombres.
-
-    Beaucoup de PDF « natifs » sont en réalité des scans auxquels le scanner a
-    ajouté SA propre couche OCR, parfois très mauvaise (« §rxraæsr &Tar&re ef
-    Granit » pour « Ennasr Marbre et Granit »). Mesuré sur 30 PDF réels : ces
-    couches ont une qualité de 0,76 à 0,81 ; le vrai texte numérique ≥ 0,92.
-    """
+    """Part des « mots » d'un texte qui ressemblent à de vrais mots ou nombres."""
     toks = texte.split()
     if not toks:
         return 0.0
@@ -289,7 +238,7 @@ SEUIL_QUALITE_TEXTE_PDF = 0.88
 
 
 def _pdf_native_text(content: bytes) -> tuple[str, int, str]:
-    """Texte natif d'un PDF (sans OCR). Renvoie (texte, n_pages, moteur)."""
+    """Texte natif d'un PDF (sans OCR)."""
     try:
         import PyPDF2
         reader = PyPDF2.PdfReader(io.BytesIO(content))
@@ -326,7 +275,7 @@ def _pdf_ocr(content: bytes, warnings: List[str]) -> tuple[str, float, int]:
     texts, confs = [], []
     for i in range(n):
         try:
-            img = pdf[i].render(scale=2.5).to_pil()   # ~180 dpi : bon compromis
+            img = pdf[i].render(scale=2.5).to_pil()
             t, c = _ocr_image_obj(img, warnings)
             if t.strip():
                 texts.append(t)
@@ -337,21 +286,14 @@ def _pdf_ocr(content: bytes, warnings: List[str]) -> tuple[str, float, int]:
     return "\n\n".join(texts), conf, n
 
 
-# ── API publique ────────────────────────────────────────────────────────────
 def ocr_document(content: bytes, filename: str = "document") -> OCRResult:
-    """Extrait le texte d'un document (image ou PDF), avec métadonnées.
-
-    Stratégie PDF : texte natif d'abord (rapide et exact) ; si le PDF s'avère
-    être un scan (texte quasi vide), bascule automatique vers l'OCR.
-    """
+    """Extrait le texte d'un document (image ou PDF), avec métadonnées."""
     ext = Path(filename).suffix.lower()
     warnings: List[str] = []
 
-    # ── PDF ──
     if ext == ".pdf":
         native, pages, engine = _pdf_native_text(content)
         cleaned = clean_text(native)
-        # Heuristique « scan » : très peu de texte par page
         per_page = len(cleaned) / max(1, pages or 1)
         fiable = qualite_texte(cleaned) >= SEUIL_QUALITE_TEXTE_PDF
         if cleaned and per_page > 120 and fiable:
@@ -379,7 +321,6 @@ def ocr_document(content: bytes, filename: str = "document") -> OCRResult:
                          pages=pages or 1, engine=engine or "aucun",
                          warnings=warnings)
 
-    # ── Image ──
     if not ocr_available():
         return OCRResult(text="", confidence=0.0, source="image-ocr",
                          engine="aucun", warnings=[install_hint()])

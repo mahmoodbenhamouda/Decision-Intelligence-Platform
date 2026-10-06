@@ -1,35 +1,4 @@
-"""
-scripts/verif_reproductibilite.py
-==================================
-Exécute un entraînement DEUX FOIS et compare les rapports champ par champ.
-
-Pourquoi ce script existe
--------------------------
-`reports/METRICS_REPORT.md` affirmait « seeds fixées, backtests déterministes ».
-C'était faux, et personne ne pouvait le savoir : rien ne le vérifiait. Deux
-exécutions identiques du modèle de risque produit donnaient 0,8172 puis 0,8169
-d'AUC, et la segmentation renommait des segments d'un lancement à l'autre.
-
-Affirmer une propriété sans la mesurer est exactement ce que ce projet
-s'interdit partout ailleurs — un modèle n'est déclaré déployé qu'après une mesure
-hors période. La reproductibilité méritait le même traitement.
-
-Comment il procède
-------------------
-Deux **processus distincts**, et non deux appels dans le même interpréteur. Un
-même processus réutilise les bibliothèques déjà chargées, leurs pools de threads
-et leurs caches : il masquerait précisément ce qu'on cherche à détecter.
-
-Lecture du résultat
--------------------
-Les écarts sont comparés à ce qui est en jeu, pas à zéro dans l'absolu. Un écart
-de 0,0003 sur une AUC est sans conséquence ; le même écart devient grave si une
-décision se joue à 0,003. Le script signale donc les champs instables ET la
-distance de chacun à son seuil de décision quand celui-ci est connu.
-
-    python scripts/verif_reproductibilite.py                  # tous les modules
-    python scripts/verif_reproductibilite.py stock_risque     # un seul
-"""
+"""Exécute un entraînement DEUX FOIS et compare les rapports champ par champ."""
 
 from __future__ import annotations
 
@@ -42,8 +11,6 @@ from typing import Any, Dict, List, Tuple
 BASE = Path(__file__).resolve().parents[1]
 REPORTS = BASE / "reports"
 
-# Modules vérifiables. `seuils_critiques` documente ce qui se DÉCIDE à partir de
-# ces chiffres : c'est la seule manière de juger si un écart est tolérable.
 MODULES: Dict[str, Dict[str, Any]] = {
     "stock_risque": {
         "commande": ["-m", "ml_engine.models.stock_risk", "train"],
@@ -88,7 +55,7 @@ def _aplatir(obj: Any, prefixe: str = "") -> Dict[str, float]:
         for i, v in enumerate(obj):
             out.update(_aplatir(v, f"{prefixe}[{i}]"))
     elif isinstance(obj, bool):
-        pass            # un booléen n'est pas une mesure
+        pass
     elif isinstance(obj, (int, float)):
         out[prefixe] = float(obj)
     return out

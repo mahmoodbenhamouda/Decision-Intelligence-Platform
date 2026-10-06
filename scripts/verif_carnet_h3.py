@@ -1,23 +1,4 @@
-"""
-scripts/verif_carnet_h3.py
-===========================
-Tranche une contradiction interne du module carnet d'echeances.
-
-Le soupcon
-----------
-A h=3, le taux de maturite mesure est de 0,1 % : le carnet ne contient
-pratiquement rien. La prevision se reduit donc a `acquis + reste`, ou `reste` est
-la mediane des totaux des mois T-5 a T.
-
-Or la reference `mediane_mobile_6m` calcule la mediane des totaux des mois
-T-5 a T. **La meme fenetre.** Les deux devraient donc donner presque la meme
-valeur, et pourtant le rapport annonce 9,3 % contre 16,7 %.
-
-L'une des deux est mal calculee. Ce script affiche les deux, origine par
-origine, avec leurs composantes, pour identifier laquelle.
-
-    .venv\\Scripts\\python.exe scripts\\verif_carnet_h3.py
-"""
+"""Tranche une contradiction interne du module carnet d'echeances."""
 
 from __future__ import annotations
 
@@ -78,7 +59,6 @@ def main() -> int:
     print(f"\nMAPE carnet          : {sum(ec_carnet) / len(ec_carnet) * 100:.2f} %")
     print(f"MAPE mediane_mobile_6m: {sum(ec_med6) / len(ec_med6) * 100:.2f} %")
 
-    # ── Les deux fenetres sont-elles reellement identiques ? ────────────────
     print("\n--- FENETRES COMPAREES (derniere origine) ---")
     t = origines[-1]
     fen_reste = [t_p + H for t_p in range(max(debut, t - H - 6 + 1), t - H + 1)]
@@ -93,7 +73,6 @@ def main() -> int:
     print(f"\n  mediane(reste)  = {dt(median([_total(factures, k) - _acquis(factures, k - H, k) for k in fen_reste]))}")
     print(f"  mediane(totaux) = {dt(median([z[k] for k in fen_med6]))}")
 
-    # ── Le taux de maturite est-il fausse par la periode morte ? ────────────
     print("\n--- TAUX DE MATURITE : effet de la periode 2017-2020 ---")
     taux_tout = _taux_maturite(factures, origines[-1], H, debut)
     debut_2021 = 2021 * 12

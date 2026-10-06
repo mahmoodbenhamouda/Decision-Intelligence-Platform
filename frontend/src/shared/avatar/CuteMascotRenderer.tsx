@@ -34,7 +34,6 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
   const containerRef = useRef<HTMLDivElement>(null);
   const blinkTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Exposition de l'API impérative (compatible Copilot / AvatarHandle)
   useImperativeHandle(ref, () => ({
     setViseme: (v: Viseme) => {
       setMouthOpen(Math.min(1, Math.max(0.1, v.open)));
@@ -62,7 +61,6 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
     },
   }));
 
-  // Clignement automatique des yeux (toutes les 2 à 5s)
   useEffect(() => {
     const scheduleBlink = () => {
       const delay = Math.random() * 3000 + 2000;
@@ -78,7 +76,6 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
     };
   }, []);
 
-  // Suivi doux du curseur de la souris pour les yeux
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!containerRef.current) return;
@@ -125,7 +122,6 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
         userSelect: "none",
       }}
     >
-      {/* Halo lumineux d'aura sous la mascotte */}
       <div
         className={`cute-mascot-aura ${isSpeaking || isThinking ? "active" : ""}`}
         style={{
@@ -144,7 +140,6 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
         }}
       />
 
-      {/* Corps animé de la Mascotte */}
       <div
         className="cute-mascot-body-wrapper"
         style={{
@@ -156,7 +151,6 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
           transition: "transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)",
         }}
       >
-        {/* Rendu ASTRA (Mini-Bot Mignon) */}
         {type === "astra" && (
           <svg
             viewBox="0 0 200 210"
@@ -184,7 +178,6 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
               </filter>
             </defs>
 
-            {/* Antenne lumineuse avec perle glow */}
             <g transform="translate(100, 20)">
               <line x1="0" y1="0" x2="0" y2="-18" stroke="#94A3B8" strokeWidth="4" strokeLinecap="round" />
               <circle
@@ -199,7 +192,6 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
               />
             </g>
 
-            {/* Oreilles / Écouteurs latéraux */}
             <g>
               <rect x="24" y="80" width="14" height="28" rx="6" fill={`url(#accentGrad-${accent})`} />
               <rect x="162" y="80" width="14" height="28" rx="6" fill={`url(#accentGrad-${accent})`} />
@@ -207,7 +199,6 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
               <circle cx="169" cy="94" r="3" fill="#FFF" opacity="0.8" />
             </g>
 
-            {/* Casque / Tête Blanche Glossy */}
             <rect
               x="34"
               y="30"
@@ -220,19 +211,15 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
               filter="drop-shadow(0px 8px 16px rgba(0,0,0,0.15))"
             />
 
-            {/* Écran Visière Sombre Glossy */}
             <rect x="44" y="46" width="112" height="92" rx="34" fill={`url(#visorBg-${accent})`} />
 
-            {/* Reflet sur la visière en haut à gauche */}
             <path
               d="M 54 56 Q 100 48 140 56 Q 120 66 56 66 Z"
               fill="#FFFFFF"
               opacity="0.12"
             />
 
-            {/* Yeux LED Expressifs avec suivi du regard */}
             <g transform={`translate(${mouseOffset.x}, ${mouseOffset.y})`}>
-              {/* Oeil Gauche */}
               {eyeState === "blink" ? (
                 <line x1="68" y1="88" x2="88" y2="88" stroke={accent} strokeWidth="5" strokeLinecap="round" />
               ) : eyeState === "happy" ? (
@@ -251,7 +238,6 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
                 </g>
               )}
 
-              {/* Oeil Droit */}
               {eyeState === "blink" ? (
                 <line x1="112" y1="88" x2="132" y2="88" stroke={accent} strokeWidth="5" strokeLinecap="round" />
               ) : eyeState === "happy" ? (
@@ -270,11 +256,9 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
                 </g>
               )}
 
-              {/* Joues Roses Cute */}
               <ellipse cx="64" cy="102" rx="7" ry="4" fill="#F43F5E" opacity={mood === "happy" ? "0.6" : "0.35"} />
               <ellipse cx="136" cy="102" rx="7" ry="4" fill="#F43F5E" opacity={mood === "happy" ? "0.6" : "0.35"} />
 
-              {/* Bouche LED Réactive aux visèmes / parole */}
               {isSpeaking ? (
                 <path
                   d={`M 90 108 Q 100 ${108 + mouthOpen * 18} 110 108`}
@@ -293,7 +277,6 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
               )}
             </g>
 
-            {/* Corps Inférieur Flottant */}
             <g transform="translate(100, 160)">
               <path
                 d="M -32 -6 Q 0 16 32 -6 Q 20 22 0 22 Q -20 22 -32 -6 Z"
@@ -305,7 +288,6 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
           </svg>
         )}
 
-        {/* Rendu KITSUNE (CyberPet Bleu Mignon) */}
         {type === "kitsune" && (
           <svg viewBox="0 0 200 210" className="cute-mascot-svg" style={{ width: "100%", height: "100%", overflow: "visible" }}>
             <defs>
@@ -320,20 +302,16 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
               </linearGradient>
             </defs>
 
-            {/* Oreilles Cyber Pet Bleues */}
             <path d="M 38 72 L 64 12 L 92 62 Z" fill="url(#cyberBlueEars)" />
             <path d="M 48 67 L 64 26 L 82 62 Z" fill="#E0F2FE" opacity="0.9" />
             <path d="M 162 72 L 136 12 L 108 62 Z" fill="url(#cyberBlueEars)" />
             <path d="M 152 67 L 136 26 L 118 62 Z" fill="#E0F2FE" opacity="0.9" />
 
-            {/* Tête Cyber Pet Bleu Glossy */}
             <ellipse cx="100" cy="95" rx="60" ry="50" fill="url(#cyberBlueBody)" filter="drop-shadow(0 8px 16px rgba(14,165,233,0.3))" />
             <path d="M 52 95 Q 100 138 148 95 Q 100 152 52 95 Z" fill="#F0F9FF" />
 
-            {/* Truffe */}
             <polygon points="95,110 105,110 100,117" fill="#0F172A" />
 
-            {/* Yeux LED Bleus avec suivi du regard */}
             <g transform={`translate(${mouseOffset.x}, ${mouseOffset.y})`}>
               {eyeState === "blink" ? (
                 <>
@@ -352,11 +330,9 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
                 </>
               )}
 
-              {/* Joues cute */}
               <ellipse cx="62" cy="100" rx="6" ry="3.5" fill="#38BDF8" opacity="0.7" />
               <ellipse cx="138" cy="100" rx="6" ry="3.5" fill="#38BDF8" opacity="0.7" />
 
-              {/* Bouche cute */}
               {isSpeaking ? (
                 <path d={`M 92 108 Q 100 ${108 + mouthOpen * 14} 108 108`} fill="#0284C7" />
               ) : (
@@ -364,7 +340,6 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
               )}
             </g>
 
-            {/* Lunettes Cyber Bleues Mignonnes */}
             <rect x="56" y="76" width="36" height="26" rx="9" fill="none" stroke="#38BDF8" strokeWidth="3" filter="drop-shadow(0 0 4px #38BDF8)" />
             <rect x="108" y="76" width="36" height="26" rx="9" fill="none" stroke="#38BDF8" strokeWidth="3" filter="drop-shadow(0 0 4px #38BDF8)" />
             <line x1="92" y1="88" x2="108" y2="88" stroke="#38BDF8" strokeWidth="3" />
@@ -372,7 +347,6 @@ const CuteMascotRenderer = forwardRef<AvatarHandle, CuteMascotProps>(function Cu
         )}
       </div>
 
-      {/* Ombre Elliptique Dynamique au Sol */}
       <div
         className="cute-mascot-shadow"
         style={{

@@ -1,41 +1,10 @@
 "use client";
 
-/**
- * EcranConnexion — écran de connexion — plateforme d'intelligence décisionnelle Overlyne.
- *
- * Deux moitiés, deux rôles :
- *   · à gauche, la MARQUE — le logo, une phrase, trois points courts. C'est le
- *     premier écran que voit un jury ou un client : il doit être tenu ;
- *   · à droite, le FORMULAIRE — posé dans une carte, pas flottant au milieu
- *     d'une page blanche.
- *
- * Ce qui bouge à l'écran répond à quelque chose de réel — jamais de l'animation
- * pour de l'animation :
- *   · les halos suivent le pointeur (repère de profondeur) ;
- *   · les trois points défilent lentement, pour qu'aucun ne soit ignoré ;
- *   · la pastille d'état interroge vraiment `/api/health` : si le serveur est
- *     arrêté, l'utilisateur le sait AVANT de taper son mot de passe.
- *
- * Aucun identifiant de démonstration n'est affiché : une application présentée
- * comme réelle ne montre pas ses mots de passe à l'écran.
- *
- * La logique d'authentification n'a pas changé : JWT posé en cookie httpOnly
- * par l'API, redirection vers le tableau de bord. Le contenu reste filtré côté
- * serveur — l'interface ne fait que s'adapter au rôle.
- */
-
 import {
   Eye, EyeOff, Lock, LogIn, Mail, ShieldAlert, ShieldCheck, Target, TrendingUp,
 } from "lucide-react";
 import { useConnexion } from "./useConnexion";
 
-/**
- * Trois points, une ligne chacun. Au-delà, personne ne lit.
- *
- * Ils s'adressent à celui qui se connecte — client comme directeur — et
- * parlent de ce qu'il y gagne, jamais du fonctionnement interne : « vos
- * chiffres », et non « neuf ans de factures consolidées ».
- */
 const POINTS = [
   { icone: <TrendingUp size={16} />, texte: "Vos chiffres, vérifiés à la facture près" },
   { icone: <Target size={16} />, texte: "Vos priorités, prêtes dès la connexion" },
@@ -52,14 +21,11 @@ export default function EcranConnexion() {
 
   return (
     <div className="auth">
-      {/* ── Panneau de marque ────────────────────────────────────────────── */}
       <aside className="auth-marque" ref={marque} onMouseMove={suivre}>
         <div className="auth-grille" />
         <div className="auth-halo auth-halo-1" />
         <div className="auth-halo auth-halo-2" />
 
-        {/* Le logo est détouré (fond transparent) et servi en blanc : sur ce
-            dégradé, la version en couleurs ne se lirait pas. */}
         <img src="/overlyne-blanc.png" alt="Overlyne" className="auth-logo" />
 
         <div className="auth-marque-corps">
@@ -84,11 +50,8 @@ export default function EcranConnexion() {
         </span>
       </aside>
 
-      {/* ── Formulaire ───────────────────────────────────────────────────── */}
       <main className="auth-panneau">
         <form className="auth-carte" onSubmit={submit}>
-          {/* Sur petit écran, le panneau de marque disparaît : le logo revient
-              ici, en couleurs, sur fond blanc. */}
           <img src="/overlyne.png" alt="Overlyne" className="auth-logo-mobile" />
 
           <div className="auth-entete">
@@ -131,7 +94,6 @@ export default function EcranConnexion() {
                 {visible ? <EyeOff size={15} /> : <Eye size={15} />}
               </button>
             </span>
-            {/* Cause n°1 des échecs de connexion, et invisible sans ce rappel. */}
             {majuscules && <span className="auth-indice">Majuscules verrouillées</span>}
           </label>
 

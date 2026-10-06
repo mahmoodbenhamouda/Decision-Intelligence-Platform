@@ -1,22 +1,4 @@
-"""
-tests/test_segmentation.py
-===========================
-Tests de la segmentation client.
-
-Ce qui est vérifié ici n'est pas la qualité du clustering — elle dépend des
-données et se mesure, elle ne se teste pas. Ce sont les propriétés sans
-lesquelles une segmentation, même statistiquement bonne, devient inexploitable :
-
-  * des noms UNIQUES — deux segments homonymes ne désignent plus rien ;
-  * des noms DÉRIVÉS des mesures, jamais écrits en dur, sans quoi ils
-    deviendraient faux au premier réentraînement sans que rien ne le signale ;
-  * un refus de servir quand la séparation ou la stabilité manquent.
-
-Le premier point vient d'un défaut constaté : la première version produisait
-trois segments nommés « Petits comptes occasionnels — en sommeil ».
-
-    python -m pytest tests/test_segmentation.py -v
-"""
+"""Tests de la segmentation client."""
 
 from __future__ import annotations
 
@@ -43,48 +25,22 @@ def _profil_defaut(ca: float, reg: float, rec: float,
 
 
 def _profils_en_collision() -> list:
-    """Cinq profils dont DEUX partagent forcément la même base de nom.
-
-    La première version de ces tests n'en fournissait que deux, et ne testait
-    donc rien : les qualificatifs sont attribués par RANG entre segments, et avec
-    deux segments les rangs valent nécessairement 0 et 1 sur chaque axe. Aucune
-    collision n'était possible, et les tests passaient — ou échouaient — pour de
-    mauvaises raisons.
-
-    Il faut cinq segments pour que deux d'entre eux tombent dans la même tranche
-    de chiffre d'affaires ET la même tranche de régularité. C'est la construction
-    ci-dessous : les deux derniers sont tous deux « Petits comptes occasionnels ».
-    """
+    """Cinq profils dont DEUX partagent forcément la même base de nom."""
     return [
-        # r_ca 1,00 · r_reg 1,00 -> Comptes stratégiques réguliers
         _profil_defaut(ca=5_000_000, reg=0.90, rec=20, n=60, panier=40_000, fam=30),
-        # r_ca 0,75 · r_reg 0,50 -> Comptes stratégiques actifs
         _profil_defaut(ca=2_000_000, reg=0.50, rec=40, n=30, panier=20_000, fam=20),
-        # r_ca 0,50 · r_reg 0,75 -> Comptes intermédiaires réguliers
         _profil_defaut(ca=900_000, reg=0.70, rec=60, n=25, panier=12_000, fam=15),
-        # r_ca 0,25 · r_reg 0,25 -> Petits comptes occasionnels  <- collision
         _profil_defaut(ca=40_000, reg=0.10, rec=30, n=3, panier=1_200, fam=3),
-        # r_ca 0,00 · r_reg 0,00 -> Petits comptes occasionnels  <- collision
         _profil_defaut(ca=25_000, reg=0.05, rec=400, n=2, panier=900, fam=2),
     ]
 
 
 def test_le_nommage_ne_depend_pas_de_l_ordre_des_clusters():
-    """Permuter les identifiants de cluster ne doit RIEN changer aux noms.
-
-    Défaut observé en production, et visible par l'utilisateur : deux segments
-    partageant la base « Petits comptes occasionnels » étaient nommés selon leur
-    ordre d'arrivée — le premier gardait le nom nu, le second héritait du suffixe
-    « — en sommeil ». Or KMeans numérote ses groupes dans l'ordre où ses
-    centroïdes convergent, ordre qui varie au dernier bit d'une exécution à
-    l'autre. Le suffixe changeait donc de segment, et le tableau de bord renommait
-    des segments sans qu'aucune donnée ait bougé.
-    """
+    """Permuter les identifiants de cluster ne doit RIEN changer aux noms."""
     profils = _profils_en_collision()
 
     noms_directs = [d["nom"] for d in seg._nommer_tous(profils)]
 
-    # Même contenu, ordre inversé : les noms doivent suivre les profils.
     inverses = seg._nommer_tous(list(reversed(profils)))
     noms_inverses = list(reversed([d["nom"] for d in inverses]))
 
@@ -96,29 +52,17 @@ def test_le_nommage_ne_depend_pas_de_l_ordre_des_clusters():
 
 
 def test_dans_une_collision_aucun_segment_ne_garde_le_nom_nu():
-    """Les deux homonymes doivent être qualifiés — et eux seuls.
-
-    Laisser le nom nu à l'un d'eux recrée la question « lequel est le premier ? »,
-    dont la réponse dépendait d'un étiquetage arbitraire. La supprimer valait
-    mieux que la stabiliser.
-
-    Symétriquement, un segment SANS homonyme ne doit pas être décoré : un suffixe
-    inutile alourdit l'interface sans rien distinguer.
-    """
+    """Les deux homonymes doivent être qualifiés — et eux seuls."""
     noms = [d["nom"] for d in seg._nommer_tous(_profils_en_collision())]
 
     assert len(set(noms)) == 5, f"noms en double : {noms}"
 
-    # Les trois premiers sont uniques : aucun qualificatif de départage.
     for n in noms[:3]:
         assert "—" not in n, f"segment sans homonyme inutilement décoré : {n}"
 
-    # Les deux derniers sont en collision : tous deux qualifiés.
     assert all("—" in n for n in noms[3:]), (
         f"un segment en collision garde son nom nu : {noms[3:]}")
 
-    # Et le départage suit la RÉCENCE, la lecture métier : celui qui commande
-    # encore contre celui qui s'est arrêté. Jamais un numéro de cluster.
     assert "encore actifs" in noms[3], f"récence mal attribuée : {noms[3:]}"
     assert "en sommeil" in noms[4], f"récence mal attribuée : {noms[3:]}"
 
@@ -131,14 +75,8 @@ def _profil(ca: float, reg: float, rec: float,
     })
 
 
-# ── Unicité des noms ────────────────────────────────────────────────────────
 def test_les_noms_de_segments_sont_uniques():
-    """Deux segments homonymes sont indiscernables dans l'interface.
-
-    Cas réel : la première version comparait chaque segment à la médiane
-    GLOBALE de la clientèle. Celle-ci étant tirée par le segment majoritaire
-    (605 clients sur 938), trois segments distincts recevaient le même nom.
-    """
+    """Deux segments homonymes sont indiscernables dans l'interface."""
     profils = [
         _profil(5_000_000, 0.80, 20),
         _profil(300_000, 0.30, 400),
@@ -158,12 +96,7 @@ def test_unicite_tenue_meme_sur_des_segments_presque_identiques():
 
 
 def test_le_segment_le_plus_riche_n_est_jamais_dit_petit():
-    """Le nommage se fait par RANG entre segments, pas par seuil absolu.
-
-    C'est la seconde faute de la première version : un segment pesant 10 % du
-    chiffre d'affaires était qualifié de « petits comptes » parce qu'il tombait
-    sous une médiane écrasée par le segment majoritaire.
-    """
+    """Le nommage se fait par RANG entre segments, pas par seuil absolu."""
     profils = [
         _profil(9_000_000, 0.70, 30),
         _profil(200_000, 0.40, 200),
@@ -178,8 +111,8 @@ def test_le_segment_le_plus_riche_n_est_jamais_dit_petit():
 def test_le_nom_reflete_le_rythme_de_commande():
     """Un segment régulier et un segment occasionnel ne portent pas le même nom."""
     profils = [
-        _profil(500_000, 0.90, 15),      # très régulier
-        _profil(500_000, 0.05, 15),      # très occasionnel
+        _profil(500_000, 0.90, 15),
+        _profil(500_000, 0.05, 15),
         _profil(500_000, 0.45, 15),
     ]
     noms = [d["nom"] for d in seg._nommer_tous(profils)]
@@ -205,13 +138,10 @@ def test_aucun_nom_ne_contient_de_numero_de_segment():
             f"nom technique : {d['nom']}"
 
 
-# ── Seuils d'acceptation ────────────────────────────────────────────────────
 def test_les_seuils_sont_declares_avant_la_mesure():
     """Un seuil ajusté après coup ne prouve rien."""
     assert 0 < seg.SILHOUETTE_MIN < 1
     assert 0 < seg.STABILITE_MIN < 1
-    # Une segmentation instable est plus dangereuse qu'une absence de
-    # segmentation : elle affiche des noms rassurants sur des groupes fortuits.
     assert seg.STABILITE_MIN >= 0.5
 
 
@@ -221,7 +151,6 @@ def test_le_nombre_de_segments_reste_pilotable():
     assert seg.K_MAX <= 8
 
 
-# ── Cohérence du module entraîné ────────────────────────────────────────────
 def _rapport():
     import json
     p = os.path.join(RACINE, "reports", "segmentation_metrics.json")

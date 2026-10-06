@@ -1,74 +1,4 @@
-"""
-ml_engine/models/stock_risk.py
-==============================
-CRISP-DM — PHASES 4-5 : SCORING DU RISQUE DE STOCK
-
-Classifieur qui score chaque référence : **quel risque de perte financière
-dans les 90 prochains jours ?**
-
-## ⚠️ Itération n°1 ABANDONNÉE — détection d'une fuite de données
-
-La première formulation définissait la cible comme
-`rupture = (stock ÷ demande) < délai_réapprovisionnement`, tout en donnant
-`stock`, `demande` et `délai` comme variables explicatives. Résultat :
-**AUC = 1,0000 sur tous les modèles**, y compris en hold-out.
-
-Une AUC parfaite n'est pas une réussite : c'est le symptôme que la cible est une
-**fonction déterministe des features**. Le modèle ne prédisait rien, il
-recalculait une règle arithmétique. Aucune valeur ajoutée — un simple `if`
-aurait fait le même travail, plus vite et sans modèle.
-
-## Reformulation (itération n°2) : prédire ce qui n'est PAS déductible
-
-Le vrai problème métier est **prospectif** : *ce produit va-t-il manquer dans
-les 90 prochains jours ?* La réponse dépend de la **demande future**, qui est
-par définition inconnue au moment de la décision.
-
-| | Itération 1 (fuite) | Itération 2 (retenue) |
-|---|---|---|
-| Cible | règle sur l'état actuel | **rupture réelle constatée** : demande des 3 mois suivants > stock disponible |
-| Features | contenaient les termes de la règle | **uniquement le passé** : historique de demande, volatilité, saisonnalité, typologie clients |
-| Fuite | totale | aucune — la demande future n'est jamais donnée au modèle |
-| AUC attendue | 1,0 (illusoire) | réaliste, à mesurer |
-
-La cible est construite depuis les **séries de demande réelles** (6 ans,
-`demand_features`) : pour chaque produit et chaque mois, on sait *a posteriori*
-ce qui a été consommé sur les 3 mois suivants. Le modèle, lui, ne voit que
-l'historique disponible à cette date.
-
-Les trois risques métier restent distingués :
-
-| Risque | Définition (constatée a posteriori) | Coût |
-|---|---|---|
-| **Rupture** | demande des 90 j > stock disponible | vente perdue, fret aérien d'urgence |
-| **Péremption** | stock non écoulé avant expiration | perte sèche du coût de revient |
-| **Surstock** | couverture > 180 j | trésorerie immobilisée |
-
-## Sorties (contrat d'interface demandé)
-
-Pour chaque référence :
-- `risk_score` : 0-100 (probabilité calibrée × 100)
-- `risk_category` : Faible / Moyen / Élevé / Critique
-- `financial_impact_dt` : perte attendue en dinars = `P(risque) × exposition`
-- `risk_type` : nature dominante du risque (péremption / rupture / surstock)
-- `days_to_stockout` : jours avant rupture au rythme de consommation actuel
-
-## Rigueur méthodologique
-
-- **Split temporel** impossible ici (photo à un instant t) → **StratifiedKFold
-  5 plis** + **hold-out stratifié 20 %** jamais vu pendant la sélection.
-- **Fuite écartée** : les variables qui définissent mécaniquement la cible
-  (jours de péremption restants, couverture brute) sont **exclues** des
-  features. Le modèle doit apprendre depuis les caractéristiques du produit,
-  pas depuis la réponse. Une **ablation** mesure ce que vaut le modèle sans
-  ses variables les plus fortes.
-- **Calibration** vérifiée (courbe de fiabilité) : un score de 80 doit
-  correspondre à 80 % de cas à risque, sinon `financial_impact_dt` serait faux.
-
-Usage :
-    python -m ml_engine.models.stock_risk train
-    python -m ml_engine.models.stock_risk score
-"""
+"""CRISP-DM — PHASES 4-5 : SCORING DU RISQUE DE STOCK"""
 
 from __future__ import annotations
 
@@ -92,32 +22,17 @@ SEED = 42
 SEUIL_SURSTOCK_JOURS = 180
 HORIZON_RISQUE_JOURS = 90
 
-# Écart maximal toléré entre l'AUC d'entraînement et celle de validation. Un
-# candidat au-dessus n'est pas retenu — la contrainte vit dans la sélection, pas
-# seulement dans un test qui échouerait après coup.
 SEUIL_ECART_TRAIN_VALID = 0.10
 
-# À performance quasi égale, on préfère le modèle le plus simple. Un demi-point
-# d'AUC ne justifie pas de renoncer à l'interprétabilité d'un modèle linéaire.
 ECART_PARCIMONIE = 0.01
 
-# FEATURES — uniquement des informations disponibles À LA DATE DE DÉCISION.
-# La demande future (qui définit la cible) n'y figure JAMAIS : c'est ce qui
-# distingue cette version de l'itération 1, où la cible était déductible.
 FEATURES: List[str] = [
-    # historique de demande (passé strict)
     "lag_1", "lag_2", "lag_3", "lag_6", "lag_12",
     "ma_3", "ma_6", "ma_12", "std_3", "std_6",
-    # dynamique et saisonnalité
     "ratio_3_12", "tendance_3m", "mois", "trimestre",
-    # structure de clientèle
     "n_clients", "part_public", "part_labo", "hhi_clients",
-    # cycle de vie du produit
     "anciennete_mois", "mois_actifs", "taux_activite",
-    # prix
     "prix_moyen", "variation_prix",
-    # position de stock à la date de décision (connue, mais la DEMANDE future
-    # qui déterminera la rupture ne l'est pas)
     "couverture_actuelle_j", "coef_variation",
 ]
 
@@ -128,11 +43,6 @@ def _connect():
     import duckdb
     from ml_engine.analytics.kpi_engine import STORE_PATH
     con = duckdb.connect(str(STORE_PATH), read_only=True)
-    # Un seul thread côté entrepôt. `sum()` et `avg()` sont parallélisés par
-    # DuckDB : deux exécutions peuvent renvoyer des totaux différant au dernier
-    # bit. Sur le coût unitaire ou la valeur de stock, cela suffit à déplacer un
-    # point de coupure d'arbre — et la conclusion avec lui. Cf.
-    # ml_engine/determinisme.py.
     try:
         from ml_engine.determinisme import limiter_duckdb
         limiter_duckdb(con, 1)
@@ -141,19 +51,12 @@ def _connect():
     return con
 
 
-# ── CRISP-DM 3 : préparation ────────────────────────────────────────────────
 def build_risk_dataset(verbose: bool = True) -> pd.DataFrame:
-    """Jeu d'apprentissage PROSPECTIF : features du passé, cible du futur.
-
-    Base : séries de demande RÉELLES (`demand_features`) enrichies de la
-    position de stock. La cible est constatée *a posteriori* — le modèle ne la
-    voit jamais dans ses variables.
-    """
+    """Jeu d'apprentissage PROSPECTIF : features du passé, cible du futur."""
     from .demand_features import build_demand_dataset
 
     hist = build_demand_dataset(verbose=False)
 
-    # Position de stock par produit (agrégée tous clients : le stock central)
     con = _connect()
     stock = con.execute("""
         SELECT produit,
@@ -176,7 +79,6 @@ def build_risk_dataset(verbose: bool = True) -> pd.DataFrame:
     df["date_peremption"] = pd.to_datetime(df["date_peremption"], errors="coerce")
     df["jours_peremption"] = (df["date_peremption"] - ref).dt.days
 
-    # Demande journalière récente (issue de l'historique, pas du stock simulé)
     d_jour = (df["ma_3"] / 30.0).replace(0, np.nan)
     df["couverture_actuelle_j"] = (df["stock_actuel"] / d_jour).clip(upper=3650)
     df["coef_variation"] = (df["std_3"] / df["ma_3"].replace(0, np.nan)).clip(upper=10)
@@ -186,12 +88,9 @@ def build_risk_dataset(verbose: bool = True) -> pd.DataFrame:
     fam = df["famille"].fillna("").str.upper()
     df["est_reactif"] = (fam == "REACTIF").astype(int)
 
-    # ══ CIBLE PROSPECTIVE — constatée a posteriori, JAMAIS dans les features ══
-    # 1. Rupture : la demande RÉELLE des 3 mois suivants dépasse le stock.
     df["risque_rupture"] = ((df["y_h3"].notna())
                             & (df["y_h3"] > df["stock_actuel"])).astype(int)
 
-    # 2. Péremption : le stock ne sera pas écoulé avant expiration.
     conso_futur = df["y_h3"].fillna(0)
     horizon_perem = df["jours_peremption"].fillna(9999)
     df["risque_peremption"] = ((horizon_perem <= 120)
@@ -200,28 +99,13 @@ def build_risk_dataset(verbose: bool = True) -> pd.DataFrame:
     df["qte_perimee"] = np.where(df["risque_peremption"] == 1,
                                  np.maximum(0, df["stock_actuel"] - conso_futur), 0.0)
 
-    # 3. Surstock : la demande future ne consommera qu'une fraction du stock.
-    #
-    # ══ TAUTOLOGIE RÉSIDUELLE CORRIGÉE ICI ══
-    # La version précédente exigeait AUSSI `couverture_actuelle_j > 180`. Or
-    # `couverture_actuelle_j` est une VARIABLE EXPLICATIVE (cf. FEATURES) : un
-    # tiers de la cible était donc un simple seuil sur une entrée du modèle.
-    # C'est le même défaut que la v1 du modèle de crédit, sous une autre forme,
-    # et il avait franchi le test anti-fuite parce que celui-ci vérifiait une
-    # liste NOMMÉE de colonnes interdites au lieu de la construction réelle.
-    #
-    # La condition conservée porte uniquement sur des grandeurs ABSENTES des
-    # features (`stock_actuel`) et sur la demande FUTURE observée. Prédire
-    # « la demande des 3 mois suivants ne consommera pas la moitié du stock »
-    # exige donc de prévoir cette demande : c'est un vrai problème.
     df["risque_surstock"] = (conso_futur < df["stock_actuel"] * 0.5).astype(int)
 
     df["y"] = ((df["risque_peremption"] + df["risque_rupture"]
                 + df["risque_surstock"]) > 0).astype(int)
     df = df.dropna(subset=["y_h3"]).reset_index(drop=True)
-    df["client"] = ""            # scoring au niveau produit (stock central)
+    df["client"] = ""
 
-    # Type de risque dominant (pour l'affichage)
     def _type(r) -> str:
         if r["risque_peremption"]:
             return "peremption"
@@ -232,13 +116,12 @@ def build_risk_dataset(verbose: bool = True) -> pd.DataFrame:
         return "aucun"
     df["risk_type"] = df.apply(_type, axis=1)
 
-    # ── Exposition financière (base de l'impact attendu) ──
     manque = np.maximum(0, df["y_h3"].fillna(0) - df["stock_actuel"])
     df["exposition_dt"] = np.where(
         df["risque_peremption"] == 1, df["qte_perimee"] * df["cout_unitaire"],
         np.where(df["risque_rupture"] == 1,
-                 manque * df["cout_unitaire"],          # vente perdue
-                 df["valeur_stock"] * 0.15))            # portage du surstock
+                 manque * df["cout_unitaire"],
+                 df["valeur_stock"] * 0.15))
 
     df[FEATURES] = df[FEATURES].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
@@ -251,7 +134,6 @@ def build_risk_dataset(verbose: bool = True) -> pd.DataFrame:
     return df
 
 
-# ── CRISP-DM 4-5 : entraînement, comparaison, évaluation ────────────────────
 def _candidats() -> Dict[str, Any]:
     from sklearn.ensemble import (HistGradientBoostingClassifier,
                                   RandomForestClassifier)
@@ -271,18 +153,6 @@ def _candidats() -> Dict[str, Any]:
         pass
     try:
         import lightgbm as lgb
-        # ══ DÉTERMINISME FORCÉ ══
-        #
-        # Deux exécutions identiques donnaient 0,8168 puis 0,8157 d'AUC, et un
-        # écart train/validation de +0,1320 puis +0,1331. La cause est connue et
-        # déjà documentée pour la prévision de demande : en multi-thread, l'ordre
-        # de sommation des gradients varie, et le résultat avec lui.
-        #
-        # Ici l'enjeu n'est pas cosmétique. Le seuil de disqualification est à
-        # 0,10 et la sélection se joue à 0,003 d'AUC entre candidats : une
-        # décision de déploiement pouvait donc basculer selon l'ordonnancement
-        # des threads. Un résultat qui change sans que rien ne change n'est pas
-        # un résultat.
         c["lightgbm"] = lgb.LGBMClassifier(
             n_estimators=300, learning_rate=0.05, num_leaves=15, max_depth=4,
             min_child_samples=40, subsample=0.8, subsample_freq=1,
@@ -291,9 +161,6 @@ def _candidats() -> Dict[str, Any]:
             n_jobs=1, deterministic=True, force_row_wise=True)
     except Exception:
         pass
-    # `HistGradientBoostingClassifier` n'expose pas de `n_jobs` : sa
-    # parallélisation passe par OpenMP, bridée dans `train_stock_risk` par
-    # `threadpool_limits`. C'est le seul moyen de le rendre reproductible.
     c["hist_gb"] = HistGradientBoostingClassifier(
         max_iter=250, learning_rate=0.06, max_depth=4, min_samples_leaf=30,
         l2_regularization=3.0, random_state=SEED)
@@ -320,40 +187,18 @@ def train_stock_risk(save: bool = True, verbose: bool = True) -> Dict[str, Any]:
     X, y = df[FEATURES], df["y"].to_numpy()
     groupes = df["produit"].astype(str).to_numpy()
 
-    # ══ DÉCOUPAGE GROUPÉ PAR PRODUIT — second défaut corrigé ══
-    #
-    # Le hold-out était stratifié ALÉATOIREMENT. Or le jeu compte ~18 000 lignes
-    # pour quelques centaines de produits, et l'instantané de stock (`stock_actuel`,
-    # `date_peremption`, donc `couverture_actuelle_j`) est joint à TOUTE la série
-    # temporelle d'un produit : ces variables sont donc constantes par produit.
-    #
-    # Un découpage aléatoire plaçait le même produit — avec les mêmes valeurs de
-    # stock — des deux côtés de la coupure. Le modèle n'avait plus qu'à mémoriser
-    # l'identité du produit. C'est une fuite par DUPLICATION, invisible dans
-    # l'écart train/validation puisque les deux en bénéficient également.
-    #
-    # Un produit appartient désormais entièrement au développement ou entièrement
-    # au hold-out. Aucun produit du test n'a jamais été vu.
     gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=SEED)
     idx_dev, idx_hold = next(gss.split(X, y, groups=groupes))
     Xd, Xh = X.iloc[idx_dev], X.iloc[idx_hold]
     yd, yh = y[idx_dev], y[idx_hold]
     groupes_dev = groupes[idx_dev]
 
-    # Le hold-out stratifié d'origine est CONSERVÉ, uniquement pour mesurer
-    # l'écart entre les deux protocoles. Cet écart est la preuve chiffrée de la
-    # fuite, et le supprimer effacerait la trace du défaut corrigé.
     Xd_s, Xh_s, yd_s, yh_s = train_test_split(X, y, test_size=0.2, stratify=y,
                                               random_state=SEED)
 
     cv = GroupKFold(n_splits=5)
     resultats: Dict[str, Dict[str, Any]] = {}
 
-    # Un seul thread pendant la comparaison. La cause et sa portée sont
-    # documentées une fois pour tout le projet dans `ml_engine/determinisme.py` :
-    # la sélection se joue ici à 0,003 d'AUC et la disqualification à 0,10
-    # d'écart, donc une décision de déploiement ne peut pas dépendre de
-    # l'ordonnancement des threads.
     from ml_engine.determinisme import etat as etat_determinisme
     from ml_engine.determinisme import limiter_threads
 
@@ -377,20 +222,6 @@ def train_stock_risk(save: bool = True, verbose: bool = True) -> Dict[str, Any]:
                 "ecart_train_valid_auc": round(float(np.mean(ecarts)), 4),
             }
 
-    # ══ LE SUR-APPRENTISSAGE DEVIENT UN CRITÈRE D'ÉLIGIBILITÉ ══
-    #
-    # Le passage au découpage groupé a fait bondir l'écart train/validation des
-    # modèles d'ensemble : de +0,03 à +0,12 ou +0,13. Ce n'est pas une
-    # régression, c'est la MÊME fuite vue d'un autre angle. Avec un découpage
-    # aléatoire, train et validation partageaient des produits : l'écart
-    # paraissait faible parce que les deux côtés mémorisaient les mêmes
-    # références. Groupes disjoints, l'écart réel apparaît.
-    #
-    # Jusqu'ici un test échouait APRÈS l'entraînement si l'écart dépassait 0,10.
-    # Un test qui constate un défaut que le code laisse produire ne protège de
-    # rien : il faut relancer, et la tentation est de desserrer le seuil. La
-    # contrainte est donc déplacée DANS la sélection — un candidat qui
-    # sur-apprend n'est plus éligible, quelle que soit son AUC.
     disqualifies = {nom: r["ecart_train_valid_auc"]
                     for nom, r in resultats.items()
                     if r["ecart_train_valid_auc"] >= SEUIL_ECART_TRAIN_VALID}
@@ -402,16 +233,11 @@ def train_stock_risk(save: bool = True, verbose: bool = True) -> Dict[str, Any]:
 
     eligibles = {nom: r for nom, r in resultats.items() if nom not in disqualifies}
     if not eligibles:
-        # Aucun candidat honnête : on refuse plutôt que de servir le moins
-        # mauvais. C'est la même règle que partout ailleurs dans le projet.
         eligibles = {}
         meilleur_nom = None
     else:
         classement_e = sorted(eligibles.items(), key=lambda kv: -kv[1]["cv_auc"])
         meilleur_nom = classement_e[0][0]
-        # Parcimonie : à performance équivalente, le modèle linéaire est préféré
-        # — interprétable par ses coefficients et beaucoup plus stable (son écart
-        # train/validation est de +0,0166 contre +0,10 pour les ensembles).
         lin = eligibles.get("regression_logistique")
         if (lin is not None and meilleur_nom != "regression_logistique"
                 and eligibles[meilleur_nom]["cv_auc"] - lin["cv_auc"]
@@ -446,7 +272,7 @@ def train_stock_risk(save: bool = True, verbose: bool = True) -> Dict[str, Any]:
                 encoding="utf-8")
             if MODEL_PATH.exists():
                 try:
-                    MODEL_PATH.unlink()      # un artefact présent finit par être chargé
+                    MODEL_PATH.unlink()
                 except Exception:
                     pass
         if verbose:
@@ -455,7 +281,6 @@ def train_stock_risk(save: bool = True, verbose: bool = True) -> Dict[str, Any]:
                 print(f"[risque]   {nom:22} écart {e:+.4f}")
         return rapport_refus
 
-    # ── Modèle final + calibration ──
     from sklearn.calibration import CalibratedClassifierCV
     base = _clone(_candidats()[meilleur_nom])
     final = CalibratedClassifierCV(base, method="isotonic", cv=3)
@@ -477,7 +302,6 @@ def train_stock_risk(save: bool = True, verbose: bool = True) -> Dict[str, Any]:
             yh, p_hold, y_train=yd, p_train=final.predict_proba(Xd)[:, 1]),
     }
 
-    # ── Calibration : un score de 80 doit valoir 80 % de risque réel ──
     try:
         frac_pos, moy_pred = calibration_curve(yh, p_hold, n_bins=10, strategy="quantile")
         calib = [{"proba_predite": round(float(a), 3), "frequence_reelle": round(float(b), 3)}
@@ -486,28 +310,11 @@ def train_stock_risk(save: bool = True, verbose: bool = True) -> Dict[str, Any]:
     except Exception:
         calib, ecart_calib = [], None
 
-    # ── Utilité décisionnelle : ce que l'AUC ne dit pas ──────────────────────
-    #
-    # 88 % des références sont positives. À ce taux de base, le drapeau binaire
-    # n'apprend rien à personne : répondre « oui » partout donne déjà 88 % de
-    # justesse, et le rappel de 0,997 mesuré ci-dessus dit surtout que le modèle
-    # fait à peu près cela.
-    #
-    # Publier l'AUC seule sur un problème à 88 % de positifs serait donc
-    # trompeur, même sans aucune fuite. La question utile change de sens :
-    #
-    #   ce n'est pas « quelles références sont à risque ? » — presque toutes —
-    #   c'est « lesquelles puis-je IGNORER sans risque ? »
-    #
-    # C'est la seule direction qui produit une décision : réduire une liste de
-    # 18 000 lignes à ce qui mérite un examen. On mesure donc la pureté du décile
-    # le plus BAS, là où se trouve la valeur, et non celle du décile le plus haut,
-    # où le taux de base la garantit d'avance.
     utilite: Dict[str, Any] = {"applicable": False}
     try:
         taux_neg = float((yh == 0).mean())
         n_dec = max(int(len(yh) * 0.10), 1)
-        ordre = np.argsort(p_hold)                       # score croissant
+        ordre = np.argsort(p_hold)
         bas, haut = ordre[:n_dec], ordre[-n_dec:]
 
         part_neg_bas = float((yh[bas] == 0).mean())
@@ -549,11 +356,6 @@ def train_stock_risk(save: bool = True, verbose: bool = True) -> Dict[str, Any]:
     except Exception as e:      # pragma: no cover — annexe, jamais bloquante
         utilite = {"applicable": False, "motif": type(e).__name__}
 
-    # ── Audit de fuite : comparer les deux protocoles ────────────────────────
-    #
-    # Le même modèle, la même calibration, la seule différence étant le
-    # découpage. L'écart mesure exactement ce que le découpage aléatoire offrait
-    # gratuitement au modèle.
     audit_fuite: Dict[str, Any] = {"applicable": False}
     try:
         base_s = _clone(_candidats()[meilleur_nom])
@@ -578,7 +380,6 @@ def train_stock_risk(save: bool = True, verbose: bool = True) -> Dict[str, Any]:
     except Exception as e:      # pragma: no cover — annexe, jamais bloquante
         audit_fuite = {"applicable": False, "motif": type(e).__name__}
 
-    # ── Ablation : que vaut le modèle sans ses variables les plus fortes ? ──
     imp = _importances(base, Xd, yd, FEATURES)
     top3 = [v["variable"] for v in (imp or [])[:3]]
     ablation = None
@@ -610,10 +411,6 @@ def train_stock_risk(save: bool = True, verbose: bool = True) -> Dict[str, Any]:
         },
         "n_references": int(len(df)),
         "taux_positif": round(float(y.mean()), 4),
-        # Cible PROSPECTIVE : constatée à partir de la demande réelle des 3 mois
-        # suivants (`y_h3`), qui n'est JAMAIS une variable explicative. La
-        # première version, déduite de features présentes en entrée, donnait une
-        # AUC de 1,0000 — symptôme de fuite, corrigé ici.
         "definition_cible": {
             "nature": "prospective — constatée a posteriori sur la demande réelle des 3 mois suivants",
             "peremption": ("expiration dans ≤ 120 j ET stock supérieur à la demande "
@@ -732,7 +529,6 @@ def _importances(modele, X, y, features: List[str]) -> Optional[List[Dict[str, A
         return None
 
 
-# ── Scoring (déploiement) ───────────────────────────────────────────────────
 _CACHE: Optional[Dict[str, Any]] = None
 
 
@@ -756,32 +552,16 @@ def categorie(score: float) -> str:
 
 def score_stock_risk(client: Optional[str] = None,
                      limit: int = 50) -> Dict[str, Any]:
-    """Score chaque référence : risque, catégorie, impact financier.
-
-    Contrat de sortie : `risk_score` (0-100), `risk_category`,
-    `financial_impact_dt`, `risk_type`, `days_to_stockout`.
-    """
+    """Score chaque référence : risque, catégorie, impact financier."""
     bundle = _load()
     df = build_risk_dataset(verbose=False)
-    # Le jeu d'apprentissage contient une ligne par produit ET par mois (pour
-    # apprendre sur l'historique). Pour le SCORING, on ne garde que la situation
-    # la plus récente de chaque produit — sinon le même produit apparaîtrait
-    # autant de fois qu'il a de mois d'historique.
     df = (df.sort_values("period").groupby("produit", as_index=False).tail(1)
           .reset_index(drop=True))
-    # ── Périmètre client ────────────────────────────────────────────────────
-    # Le modèle score au niveau PRODUIT (stock central) : la probabilité de
-    # risque est une propriété de la référence, pas du client. Filtrer par
-    # client revient donc à restreindre la liste aux références que cet
-    # établissement détient réellement — et non à re-scorer par client, ce qui
-    # serait une extrapolation non validée.
     perimetre = "portefeuille global (stock central)"
     if client and str(client).strip():
         c = str(client).strip()
         try:
             con = _connect()
-            # `stock_simule.client` stocke le NOM ; l'interface envoie le CODE.
-            # On accepte les deux et on résout la correspondance via `sales`.
             refs = con.execute("""
                 SELECT DISTINCT produit FROM stock_simule
                 WHERE client = ?
@@ -808,7 +588,6 @@ def score_stock_risk(client: Optional[str] = None,
         proba = bundle["modele"].predict_proba(df[bundle["features"]])[:, 1]
         source = f"modèle {bundle.get('nom', '?')} (calibré)"
     else:
-        # Repli déterministe si le modèle n'est pas entraîné
         proba = df["y"].astype(float).to_numpy()
         source = "règles (modèle non entraîné)"
 
@@ -835,9 +614,6 @@ def score_stock_risk(client: Optional[str] = None,
     par_cat = df.groupby("risk_category").agg(
         n=("produit", "size"), impact=("financial_impact_dt", "sum")).reset_index()
 
-    # Performance réelle du modèle servi, lue dans le rapport d'évaluation :
-    # aucune métrique n'est écrite en dur dans l'interface ou le copilote, pour
-    # qu'un réentraînement ne puisse pas rendre l'affichage mensonger.
     perf: Dict[str, Any] = {}
     try:
         rap = json.loads((REPORTS_DIR / "stock_risk_metrics.json").read_text(encoding="utf-8"))

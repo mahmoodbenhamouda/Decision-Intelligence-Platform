@@ -1,6 +1,6 @@
 # Les scripts : à quoi sert chacun
 
-Vingt scripts, dont **trois seulement servent au quotidien**. Un mémoire n'a
+Vingt et un scripts, dont **trois seulement servent au quotidien**. Un mémoire n'a
 pas à les énumérer : il cite ce tableau, et détaille éventuellement ces trois-là.
 
 ## 1. Au quotidien — trois commandes, rien de plus
@@ -51,6 +51,13 @@ fois, et son résultat est cité dans le mémoire. Les garder, c'est garder la
 |---|---|
 | `voir_base.py` | ouvre l'interface web de DuckDB sur l'entrepôt, en lecture seule (http://localhost:4213) |
 | `nettoyer_projet.ps1` | PowerShell, depuis la racine : `.\scripts\nettoyer_projet.ps1 -Simulation`. Range hors du projet ce que le code n'utilise plus : rien n'est effacé, tout part dans `_a_supprimer\` avant une purge explicite (`-Purger`) |
+
+## 6. Délégation autonome sans l'API — facultatif
+
+| Commande | Usage |
+|---|---|
+| `python scripts/delegation_auto.py --si-du` | à confier au Planificateur de tâches Windows (ou à cron) quand l'API ne tourne pas en permanence : lance le passage du jour **s'il est dû** — même réglage que l'écran du directeur, un seul passage par jour même si l'API tourne aussi (`docs/BOUCLE_ACTION.md`) |
+| `python scripts/delegation_auto.py` | un passage tout de suite, comme le bouton « Lancer maintenant » |
 
 ---
 

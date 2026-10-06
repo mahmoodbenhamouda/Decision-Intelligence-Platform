@@ -1,26 +1,4 @@
-"""
-Agents (nœuds) de la flotte.
-
-Chaque agent est une fonction pure `node(state) -> partial_state`. Deux
-collecteurs préparent l'état : `collecte_interne` calcule les indicateurs de
-l'entrepôt ERP (`kpis`), puis `collecte_modeles` interroge TOUS les modèles du
-projet par la passerelle `ml_engine.passerelle` (`modeles`). Les CINQ
-spécialistes croisent indicateurs et prédictions et ajoutent des `findings` ;
-chaque constat tiré d'un modèle déclare `modeles_utilises` — nature, statut au
-registre et fiabilité mesurée (AUC/MAPE/NDCG hors période, accuracy).
-
-Le volet fiabilité (`fiabilite_modeles`) n'est pas un spécialiste : il audite
-les modèles et écrit dans `fiabilite`, jamais dans `findings`. L'arbitre
-hiérarchise les constats métier, le rédacteur synthétise et ajoute la réserve
-de fiabilité quand il y en a une.
-
-Aucun agent n'importe un module de modèle : ils passent tous par la passerelle,
-qui consulte le registre. Un modèle refusé ou retiré ne peut donc pas atteindre
-un briefing par une importation oubliée.
-
-Périmètre : entièrement interne à l'ERP. La veille externe (appels d'offres,
-taux de change) a été retirée du projet.
-"""
+"""Agents (nœuds) de la flotte."""
 
 from __future__ import annotations
 
@@ -28,19 +6,17 @@ import functools
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .delegation import (POSTE_COMMERCIAL, POSTE_LOGISTIQUE, POSTE_RECOUVREMENT,
+                         domaine_designe, execution, execution_multi_signaux)
+
 logger = logging.getLogger("fleet")
 
+DECISION_DE_DIRECTION = None
 
-# ── Utilitaires ─────────────────────────────────────────────────────────────
+
 def _pourquoi(lignes: List[Dict[str, Any]], cle_nom: str = "nom",
               n: int = 2) -> List[Dict[str, Any]]:
-    """Reprend, pour les premières entités citées, les raisons produites par le
-    modèle qui les a signalées.
-
-    Le briefing dit QUOI faire ; sans cette reprise, il ne dit jamais POURQUOI
-    ce client-là plutôt qu'un autre — et un directeur qui ne peut pas
-    contredire un classement finit par ne plus le lire.
-    """
+    """Reprend, pour les premières entités citées, les raisons produites par le modèle qui les a signalées."""
     sortie: List[Dict[str, Any]] = []
     for ligne in lignes[:n]:
         raisons = [r for r in (ligne.get("raisons") or [])
@@ -69,17 +45,48 @@ def _fmt(v: Any, suffix: str = "DT") -> str:
     return f"{v:.0f} {suffix}"
 
 
+N_CIBLES = 10
+
+
+def _cible(nom: Any, montant: Any, motif: str, type_action: str, titre: str,
+           code: Any = None) -> Dict[str, Any]:
+    """Une ligne actionnable d'un constat : QUI, COMBIEN, POURQUOI, et la tâche exacte
+    à confier. Le directeur confie une ligne, pas une carte entière."""
+    return {"nom": str(nom or code or "").strip(), "code": str(code or "") or None,
+            "montant_dt": round(float(montant or 0), 0), "motif": motif,
+            "tache": {"type": type_action, "titre": titre[:200]}}
+
+
+def _devis_par_client(devis: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Un client qui a plusieurs devis ouverts = UNE ligne, UNE tâche : deux
+    commerciaux ne doivent pas appeler le même établissement le même jour."""
+    groupes: Dict[str, List[Dict[str, Any]]] = {}
+    for d in devis:
+        groupes.setdefault(str(d.get("client") or d.get("code") or d.get("nom")), []).append(d)
+    lignes = []
+    for code, ds in groupes.items():
+        nom = ds[0].get("nom") or code
+        esperance = sum(float(d.get("esperance_dt") or 0) for d in ds)
+        pieces = ", ".join(str(d.get("piece_no") or "") for d in ds)
+        if len(ds) == 1:
+            d = ds[0]
+            motif = (f"devis {d.get('piece_no', '')} de {_fmt(d.get('montant_ht_dt'))} HT, "
+                     f"signature probable à {float(d.get('probabilite') or 0):.0%}")
+            titre = f"Relancer {nom} sur le devis {pieces} ({_fmt(d.get('montant_ht_dt'))} HT)"
+        else:
+            total_ht = sum(float(d.get("montant_ht_dt") or 0) for d in ds)
+            motif = f"{len(ds)} devis ouverts ({pieces}), {_fmt(total_ht)} HT au total"
+            titre = f"Relancer {nom} sur ses {len(ds)} devis ouverts ({_fmt(total_ht)} HT)"
+        lignes.append(_cible(nom, esperance, motif, "relance_devis", titre, code=code))
+    return sorted(lignes, key=lambda x: -x["montant_dt"])
+
+
 def _log(agent: str, status: str, detail: str = "") -> Dict[str, Any]:
     return {"agent": agent, "status": status, "detail": detail}
 
 
 def _safe_node(label: str) -> Callable:
-    """Décorateur de robustesse : AUCUN agent ne doit faire planter le briefing.
-
-    Si le nœud lève une exception, on renvoie une mise à jour d'état minimale
-    (trace `erreur` + constat dégradé) au lieu de propager l'erreur — le
-    rédacteur peut ainsi toujours produire un briefing avec les agents valides.
-    """
+    """Décorateur de robustesse : AUCUN agent ne doit faire planter le briefing."""
     def deco(fn: Callable[[Dict[str, Any]], Dict[str, Any]]) -> Callable:
         @functools.wraps(fn)
         def wrapper(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -92,8 +99,7 @@ def _safe_node(label: str) -> Callable:
     return deco
 
 
-# ── Collecteurs ─────────────────────────────────────────────────────────────
-@_safe_node("🗄️ Collecte interne (ERP)")
+@_safe_node("🗄️ Collecte interne (facturation)")
 def collecte_interne(state: Dict[str, Any]) -> Dict[str, Any]:
     """Agent Données : calcule les KPIs internes depuis l'entrepôt DuckDB."""
     filters = state.get("filters") or {}
@@ -106,12 +112,24 @@ def collecte_interne(state: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:  # pragma: no cover
         detail = f"erreur: {e}"
         status = "erreur"
-    return {"kpis": kpis, "trace": [_log("🗄️ Collecte interne (ERP)", status, detail)]}
+    return {"kpis": kpis, "trace": [_log("🗄️ Collecte interne (facturation)", status, detail)]}
+
+
+def _portee(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Règle de portée des filtres sur les modèles (voir ml_engine.portee)."""
+    from ml_engine import portee as po
+    return po.portee(state.get("filters") or {})
 
 
 def _perimetre(state: Dict[str, Any]) -> List[str]:
-    """Codes clients imposés par le périmètre (compte client : forcé côté serveur)."""
-    return [str(c) for c in ((state.get("filters") or {}).get("selected_clients") or [])]
+    """Codes clients retenus par le filtre client ou fidélité (vide = tout le portefeuille)."""
+    return list(_portee(state).get("clients") or [])
+
+
+def _analyses_globales(state: Dict[str, Any]) -> bool:
+    """Stock, fournisseurs, échéancier : seulement sans aucun filtre de périmètre."""
+    from ml_engine import portee as po
+    return _portee(state)["mode"] == po.GLOBAL
 
 
 def _nom(noms: Dict[str, str], code: Any) -> str:
@@ -122,27 +140,28 @@ def _nom(noms: Dict[str, str], code: Any) -> str:
 def collecte_modeles(state: Dict[str, Any]) -> Dict[str, Any]:
     """Interroge chaque modèle du projet par la passerelle — une seule fois par briefing.
 
-    Les sorties déjà calculées par le tableau de bord (décrochage, conversion,
-    marge, réapprovisionnement) sont reprises des `kpis` au lieu d'être
-    recalculées. Chaque sortie embarque la carte du modèle : les spécialistes n'ont
-    plus à savoir où lire une métrique ni si le modèle est servi.
-
-    Confidentialité : sur un périmètre client (compte client), seules les sorties
-    portant sur SES codes sont conservées, et les modules internes à l'entreprise
-    (stock, fournisseurs, qualité des modèles) ne sont pas collectés. Sans ce
-    filtrage, la liste des clients qui décrochent — calculée sur tout le
-    portefeuille — aurait atteint le briefing d'un client.
-    """
+    La règle de portée des filtres décide de ce qui est interrogé : rien de
+    prédictif sous un filtre de période ou de facture ; les modèles par client,
+    restreints, sous un filtre client ou fidélité ; tout, sans filtre."""
     from ml_engine import passerelle as pw
+    from ml_engine import portee as po
+
+    p = _portee(state)
+    label = "🧠 Collecte modèles (registre)"
+    if p["mode"] == po.MASQUE:
+        return {"modeles": {"perimetre_client": [], "portee": p,
+                            "derive": pw.derive(), "tableau": pw.tableau_des_modeles()},
+                "trace": [_log(label, "vide", "prévisions masquées : " + p["motif"][:80])]}
 
     kpis = state.get("kpis") or {}
-    perimetre = set(_perimetre(state))
+    clients = p["clients"]
+    perimetre = set(clients or [])
     noms = pw.noms_clients()
-    m: Dict[str, Any] = {"perimetre_client": sorted(perimetre)}
+    m: Dict[str, Any] = {"perimetre_client": sorted(perimetre), "portee": p}
 
     def _depuis_kpis(cle: str, nom_modele: str, fn: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
         v = kpis.get(cle)
-        if isinstance(v, dict) and "servi" in v:
+        if isinstance(v, dict) and "servi" in v and not v.get("masque"):
             return {**v, "modele": pw.carte_modele(nom_modele)}
         return fn()
 
@@ -150,53 +169,36 @@ def collecte_modeles(state: Dict[str, Any]) -> Dict[str, Any]:
         out = []
         for e in liste or []:
             code = str(e.get(cle) or e.get("code") or "")
-            if perimetre and code not in perimetre:
+            if clients is not None and code not in perimetre:
                 continue
             out.append({**e, "code": code, "nom": e.get("nom") or _nom(noms, code)})
         return out
 
-    dec = _depuis_kpis("churn_anticipe", "churn", lambda: pw.decrochage(kpis=kpis))
-    if dec.get("top"):
-        dec = {**dec, "top": _nommer(dec["top"], "code")}
-    m["decrochage"] = dec
+    def _nommer_sortie(d: Dict[str, Any], cle: str = "client") -> Dict[str, Any]:
+        return {**d, "top": _nommer(d["top"], cle)} if d.get("top") else d
+
+    m["decrochage"] = _nommer_sortie(_depuis_kpis(
+        "churn_anticipe", "churn", lambda: pw.decrochage(kpis=kpis, clients=clients)), "code")
+    m["conversion_devis"] = _nommer_sortie(_depuis_kpis(
+        "conversion_devis", "conversion_devis", lambda: pw.conversion_devis(clients=clients)))
+    m["marge_client"] = _nommer_sortie(_depuis_kpis(
+        "marge_client", "marge_client", lambda: pw.marge_clients(clients=clients)))
+    m["recommandation"] = _nommer_sortie(pw.recommandations(clients=clients))
+    m["ca_client_3m"] = _nommer_sortie(pw.ca_client(horizon=3, limite=15, clients=clients))
+    m["ca_client_12m"] = pw.ca_client(horizon=12, limite=15, clients=clients)
 
     seg = pw.segments_clients()
-    if perimetre and seg.get("par_client"):
+    if clients is not None and seg.get("par_client"):
         seg = {**seg, "par_client": {c: v for c, v in seg["par_client"].items() if c in perimetre}}
     m["segmentation"] = seg
-
-    conv = _depuis_kpis("conversion_devis", "conversion_devis", pw.conversion_devis)
-    if conv.get("top"):
-        conv = {**conv, "top": _nommer(conv["top"])}
-    m["conversion_devis"] = conv
-
-    marge = _depuis_kpis("marge_client", "marge_client", pw.marge_clients)
-    if marge.get("top"):
-        marge = {**marge, "top": _nommer(marge["top"])}
-    m["marge_client"] = marge
 
     credit = pw.conditions_credit()
     if credit.get("scores"):
         credit = {**credit, "scores": {c: v for c, v in credit["scores"].items()
-                                       if not perimetre or c in perimetre}}
+                                       if clients is None or c in perimetre}}
     m["credit"] = credit
 
-    if perimetre:
-        recos = []
-        for code in sorted(perimetre):
-            r = pw.recommandations(client=code)
-            if r.get("produits"):
-                recos.append({"client": code, "nom": r.get("nom") or _nom(noms, code),
-                              "produits": r["produits"][:3],
-                              "potentiel_top3_dt": round(sum(
-                                  float(p_.get("montant_annuel_median_par_acheteur_dt") or 0)
-                                  for p_ in r["produits"][:3]), 0)})
-        base = pw.recommandations(client=next(iter(sorted(perimetre))))
-        m["recommandation"] = {**{k: v for k, v in base.items()
-                                  if k not in ("produits", "client", "nom")},
-                               "top": recos}
-    else:
-        m["recommandation"] = pw.recommandations()
+    if p["mode"] == po.GLOBAL:
         reappro_kpis = kpis.get("reappro")
         m["reappro"] = ({**reappro_kpis, "modele": pw.carte_modele("reappro"), "source": "modele"}
                         if isinstance(reappro_kpis, dict) and reappro_kpis.get("servi")
@@ -211,9 +213,9 @@ def collecte_modeles(state: Dict[str, Any]) -> Dict[str, Any]:
     servis = sum(1 for v in m.values()
                  if isinstance(v, dict) and (v.get("modele") or {}).get("servi"))
     return {"modeles": m,
-            "trace": [_log("🧠 Collecte modèles (registre)", "ok",
+            "trace": [_log(label, "ok",
                            f"{servis} module(s) servi(s) interrogé(s) par la passerelle"
-                           + (" · périmètre client" if perimetre else ""))]}
+                           + (f" · {len(perimetre)} client(s) filtré(s)" if clients is not None else ""))]}
 
 
 def _modeles(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -225,18 +227,14 @@ def _usage(sortie: Dict[str, Any], role: str) -> Dict[str, Any]:
     return trace_modele(sortie.get("modele") or {}, role)
 
 
-# ── Agents spécialistes ────────────────────────────────────────────────────────────────────────
-
-
 @_safe_node("📋 Agent Recouvrement")
 def agent_recouvrement(state: Dict[str, Any]) -> Dict[str, Any]:
     kpis = state.get("kpis") or {}
     risque = kpis.get("clients_relance") or kpis.get("clients_a_risque") or []
     top = risque[:3]
+    cibles = risque[:N_CIBLES]
     expo = kpis.get("exposition_recente_dt")
     crit = kpis.get("exposition_recente_critique_dt")
-    cnt = kpis.get("exposition_recente_count", 0)
-    periode = kpis.get("exposition_recente_periode", "6 derniers mois")
     noms = ", ".join((c.get("nom") or c.get("client")) for c in top) or "vos principaux débiteurs"
     finding = {
         "agent": "Recouvrement",
@@ -245,26 +243,21 @@ def agent_recouvrement(state: Dict[str, Any]) -> Dict[str, Any]:
         "titre": "Créances à relancer en priorité",
         "resume": f"{_fmt(expo)} à plus de 60 jours, dont {_fmt(crit)} à plus de 90 jours",
         "montant_dt": round(float(expo or 0), 0),
-        "constat": (f"{_fmt(expo)} d'exposition récente en retard >60j ({periode}), "
-                    f"dont {_fmt(crit)} critique (>90j) sur {cnt} facture(s)."),
+        "constat": (f"{_fmt(expo)} de factures en retard de plus de 60 jours, "
+                    f"dont {_fmt(crit)} au-delà de 90 jours."),
         "action": f"Relancer en priorité : {noms} (appel + relance écrite, échéancier si >90j).",
-        # Liste STRUCTURÉE des clients concernés. Elle permet à l'arbitre de
-        # détecter qu'un même client apparaît dans plusieurs domaines — ce
-        # qu'aucun agent ne peut voir, chacun restant dans son périmètre.
+        "execution": execution(POSTE_RECOUVREMENT, "appel"),
         "clients_concernes": [
-            {"nom": (c.get("nom") or c.get("client") or "").strip(),
-             "montant_dt": float(c.get("montant_risque") or c.get("montant") or 0)}
-            for c in top if (c.get("nom") or c.get("client"))
+            _cible(c.get("nom") or c.get("client"), c.get("montant_risque"),
+                   f"{_fmt(c.get('montant_risque'))} sur {int(c.get('factures') or 0)} facture(s) à plus de 60 j",
+                   "appel",
+                   f"Appeler {(c.get('nom') or c.get('client') or '').strip()} : "
+                   f"{_fmt(c.get('montant_risque'))} de factures à plus de 60 jours",
+                   code=c.get("client"))
+            for c in cibles if (c.get("nom") or c.get("client"))
         ],
     }
 
-    # ── Conditions de crédit (règle servie par le registre) ────────────────
-    #
-    # La règle ne prédit pas un impayé : elle dit si le délai HABITUEL du client
-    # dépasse 60 jours. Pour un débiteur à relancer, c'est l'argument qui décide
-    # du ton : un client structurellement à 90 jours n'est pas en défaut, il
-    # applique ses conditions — la relance porte alors sur l'échéancier, pas sur
-    # un litige.
     credit = _modeles(state).get("credit") or {}
     if credit.get("servi") and credit.get("scores"):
         details = []
@@ -280,120 +273,52 @@ def agent_recouvrement(state: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 details.append(f"{nom} — historique trop court, taux de base appliqué")
         if details:
-            finding["constat"] += " Conditions de crédit : " + " ; ".join(details) + "."
+            pass  # credit details kept in modeles_utilises, not in constat
         finding["modeles_utilises"] = [_usage(credit, "conditions de crédit des débiteurs")]
     return {"findings": [finding], "trace": [_log("📋 Agent Recouvrement", "ok", f"{len(risque)} débiteurs récents")]}
 
 
 @_safe_node("💰 Agent Trésorerie")
 def agent_tresorerie(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Cycle d'encaissement, et ce que le stock y immobilise.
-
-    Le volet CHANGE a été retiré avec la veille externe : il reposait sur un taux
-    EUR/TND récupéré en ligne, donc sur une source dont la qualité ne pouvait pas
-    être auditée comme l'est celle de l'ERP.
-
-    En revanche cet agent CONSULTE le stock, et c'est délibéré. Les cinq
-    spécialistes s'exécutent en parallèle sans se parler : le volet stock de
-    l'agent Stock & Approvisionnement annonce un montant immobilisé, celui-ci un
-    besoin de financement, et personne ne rapprochait les deux — alors que du
-    stock dormant EST de la trésorerie gelée.
-    Le rapprochement est fait ici parce que c'est la trésorerie qui en subit
-    l'effet, pas le magasin.
-    """
+    """Cycle d'encaissement, et ce que le stock y immobilise."""
     kpis = state.get("kpis") or {}
     dso = float(kpis.get("dso_jours") or 0)
     dpo = float(kpis.get("dpo_jours") or 0)
-    # `exposition_recente_dt` et NON `montant_risque_ttc`. Le second additionne
-    # cinq ans d'historique de factures réglées avec retard : c'est un
-    # comportement de paiement cumulé, pas un encours. L'annoncer comme
-    # « créances dépassant l'échéance » donnait 133,77 M DT — 48 % du chiffre
-    # d'affaires total — et contredisait l'agent Recouvrement, qui annonce
-    # 10,95 M DT pour la même réalité. Deux agents qui se contredisent sur un
-    # même fait ruinent la crédibilité de l'ensemble.
     expo = float(kpis.get("exposition_recente_dt") or 0)
     ttm = float(kpis.get("ttm_revenue") or 0)
     jours_cycle = dso - dpo
 
-    # Besoin de financement du cycle, en dinars. On l'annualise sur le chiffre
-    # d'affaires des douze derniers mois (`ttm_revenue`) et non sur le CA total
-    # de l'historique : sept ans de facturation cumulés donneraient un besoin
-    # sans rapport avec l'exercice en cours.
     bfr = (jours_cycle / 365.0) * ttm if ttm > 0 else 0.0
 
-    # ── Ce que le stock immobilise ──────────────────────────────────────────
-    #
-    # Priorité aux FLUX RÉELS quand ils sont disponibles : ils sont reconstruits
-    # des factures d'achat et de vente, alors que le module (s,S) repose sur des
-    # quantités simulées. Un directeur n'engage pas un déstockage sur une
-    # estimation ; l'origine du chiffre change donc la nature du constat.
     immo, perte, stock_lu, origine = 0.0, 0.0, False, ""
-    flux = ((state.get("kpis") or {}).get("stock_flux_reel") or {}) if not _perimetre(state) else {}
+    flux = ((state.get("kpis") or {}).get("stock_flux_reel") or {}) if _analyses_globales(state) else {}
     if flux.get("disponible") and float(flux.get("valeur_immobilisee_dt") or 0) > 0:
         immo = float(flux["valeur_immobilisee_dt"])
         stock_lu = True
         origine = "reel"
 
-    # La perte par obsolescence est désormais MESURÉE, non simulée : un
-    # consommable dont le stock dépasse deux ans de consommation périmera, quelle
-    # que soit sa date d'expiration — que l'ERP ne fournit pas.
     if flux.get("disponible"):
         perte = float(flux.get("perte_quasi_certaine_dt") or 0)
 
-    # Aucun repli sur le module simulé. Il en existait un : si les flux réels
-    # manquaient, l'agent Trésorerie lisait le stock (s,S) généré et annonçait un
-    # surstock estimé comme une part du besoin de financement. Un chiffre inventé
-    # présenté dans une phrase sur le besoin en fonds de roulement est pire qu'une
-    # absence — le lecteur n'a aucun moyen de distinguer les deux.
-    #
-    # Si `stock_flux_reel` est indisponible, la partie stock de ce constat est
-    # simplement omise, et la trace le dit.
 
-    constat = (f"DSO {dso:.0f} j contre DPO {dpo:.0f} j : le cycle exige de "
-               f"financer {jours_cycle:.0f} j de chiffre d'affaires")
-    if bfr > 0:
-        constat += f", soit environ {_fmt(bfr)}"
-    # Formulation exacte : ces factures ont été ÉMISES avec un délai dépassant
-    # 60 jours. L'ERP n'enregistre aucune date de règlement — parler de créances
-    # « dépassant l'échéance » laisserait croire à des impayés constatés.
-    constat += (f". {_fmt(expo)} facturés à plus de 60 jours de délai sur les "
-                "six derniers mois.")
+    constat = (f"DSO {dso:.0f} j, DPO {dpo:.0f} j : {jours_cycle:.0f} jours de CA à financer"
+               + (f" ({_fmt(bfr)})" if bfr > 0 else "")
+               + f". {_fmt(expo)} de factures dépassent 60 jours.")
 
     action = ("Aligner les relances sur les creux d'encaissement ; renégocier les "
               "délais fournisseurs tant que le DSO dépasse le DPO.")
 
     if stock_lu and immo > 0:
-        # Part du besoin de financement gelée en stock dormant. C'est le chiffre
-        # qui transforme deux constats juxtaposés en une seule décision.
-        part = (immo / bfr * 100) if bfr > 0 else None
-        constat += (f" Sur ce besoin, {_fmt(immo)} dorment en stock excédentaire"
-                    + (f", soit {part:.0f} % du financement mobilisé" if part and part <= 300 else "")
-                    + ".")
-        if perte > 0:
-            # Une seule formulation possible désormais : l'origine est toujours
-            # réelle. La variante « simulée » a disparu avec son repli.
-            constat += (f" S'y ajoute {_fmt(perte)} de marchandise dont le stock "
-                        "dépasse deux ans de consommation : elle périmera avant "
-                        "d'être vendue — une perte sèche, pas un décalage.")
-        constat += (
-            " Ce montant est reconstruit des factures d'achat et de vente : "
-            "quantités entrées moins quantités sorties. C'est un minorant, le "
-            "stock antérieur à l'historique étant inconnu.")
+        constat += f" {_fmt(immo)} dorment en stock excédentaire."
         action = ("Déstocker les références excédentaires libérerait de la "
-                  "trésorerie sans emprunter ni relancer un client. "
-                  + action[0].lower() + action[1:])
+                  "trésorerie sans emprunter ni relancer un client. " + action)
 
-    # ── Échéancier à un mois (lecture du carnet, servi par le registre) ─────
     ech = _modeles(state).get("echeancier") or {}
     usages: List[Dict[str, Any]] = []
     if ech.get("servi") and ech.get("montant_exigible_dt"):
-        constat += (f" L'échéancier annonce {_fmt(ech['montant_exigible_dt'])} de "
-                    "créances exigibles le mois prochain, dont "
-                    f"{float(ech.get('part_deja_au_carnet') or 0):.0%} déjà inscrits "
-                    "sur des factures émises.")
+        constat += f" {_fmt(ech['montant_exigible_dt'])} de créances exigibles le mois prochain."
         usages.append(_usage(ech, "créances exigibles à un mois"))
 
-    # Le stock dormant pèse-t-il lourd dans le besoin de financement ?
     stock_pesant = bool(bfr > 0 and immo > 0.25 * bfr)
     finding = {
         "agent": "Trésorerie",
@@ -406,6 +331,7 @@ def agent_tresorerie(state: Dict[str, Any]) -> Dict[str, Any]:
         "montant_dt": round(bfr if bfr > 0 else expo, 0),
         "constat": constat,
         "action": action,
+        "execution": DECISION_DE_DIRECTION,
     }
     if usages:
         finding["modeles_utilises"] = usages
@@ -417,17 +343,10 @@ def agent_tresorerie(state: Dict[str, Any]) -> Dict[str, Any]:
 
 @_safe_node("📉 Agent Risque client")
 def agent_risque(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Deux constats distincts : le décrochage CONSTATÉ et le décrochage ANTICIPÉ.
-
-    Le premier se lit dans les chiffres passés — le client est déjà parti, et la
-    marge de manœuvre est faible. Le second vient du modèle de décrochage, sur des
-    clients ENCORE ACTIFS : c'est là qu'une relance change quelque chose. Les
-    présenter séparément évite de laisser croire qu'une même action répond aux deux.
-    """
+    """Deux constats distincts : le décrochage CONSTATÉ et le décrochage ANTICIPÉ."""
     kpis = state.get("kpis") or {}
     findings: List[Dict[str, Any]] = []
 
-    # ── Constaté ────────────────────────────────────────────────────────────
     dec = kpis.get("clients_decrochent") or []
     top = dec[:3]
     noms = ", ".join(c.get("nom") for c in top if c.get("nom")) or "aucun"
@@ -438,25 +357,31 @@ def agent_risque(state: Dict[str, Any]) -> Dict[str, Any]:
         "titre": "Clients qui ont déjà fortement réduit leurs achats",
         "resume": (f"{len(dec)} client(s) en forte baisse" if dec else "Aucune baisse marquée"),
         "montant_dt": round(sum(float(c.get("ca_prev") or 0) - float(c.get("ca_recent") or 0)
-                                for c in top), 0),
-        "constat": (f"{len(dec)} client(s) établi(s) en fort décrochage "
-                    "(CA des 90 derniers jours en chute de plus de 60 %)."
+                                for c in dec), 0),
+        "constat": (f"{len(dec)} client(s) ont réduit leurs achats de plus de 60 % sur les 90 derniers jours."
                     if dec else "Aucun décrochage marqué détecté."),
         "action": (f"Recontacter d'urgence : {noms} — comprendre la cause avant de "
                    "perdre définitivement le compte."
                    if dec else "Maintenir le suivi commercial habituel."),
+        "execution": execution(POSTE_COMMERCIAL, "appel"),
+        "clients_concernes": [
+            _cible(c.get("nom"), float(c.get("ca_prev") or 0) - float(c.get("ca_recent") or 0),
+                   f"achats en baisse de {float(c.get('chute_pct') or 0):.0f} %, "
+                   f"inactif depuis {int(c.get('jours_inactif') or 0)} j",
+                   "appel",
+                   f"Appeler {c.get('nom')} : comprendre la baisse de "
+                   f"{float(c.get('chute_pct') or 0):.0f} % de ses achats",
+                   code=c.get("code"))
+            for c in dec[:N_CIBLES] if c.get("nom")
+        ],
     })
 
-    # ── Anticipé (modèle) ───────────────────────────────────────────────────
     modeles = _modeles(state)
     ch = modeles.get("decrochage") or kpis.get("churn_anticipe") or {}
     seg = modeles.get("segmentation") or {}
     segment_de = {c: v.get("nom_segment") for c, v in (seg.get("par_client") or {}).items()}
     if ch.get("servi") and ch.get("top"):
         cibles = ch["top"][:3]
-        # Nom d'établissement, jamais le code : un briefing qui écrit
-        # « CE000229 » oblige son lecteur à ouvrir l'ERP pour savoir qui appeler.
-        # Et « risque élevé » se comprend sans traduction, contrairement à « p=0,91 ».
         def _mot(p: float) -> str:
             return ("très élevé" if p >= 0.7 else "élevé" if p >= 0.5
                     else "modéré" if p >= 0.3 else "faible")
@@ -483,31 +408,29 @@ def agent_risque(state: Dict[str, Any]) -> Dict[str, Any]:
                                 if not modeles.get("perimetre_client")
                                 else sum(float(c.get("enjeu_dt") or 0) for c in cibles), 0),
             "constat": (
-                (f"Probabilité de décrochage dans les 90 prochains jours : {libelles}."
+                (f"Risque de départ dans les 90 jours : {libelles}."
                  if modeles.get("perimetre_client") else
-                 f"{ch.get('n_au_dessus_de_0_5', 0)} client(s) actif(s) sur "
-                 f"{ch.get('n_clients_scores', 0)} présentent une probabilité de "
-                 "décrochage supérieure à 50 % dans les 90 prochains jours. "
-                 f"Priorités par enjeu : {libelles}.")),
+                 f"{ch.get('n_au_dessus_de_0_5', 0)} client(s) risquent de partir dans les 90 jours. "
+                 f"En tête : {libelles}.")),
             "action": ("Relancer en priorité les comptes à fort enjeu : ils sont "
                        "encore actifs, donc récupérables — contrairement à ceux "
                        "déjà en décrochage constaté."),
             "pourquoi": _pourquoi(cibles),
+            "execution": execution(POSTE_COMMERCIAL, "appel"),
             "clients_concernes": [
-                {"nom": str(c.get("nom") or c.get("code") or "").strip(),
-                 "montant_dt": float(c.get("enjeu_dt") or 0)}
-                for c in cibles if (c.get("nom") or c.get("code"))
+                _cible(c.get("nom") or c.get("code"), c.get("enjeu_dt"),
+                       f"risque de départ {_mot(float(c.get('probabilite_decrochage') or 0))}",
+                       "appel",
+                       f"Appeler {str(c.get('nom') or c.get('code')).strip()} pour le retenir : "
+                       f"{_fmt(c.get('enjeu_dt'))} de chiffre d'affaires en jeu",
+                       code=c.get("code"))
+                for c in ch["top"][:N_CIBLES] if (c.get("nom") or c.get("code"))
             ],
             **({"modeles_utilises": [_usage(ch, "probabilité de décrochage à 90 jours")]
                 + ([_usage(seg, "segment de chaque client")] if segment_de else [])}
                if ch.get("modele") else {}),
         })
 
-    # ── Quel TYPE de clientèle perdons-nous ? (segmentation × décrochage) ──
-    #
-    # La liste nominative oriente les appels ; ce constat oriente une politique.
-    # Il n'existe que parce que deux modèles se répondent : la segmentation dit
-    # QUI sont les clients, le décrochage LESQUELS partent.
     segs = [s_ for s_ in (seg.get("segments") or []) if s_.get("part_menacee_pct") is not None]
     if seg.get("servi") and segs and not modeles.get("perimetre_client"):
         pire = max(segs, key=lambda s_: float(s_.get("ca_menace_dt") or 0))
@@ -520,14 +443,14 @@ def agent_risque(state: Dict[str, Any]) -> Dict[str, Any]:
             "resume": f"« {pire.get('nom')} » : {_fmt(pire.get('ca_menace_dt'))} menacés",
             "montant_dt": round(float(pire.get("ca_menace_dt") or 0), 0),
             "constat": (
-                f"Le segment « {pire.get('nom')} » porte le plus fort chiffre d'affaires "
-                f"menacé : {_fmt(pire.get('ca_menace_dt'))}, soit "
-                f"{float(pire.get('part_menacee_pct') or 0):.1f} % de son CA. "
-                f"Le taux de menace le plus élevé est celui du segment "
-                f"« {plus_expose.get('nom')} » ({float(plus_expose.get('part_menacee_pct') or 0):.1f} %)."),
+                f"Le segment « {pire.get('nom')} » concentre {_fmt(pire.get('ca_menace_dt'))} de CA menacé "
+                f"({float(pire.get('part_menacee_pct') or 0):.1f} %). "
+                f"Le segment « {plus_expose.get('nom')} » a le taux de menace le plus élevé "
+                f"({float(plus_expose.get('part_menacee_pct') or 0):.1f} %)."),
             "action": (f"Suivre la RÉGULARITÉ des commandes du segment « {pire.get('nom')} », "
                        "pas seulement son volume : c'est le rythme qui se dérègle "
                        "avant que le chiffre d'affaires ne chute."),
+            "execution": DECISION_DE_DIRECTION,
             "modeles_utilises": [_usage(seg, "typologie de clientèle (KMeans)"),
                                  _usage(ch, "part du CA menacée par segment")],
         })
@@ -541,27 +464,6 @@ def agent_risque(state: Dict[str, Any]) -> Dict[str, Any]:
             "trace": [_log("📉 Agent Risque client", "ok", detail)]}
 
 
-# ── Agent Stock & Approvisionnement (un agent, deux volets) ─────────────────
-#
-# Ces deux volets étaient deux agents. Ils sont réunis parce qu'ils répondent à
-# la même décision — commander ce qui manque, écouler ce qui dort — et parce
-# qu'aucun des deux ne sert de modèle appris : le registre a refusé le
-# réapprovisionnement et la fin de commercialisation, retiré le risque stock,
-# et la demande est une médiane mobile dont le correcteur appris n'apportait
-# rien. Alignés à côté de l'agent Commercial et de ses trois modèles servis,
-# ils laissaient croire à une symétrie qui n'existe pas.
-#
-# L'agent est donc DÉTERMINISTE ET STATISTIQUE, et le déclare dans chaque
-# constat (`nature_analyse`) :
-#   * volet stock        : capital immobilisé, ruptures, stock non écoulable —
-#                          arithmétique sur les factures d'achat et de vente ;
-#   * volet fournisseurs : dépendance fournisseur (part des achats) et volume
-#                          attendu (médiane mobile validée en walk-forward).
-#
-# Chaque volet garde son constat, sa catégorie et son DOMAINE : l'arbitre
-# classe des constats, pas des agents, donc la fusion ne retire rien au
-# classement. Et chaque volet reste isolé : une panne de l'un n'emporte pas
-# l'autre.
 AGENT_STOCK_APPRO = "Stock & Approvisionnement"
 NATURE_STOCK_APPRO = ("déterministe et statistique : arithmétique sur les factures "
                       "et médiane mobile, aucun modèle appris servi")
@@ -569,16 +471,10 @@ NATURE_STOCK_APPRO = ("déterministe et statistique : arithmétique sur les fact
 
 @_safe_node("📦 Volet fournisseurs")
 def constat_approvisionnement(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Volet fournisseurs de l'agent Stock & Approvisionnement : dépendance
-    fournisseur (part des achats) et volume attendu (médiane mobile).
-
-    Aucun modèle appris : le réapprovisionnement a été refusé par le registre,
-    et la demande est une méthode statistique validée en walk-forward."""
-    if _perimetre(state):
-        # Achats et fournisseurs de l'entreprise : hors du périmètre d'un client
-        # (la route `/api/supply` est d'ailleurs réservée au directeur).
+    """Volet fournisseurs de l'agent Stock & Approvisionnement : dépendance fournisseur (part des…"""
+    if not _analyses_globales(state):
         return {"trace": [_log("📦 Volet fournisseurs", "vide",
-                               "hors périmètre client — données fournisseurs internes")]}
+                               "analyse globale — masquée sous un filtre")]}
     try:
         from ml_engine.analytics.demand_engine import compute_supply_demand
         d = compute_supply_demand()
@@ -587,7 +483,6 @@ def constat_approvisionnement(state: Dict[str, Any]) -> Dict[str, Any]:
     dep = d.get("dependance_fournisseur") or "n/d"
     top = (d.get("fournisseurs_top") or [{}])[0]
     top1_name, top1_pct = top.get("fournisseur", "N/D"), d.get("fournisseur_top1_pct", 0)
-    mape = d.get("demande_mape")
     fc = d.get("demande_prevision") or []
     fc_txt = ", ".join(f"{p['period']} : {int(p['qte']):,} articles".replace(",", " ")
                        for p in fc) or "non disponible"
@@ -601,11 +496,11 @@ def constat_approvisionnement(state: Dict[str, Any]) -> Dict[str, Any]:
         "titre": "Dépendance à un fournisseur",
         "resume": f"{top1_name} représente {top1_pct} % de vos achats",
         "montant_dt": 0,
-        "constat": (f"Dépendance fournisseur {dep} : {top1_name} représente {top1_pct} % des "
-                    f"achats (trois premiers fournisseurs : {d.get('fournisseurs_top3_pct', 0)} %). "
-                    f"Volumes attendus sur les trois prochains mois : {fc_txt}."),
+        "constat": (f"Dépendance {dep} : {top1_name} représente {top1_pct} % des achats. "
+                    f"Volumes attendus à 3 mois : {fc_txt}."),
         "action": ("Sécuriser une 2e source d'approvisionnement pour réduire la dépendance ; "
                    "caler les commandes sur la prévision et anticiper les pics saisonniers."),
+        "execution": DECISION_DE_DIRECTION,
     }
 
     modeles = _modeles(state)
@@ -616,15 +511,9 @@ def constat_approvisionnement(state: Dict[str, Any]) -> Dict[str, Any]:
                              "prévision de demande à 3 mois"))
     reappro = modeles.get("reappro") or {}
     if reappro.get("servi") and reappro.get("top"):
-        top_r = reappro["top"][:3]
-        finding["constat"] += (" Commandes à prévoir sur trois mois : budget "
-                               f"{_fmt(reappro.get('budget_total_dt'))}, en tête "
-                               + ", ".join(r["produit"][:28] for r in top_r) + ".")
+        finding["constat"] += (f" Budget commandes 3 mois : {_fmt(reappro.get('budget_total_dt'))}.")
         usages.append(_usage(reappro, "références à réapprovisionner au trimestre"))
     elif reappro.get("modele"):
-        # Le modèle a été mesuré puis REFUSÉ : ses probabilités ne sont jamais
-        # utilisées. Le constat reste en langage métier ; la trace technique vit
-        # dans `modeles_utilises`, que l'interface n'affiche pas.
         usages.append(_usage(reappro, "écarté — repli sur la détection de rupture"))
     if usages:
         finding["modeles_utilises"] = usages
@@ -634,28 +523,10 @@ def constat_approvisionnement(state: Dict[str, Any]) -> Dict[str, Any]:
 
 @_safe_node("📦 Volet stock")
 def constat_stock(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Volet stock : immobilisations, ruptures et stock non écoulable — sur données RÉELLES.
-
-    Réécrit intégralement. La version précédente lisait le module (s,S) SIMULÉ :
-    elle annonçait un stock valorisé, des points de commande et des pertes par
-    péremption dont **aucune valeur n'était observée**. Le constat le signalait
-    par un préfixe `[SIMULATION]`, ce qui était honnête et inutilisable — un
-    directeur ne déstocke pas sur une estimation, et un briefing dont la moitié
-    des chiffres sont générés n'est pas un briefing.
-
-    Tout ce qui est annoncé ici vient désormais des factures :
-
-      * capital immobilisé  = quantités achetées − vendues, au coût d'achat réel ;
-      * ruptures            = référence encore vendue, approvisionnement arrêté ;
-      * stock non écoulable = plus de deux ans de consommation constatée.
-
-    Le module simulé n'est plus lu, même en repli : servir une estimation quand la
-    mesure manque reviendrait à remettre du généré dans le briefing par la porte
-    de derrière. Si les flux réels sont indisponibles, le volet se tait.
-    """
-    if _perimetre(state):
+    """Volet stock : immobilisations, ruptures et stock non écoulable — sur données RÉELLES."""
+    if not _analyses_globales(state):
         return {"trace": [_log("📦 Volet stock", "vide",
-                               "hors périmètre client — stock interne de l'entreprise")]}
+                               "analyse globale — masquée sous un filtre")]}
     flux = (state.get("kpis") or {}).get("stock_flux_reel") or {}
     if not flux.get("disponible"):
         return {"trace": [_log("📦 Volet stock", "vide",
@@ -665,47 +536,29 @@ def constat_stock(state: Dict[str, Any]) -> Dict[str, Any]:
     immo = float(flux.get("valeur_immobilisee_dt") or 0)
     perte = float(flux.get("perte_quasi_certaine_dt") or 0)
     n_dormantes = int(flux.get("n_references_plus_de_2_ans") or 0)
-    n_refs = int(flux.get("n_references_accumulees") or 0)
     ruptures = flux.get("ruptures") or []
     n_crit = int(flux.get("n_ruptures_critiques") or 0)
     budget = float(flux.get("budget_commandes_dt") or 0)
-    n_obsoletes = int(flux.get("n_obsoletes_certains") or 0)
 
-    # Les ruptures sont déjà triées par gravité puis par consommation : les trois
-    # premières sont celles qui coûtent le plus vite.
     noms = ", ".join(r["produit"][:28] for r in ruptures[:3]) or "aucune"
 
     severite = ("haute" if n_crit > 0
                 else "moyenne" if ruptures or perte > 0
                 else "faible")
 
-    # Séparateur de milliers appliqué au NOMBRE seul : un `.replace(",", " ")`
-    # sur la phrase entière effaçait aussi sa ponctuation.
     def _n(v: float) -> str:
         return f"{v:,.0f}".replace(",", " ")
 
-    # `ruptures` est tronquée à 25 lignes pour l'affichage ; le compte vient de
-    # `n_ruptures`. Annoncer « 25 ruptures dont 277 critiques » se contredisait.
     n_ruptures = int(flux.get("n_ruptures") or len(ruptures))
-    constat = (
-        f"{n_refs} références en position positive, {_n(immo)} DT immobilisés "
-        "au coût d'achat réel"
-        + (f", dont {n_dormantes} référence(s) représentant plus de deux ans de "
-           "consommation" if n_dormantes else "")
-        + ". "
-    )
-
+    constat = f"{_n(immo)} DT immobilisés en stock"
+    if n_dormantes:
+        constat += f", dont {n_dormantes} référence(s) dormante(s)"
+    constat += "."
     if ruptures:
-        constat += (f"{n_ruptures} référence(s) encore vendues dont "
-                    f"l'approvisionnement s'est interrompu, dont {n_crit} sous un "
-                    f"mois de couverture. ")
+        constat += f" {n_ruptures} rupture(s) dont {n_crit} critique(s)."
     if perte > 0:
-        constat += (f"{_n(perte)} DT de stock ne seront pas écoulés avant "
-                    f"péremption sur {n_obsoletes} référence(s).")
+        constat += f" {_n(perte)} DT de stock périmé."
 
-    # Les deux actions portent sur des situations OPPOSÉES : on commande ce qui
-    # manque, on écoule ce qui dort. Les formuler séparément évite au rédacteur de
-    # proposer d'écouler un produit en rupture.
     action = ""
     if ruptures:
         action = (f"Commander en priorité : {noms}"
@@ -724,10 +577,7 @@ def constat_stock(state: Dict[str, Any]) -> Dict[str, Any]:
         cibles = [r for r in fdv["top"] if float(r.get("capital_expose_dt") or 0) > 0][:3]
         if cibles:
             pourquoi_stock = _pourquoi(cibles, cle_nom="produit")
-            constat += (" Références qui vont cesser de se vendre dans les six mois : "
-                        + f"{_fmt(fdv.get('capital_expose_total_dt'))} de stock concerné, en tête "
-                        + ", ".join(f"{r['produit'][:28]} ({_fmt(r['capital_expose_dt'])})"
-                                    for r in cibles) + ". ")
+            constat += f" {_fmt(fdv.get('capital_expose_total_dt'))} en fin de vie."
             action += (" Arrêter de réapprovisionner les références en fin de vie : "
                        + ", ".join(r["produit"][:28] for r in cibles) + ".")
             usages.append(_usage(fdv, "références en fin de commercialisation"))
@@ -735,14 +585,6 @@ def constat_stock(state: Dict[str, Any]) -> Dict[str, Any]:
     if rs.get("modele") and not rs.get("servi"):
         usages.append(_usage(rs, "NON utilisé — cible dépendant de dates simulées"))
 
-    # ── Combien commander : la demande attendue, référence par référence ────
-    #
-    # La quantité suggérée par la détection de rupture est un repère : trois
-    # mois de consommation moyenne. La prévision par référence la remplace pour
-    # les ruptures en tête de liste, par une quantité qui couvre les trois
-    # prochains mois dans 8 cas sur 10 (borne haute calibrée sur la
-    # validation), moins le stock encore positif. La prévision vient de la
-    # méthode que le registre sert — règle simple ou modèle appris.
     dem = _modeles(state).get("demande_reference") or {}
     if dem.get("modele"):
         chiffres: List[Tuple[str, float, float]] = []
@@ -760,8 +602,7 @@ def constat_stock(state: Dict[str, Any]) -> Dict[str, Any]:
                                  float(prev.get("cumul_3_mois") or 0),
                                  max(float(prev.get("borne_haute_3_mois") or 0) - reste, 0.0)))
         if chiffres:
-            constat += (" Demande attendue sur les trois prochains mois : "
-                        + ", ".join(f"{p_[:28]} {_n(q)} unités" for p_, q, _ in chiffres) + ". ")
+            pass  # demand details kept in modeles_utilises
             a_commander = [(p_, c) for p_, _, c in chiffres if c >= 1]
             if a_commander:
                 action += (" Quantités qui couvrent ces trois mois dans 8 cas sur 10 : "
@@ -783,14 +624,23 @@ def constat_stock(state: Dict[str, Any]) -> Dict[str, Any]:
         "montant_dt": round(immo, 0),
         "constat": constat.strip(),
         "action": action.strip(),
-        # Conservé et mis à FALSE plutôt que supprimé : le rédacteur et les tests
-        # lisent ce drapeau, et le retirer ferait disparaître silencieusement une
-        # garantie au lieu de l'affirmer.
+        "execution": execution(POSTE_LOGISTIQUE, "commande" if ruptures else "autre"),
         "is_simulated": False,
         "origine_des_chiffres": ("factures d'achat et de vente — aucune "
                                  "simulation, aucune date inventée"),
-        "reserve": ("Variation cumulée et non inventaire : le stock antérieur à "
-                    "l'historique est inconnu, donc ce montant est un MINORANT."),
+        "produits_concernes": [
+            # Montant 0 : le budget d'achat n'est pas une part de l'argent
+            # immobilisé que chiffre la carte ; il est donné dans le motif.
+            _cible(r.get("produit"), 0,
+                   f"{_n(float(r.get('quantite_suggeree') or 0))} unités, budget "
+                   f"{_fmt(float(r.get('quantite_suggeree') or 0) * float(r.get('cout_unitaire_dt') or 0))}"
+                   + (" — rupture imminente" if r.get("gravite") in ("rupture_probable", "critique") else ""),
+                   "commande",
+                   f"Commander {_n(float(r.get('quantite_suggeree') or 0))} × {str(r.get('produit'))[:60]}")
+            for r in sorted(ruptures, key=lambda r: -float(r.get("quantite_suggeree") or 0)
+                            * float(r.get("cout_unitaire_dt") or 0))[:N_CIBLES]
+            if r.get("produit")
+        ],
     }
     if pourquoi_stock:
         finding["pourquoi"] = pourquoi_stock
@@ -804,32 +654,24 @@ def constat_stock(state: Dict[str, Any]) -> Dict[str, Any]:
 
 @_safe_node("📦 Agent Stock & Approvisionnement")
 def agent_stock_approvisionnement(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Commander ce qui manque, écouler ce qui dort : un agent, deux volets.
-
-    Renvoie les constats des deux volets tels quels (catégorie et domaine
-    conservés) et UNE ligne de trace pour le nœud. Les volets sont appelés
-    par leur nom au moment de l'exécution : un test peut en remplacer un pour
-    vérifier que l'autre survit à sa panne.
-    """
+    """Commander ce qui manque, écouler ce qui dort : un agent, deux volets."""
     label = "📦 Agent Stock & Approvisionnement"
-    if _perimetre(state):
+    if not _analyses_globales(state):
         return {"trace": [_log(label, "vide",
-                               "hors périmètre client — stock et fournisseurs internes")]}
+                               "analyse globale — masquée sous un filtre")]}
     findings: List[Dict[str, Any]] = []
     statuts: List[str] = []
     details: List[str] = []
     for volet, fn in (("stock", constat_stock), ("fournisseurs", constat_approvisionnement)):
         try:
             out = fn(state) or {}
-        except Exception as e:      # un volet en panne n'emporte pas l'autre
+        except Exception as e:
             logger.exception("Volet %s en erreur", volet)
             out = {"trace": [_log(volet, "erreur", f"{type(e).__name__}: {e}")]}
         findings += out.get("findings") or []
         for t in out.get("trace") or []:
             statuts.append(str(t.get("status")))
             details.append(f"{volet} : {t.get('detail') or t.get('status')}")
-    # Une erreur n'est jamais masquée par le succès de l'autre volet : le
-    # constat survivant est livré, mais la trace dit qu'il manque une moitié.
     statut = "erreur" if "erreur" in statuts else "ok" if "ok" in statuts else "vide"
     retour: Dict[str, Any] = {"trace": [_log(label, statut, " · ".join(details))]}
     if findings:
@@ -839,22 +681,7 @@ def agent_stock_approvisionnement(state: Dict[str, Any]) -> Dict[str, Any]:
 
 @_safe_node("🤝 Agent Commercial")
 def agent_commercial(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Cycle commercial : devis à relancer, marges qui s'érodent, vente croisée.
-
-    Trois modèles, trois décisions distinctes — et donc trois constats :
-
-      * **conversion des devis** (régression logistique, AUC hors période) :
-        quels devis ouverts relancer, classés par espérance de chiffre
-        d'affaires = probabilité × montant ;
-      * **érosion de marge** (gradient boosting) : quels clients voient leur
-        marge passer sous le seuil bas dans les 3 mois, classés par marge en jeu ;
-      * **recommandation de produits** (Wide & Deep mesuré contre LightGBM et
-        des références triviales) : quels produits proposer à quel client.
-
-    Chaque constat publie `clients_concernes` : l'arbitre peut ainsi repérer un
-    client à relancer pour un devis ALORS qu'il décroche, ou dont la marge
-    s'érode ALORS qu'il doit de l'argent.
-    """
+    """Cycle commercial : devis à relancer, marges qui s'érodent, vente croisée."""
     modeles = _modeles(state)
     if not modeles:
         return {"trace": [_log("🤝 Agent Commercial", "vide", "aucun modèle collecté")]}
@@ -872,16 +699,14 @@ def agent_commercial(state: Dict[str, Any]) -> Dict[str, Any]:
                        f"{_fmt(conv.get('esperance_totale_dt'))} de ventes probables"),
             "montant_dt": round(float(conv.get("esperance_totale_dt") or 0), 0),
             "constat": (
-                f"{conv.get('n_devis', 0)} devis récents encore ouverts représentent "
-                f"{_fmt(conv.get('esperance_totale_dt'))} de ventes probables. En tête : "
-                + " ; ".join(f"{d['nom']} — {_fmt(d['montant_ht_dt'])} HT, signature "
-                             f"probable à {float(d['probabilite']):.0%}"
-                             for d in top) + "."),
+                f"{conv.get('n_devis', 0)} devis ouverts pour {_fmt(conv.get('esperance_totale_dt'))} "
+                f"de ventes probables. En tête : "
+                + ", ".join(f"{d['nom']} ({_fmt(d['montant_ht_dt'])})" for d in top) + "."),
             "action": ("Relancer d'abord les devis qui rapportent le plus s'ils sont signés, "
                        "plutôt que dans l'ordre d'arrivée."),
+            "execution": execution(POSTE_COMMERCIAL, "relance_devis"),
             "pourquoi": _pourquoi(top),
-            "clients_concernes": [{"nom": d["nom"], "montant_dt": float(d.get("esperance_dt") or 0)}
-                                  for d in top],
+            "clients_concernes": _devis_par_client(conv["top"])[:N_CIBLES],
             "modeles_utilises": [_usage(conv, "probabilité de signature de chaque devis")],
         })
 
@@ -897,15 +722,20 @@ def agent_commercial(state: Dict[str, Any]) -> Dict[str, Any]:
             "resume": f"{len(marge['top'])} clients · {_fmt(en_jeu)} de marge menacée",
             "montant_dt": round(en_jeu, 0),
             "constat": (
-                f"{len(marge['top'])} clients risquent de devenir moins rentables dans les "
-                f"trois mois, pour {_fmt(en_jeu)} de marge. En tête : "
-                + " ; ".join(f"{c['nom']} — marge actuelle {float(c['marge_actuelle_pct']):.1f} %, "
-                             f"risque {float(c['probabilite']):.0%}" for c in top) + "."),
+                f"{len(marge['top'])} clients risquent de perdre en rentabilité ({_fmt(en_jeu)} de marge menacée). "
+                f"En tête : " + ", ".join(f"{c['nom']}" for c in top) + "."),
             "action": ("Revoir les conditions tarifaires et le mix de ces comptes AVANT "
                        "la prochaine négociation : la baisse n'est pas encore jouée."),
+            "execution": execution(POSTE_COMMERCIAL, "visite"),
             "pourquoi": _pourquoi(top),
-            "clients_concernes": [{"nom": c["nom"], "montant_dt": float(c.get("marge_en_jeu_dt") or 0)}
-                                  for c in top],
+            "clients_concernes": [
+                _cible(c["nom"], c.get("marge_en_jeu_dt"),
+                       f"marge actuelle {float(c.get('marge_actuelle_pct') or 0):.1f} % "
+                       f"(12 mois : {float(c.get('marge_12m_pct') or 0):.1f} %)",
+                       "visite",
+                       f"Revoir les prix de {c['nom']} : {_fmt(c.get('marge_en_jeu_dt'))} de marge menacée",
+                       code=c.get("client") or c.get("code"))
+                for c in marge["top"][:N_CIBLES]],
             "modeles_utilises": [_usage(marge, "probabilité d'érosion de marge")],
         })
 
@@ -921,19 +751,90 @@ def agent_commercial(state: Dict[str, Any]) -> Dict[str, Any]:
             "resume": f"{len(reco['top'])} clients · {_fmt(potentiel)} de potentiel annuel",
             "montant_dt": round(potentiel, 0),
             "constat": (
-                f"Produits jamais achetés que ces clients sont les plus susceptibles "
-                f"d'adopter dans les {reco.get('horizon_mois', 6)} mois. "
-                + " ; ".join(f"{c['nom']} : " + ", ".join(p["designation"][:30]
-                                                         for p in c["produits"][:2])
-                             for c in top)
-                + f". Ordre de grandeur observé : {_fmt(potentiel)} par an, d'après la "
-                  "dépense médiane des clients qui achètent déjà ces produits."),
+                f"{len(reco['top'])} clients pourraient adopter de nouveaux produits "
+                f"({_fmt(potentiel)} de potentiel annuel). "
+                f"En tête : " + ", ".join(f"{c['nom']}" for c in top) + "."),
             "action": ("Présenter ces produits lors de la prochaine visite : ce sont des "
                        "adoptions probables, pas des commandes acquises."),
-            "clients_concernes": [{"nom": c["nom"], "montant_dt": float(c.get("potentiel_top3_dt") or 0)}
-                                  for c in top],
+            "execution": execution(POSTE_COMMERCIAL, "visite"),
+            "clients_concernes": [
+                _cible(c["nom"], c.get("potentiel_top3_dt"),
+                       "à proposer : " + ", ".join(p["designation"][:28] for p in c["produits"][:2]),
+                       "visite",
+                       f"Proposer à {c['nom']} : "
+                       + ", ".join(p["designation"][:28] for p in c["produits"][:2]),
+                       code=c.get("client") or c.get("code"))
+                for c in reco["top"][:N_CIBLES]],
             "modeles_utilises": [_usage(reco, "classement des produits par client")],
         })
+
+    # ── Chiffre d'affaires attendu par client ────────────────────────────────
+    #
+    # Le top clients du tableau de bord est un DÉCOMPTE du passé. Ce constat est
+    # la seule vue prospective du portefeuille : il dit qui achètera, pas qui a
+    # acheté. L'horizon 3 mois porte le constat (c'est celui qui est actionnable
+    # sur un trimestre commercial) ; l'horizon 12 mois est cité en appui parce
+    # qu'il alimente déjà les mouvements du top 10 sur le radar.
+    ca3 = modeles.get("ca_client_3m") or {}
+    ca12 = modeles.get("ca_client_12m") or {}
+    if ca3.get("servi") and ca3.get("top"):
+        top_ca = ca3["top"][:3]
+        baisse = [c for c in (ca3.get("top") or [])
+                  if float(c.get("ecart_vs_passe_dt") or 0) < 0]
+        usages = [_usage(ca3, "chiffre d'affaires attendu par client à 3 mois")]
+        if ca12.get("servi"):
+            usages.append(_usage(ca12, "classement attendu à 12 mois"))
+        findings.append({
+            "agent": "Commercial",
+            "categorie": "Portefeuille",
+            "severite": "haute" if baisse else "moyenne",
+            "titre": "Chiffre d'affaires attendu par client (3 mois)",
+            "resume": (f"{_fmt(ca3.get('ca_attendu_total_dt'))} attendus sur "
+                       f"{ca3.get('n_clients', 0)} clients"),
+            # Ce qui est EN JEU, c'est la baisse attendue (ce que la visite peut
+            # sauver), pas tout le chiffre d'affaires attendu : sinon la carte
+            # annonce un montant que ses lignes ne peuvent jamais additionner.
+            "montant_dt": round(sum(abs(float(c.get("ecart_vs_passe_dt") or 0)) for c in baisse)
+                                if baisse else float(ca3.get("ca_attendu_total_dt") or 0), 0),
+            "constat": (
+                f"{_fmt(ca3.get('ca_attendu_total_dt'))} attendus sur 3 mois. "
+                f"En tête : " + ", ".join(
+                    f"{c.get('nom') or c.get('client')} ({_fmt(c.get('ca_attendu_dt'))})"
+                    for c in top_ca) + "."
+                + (f" {len(baisse)} en baisse par rapport au trimestre passé." if baisse else "")),
+            "action": (
+                "Passer voir en priorité les comptes qui devraient commander "
+                "moins que le trimestre écoulé : la baisse n'est pas encore faite."
+                if baisse else
+                "Sécuriser les commandes attendues des comptes en tête avant "
+                "la fin du trimestre."),
+            "execution": execution(POSTE_COMMERCIAL, "visite"),
+            "pourquoi": _pourquoi(top_ca, "nom"),
+            "clients_concernes": [
+                _cible(c.get("nom") or c.get("client"), abs(float(c.get("ecart_vs_passe_dt") or 0)),
+                       f"attendu {_fmt(c.get('ca_attendu_dt'))} contre {_fmt(c.get('ca_passe_dt'))} "
+                       "le trimestre passé",
+                       "visite",
+                       f"Passer voir {c.get('nom') or c.get('client')} : commandes attendues en baisse de "
+                       f"{_fmt(abs(float(c.get('ecart_vs_passe_dt') or 0)))}",
+                       code=c.get("client"))
+                for c in sorted(baisse, key=lambda x: float(x.get("ecart_vs_passe_dt") or 0))[:N_CIBLES]]
+            or [
+                _cible(c.get("nom") or c.get("client"), c.get("ca_attendu_dt"),
+                       f"{_fmt(c.get('ca_attendu_dt'))} de commandes attendues sur 3 mois",
+                       "visite",
+                       f"Sécuriser les commandes de {c.get('nom') or c.get('client')} : "
+                       f"{_fmt(c.get('ca_attendu_dt'))} attendus sur 3 mois",
+                       code=c.get("client"))
+                for c in (ca3.get("top") or [])[:N_CIBLES]],
+            "modeles_utilises": usages,
+        })
+    elif (ca3.get("modele") or ca12.get("modele")) and findings:
+        # Refusé par le registre : l'usage est tout de même tracé, sinon le refus
+        # serait indiscernable d'un oubli de branchement.
+        findings[-1].setdefault("modeles_utilises", []).extend(
+            _usage(c, "écarté — aucune attente de chiffre d'affaires publiée")
+            for c in (ca3, ca12) if c.get("modele"))
 
     detail = f"{len(findings)} constat(s) issus de {len(findings)} modèle(s)"
     return {"findings": findings, "trace": [_log("🤝 Agent Commercial",
@@ -942,32 +843,7 @@ def agent_commercial(state: Dict[str, Any]) -> Dict[str, Any]:
 
 @_safe_node("🔬 Volet fiabilité des modèles")
 def fiabilite_modeles(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Volet fiabilité : surveille les modèles eux-mêmes — ce qui est servi, avec
-    quelle fiabilité, ce qui dérive et ce qui a été refusé.
-
-    Pourquoi ce n'est plus un agent du parallèle
-    --------------------------------------------
-    C'était le septième « spécialiste ». Il n'en était pas un : il ne lit aucune
-    donnée de l'entreprise, il lit le registre, et son constat ne propose aucune
-    action de gestion — l'arbitre devait d'ailleurs le neutraliser en forçant
-    son enjeu à zéro. Pire, en citant TOUS les modèles pour les surveiller, il
-    faisait figurer dans `modeles_mobilises` des modèles qu'aucun spécialiste
-    n'avait utilisés (la lecture de factures LayoutLMv3, par exemple).
-
-    Il écrit donc dans sa propre clé d'état, `fiabilite`, et jamais dans
-    `findings` : l'arbitre ne le voit plus, et le rédacteur le reçoit par une
-    jointure pour qualifier le briefing — une réserve, sans jargon, quand une
-    dérive est détectée.
-
-    Un briefing qui s'appuie sur six modèles doit dire si ces modèles méritent
-    encore la confiance qu'on leur accorde. Cet agent lit le registre, les
-    métriques de classification (AUC, accuracy, balanced accuracy, MCC) et la
-    surveillance de dérive (PSI). Il ne produit aucun montant : son constat
-    qualifie les autres.
-
-    Réservé au périmètre direction : les motifs de refus décrivent la
-    méthodologie interne, comme la route `/api/models/metrics`.
-    """
+    """Volet fiabilité : surveille les modèles eux-mêmes — ce qui est servi, avec quelle fiabilité, ce…"""
     modeles = _modeles(state)
     tableau = modeles.get("tableau") or []
     if not tableau:
@@ -992,33 +868,17 @@ def fiabilite_modeles(state: Dict[str, Any]) -> Dict[str, Any]:
     derive = modeles.get("derive") or {}
     alertes = derive.get("alertes") or []
     dec = derive.get("decrochage_client") or {}
-    delais = derive.get("delais_de_paiement") or {}
     reco = next((c for c in tableau if c.get("module") == "recommandation"), {})
     dl = reco.get("deep_learning") or {}
-    duel = dl.get("duel_vs_lightgbm") or {}
 
-    constat = (f"{len(servis)} module(s) servi(s) sur {len(tableau)}, dont {len(appris)} "
-               "modèle(s) appris : " + " ; ".join(lignes) + ". ")
+    constat = (f"{len(servis)} module(s) actif(s) sur {len(tableau)}, "
+               f"dont {len(appris)} entraîné(s).")
     if refuses:
-        constat += ("Mesurés puis refusés (une règle plus simple fait aussi bien) : "
-                    + ", ".join(c["libelle"] for c in refuses) + ". ")
+        constat += f" {len(refuses)} écarté(s) au profit d'une règle plus simple."
     if retires:
-        constat += ("Retirés (cible dépendant de données simulées) : "
-                    + ", ".join(c["libelle"] for c in retires) + ". ")
-    if dl.get("mesure"):
-        constat += (f"Deep learning : Wide & Deep NDCG@10 {dl['mesure'].get('ndcg_at_10'):.3f}"
-                    + (f", écart {duel.get('ecart_moyen'):+.3f} face à LightGBM (IC95 "
-                       f"{duel.get('ecart_ic95')}, {'significatif' if duel.get('significatif') else 'non significatif'})"
-                       if duel else "")
-                    + (" — servi." if dl.get("servi") else " — challenger, réévalué à chaque réentraînement. "))
-    if dec.get("applicable"):
-        constat += (f"Dérive : PSI max {float(dec.get('psi_max') or 0):.3f} sur les variables du "
-                    "décrochage")
-        if delais.get("applicable"):
-            constat += (f", part des factures à délai ≤ 2 mois "
-                        f"{float(delais.get('part_sous_2_mois_reference') or 0):.1%} → "
-                        f"{float(delais.get('part_sous_2_mois_recent') or 0):.1%}")
-        constat += "."
+        constat += f" {len(retires)} retiré(s)."
+    if dec.get("applicable") and dec.get("reentrainement_conseille"):
+        constat += " Une mise à jour est recommandée."
 
     a_reentrainer = bool(alertes) or bool(dec.get("reentrainement_conseille"))
     fiabilite = {
@@ -1052,20 +912,6 @@ def _fiabilite(carte: Dict[str, Any]) -> str:
     return formater_metrique(carte)
 
 
-# ── Arbitre (hiérarchisation transversale) ──────────────────────────────────
-#
-# Nature économique de chaque catégorie de constat. C'est ce qui permet de
-# comparer des montants qui n'ont pas le même sens :
-#
-#   * une créance en retard est un DÉCALAGE — l'argent viendra, plus tard ;
-#   * une péremption est une PERTE SÈCHE — l'argent ne viendra jamais ;
-#   * un client qui décroche est un REVENU MENACÉ — probabiliste, et récurrent ;
-#   * du stock dormant est du CAPITAL GELÉ — récupérable, mais lentement.
-#
-# Le coefficient traduit la part du montant qui est réellement en jeu à court
-# terme. Il reprend les hypothèses déclarées dans `ml_engine/analytics/impact.py`
-# — les deux doivent dire la même chose, sinon le tableau de bord et le briefing
-# hiérarchiseraient différemment les mêmes faits.
 _NATURE_ECONOMIQUE = {
     "Trésorerie":       (0.15, "décalage de trésorerie", "l'encaissement est différé, pas perdu"),
     "Recouvrement":     (0.15, "décalage de trésorerie", "l'encaissement est différé, pas perdu"),
@@ -1074,9 +920,6 @@ _NATURE_ECONOMIQUE = {
     "Approvisionnement": (0.05, "risque opérationnel", "pas de montant direct, mais une rupture arrête la vente"),
     "Commercial":       (0.10, "revenu à capter", "une probabilité de signature ou d'adoption, pas un chiffre acquis"),
     "Rentabilité":      (0.20, "marge menacée", "une marge perdue ne se rattrape pas sur le volume"),
-    # Le volet fiabilité ne passe plus par l'arbitre (clé d'état `fiabilite`).
-    # L'entrée reste : un constat de cette catégorie, s'il en arrivait un par
-    # une autre voie, ne doit jamais concurrencer les constats métier.
     "Qualité des modèles": (0.0, "fiabilité des décisions", "ne se chiffre pas : qualifie les autres constats"),
 }
 _DEFAUT_NATURE = (0.10, "à qualifier", "nature économique non déclarée")
@@ -1084,33 +927,7 @@ _DEFAUT_NATURE = (0.10, "à qualifier", "nature économique non déclarée")
 
 @_safe_node("⚖️ Arbitre")
 def arbitre(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Hiérarchise les constats de TOUS les agents sur une échelle commune.
-
-    Le problème résolu ici
-    ----------------------
-    Chaque spécialiste déclare la sévérité de son propre constat, selon ses
-    propres critères. Un « haute » de l'agent Stock et un « haute » de l'agent
-    Recouvrement ne mesurent donc pas la même chose, et le rédacteur les triait
-    à égalité — l'ordre entre eux était arbitraire.
-
-    Or ce sont précisément ces arbitrages inter-domaines qu'un dirigeant doit
-    faire : relancer un débiteur ou déstocker ? La question ne se pose à aucun
-    agent pris isolément.
-
-    Comment l'arbitrage est rendu comparable
-    ----------------------------------------
-    Les montants bruts ne sont PAS additionnables : 100 000 DT de créance en
-    retard et 100 000 DT de marchandise périmée ne pèsent pas pareil, le premier
-    étant récupérable et le second perdu. Chaque montant est donc pondéré par un
-    coefficient de récupérabilité propre à sa nature économique, ce qui donne un
-    **enjeu à court terme** — grandeur homogène, donc comparable.
-
-    Ce que l'arbitre ne fait PAS
-    ----------------------------
-    Il ne produit aucun score global de santé. Agréger créances, stock et
-    décrochage en un chiffre unique donnerait un indicateur que personne ne
-    saurait interpréter ni actionner. Il ordonne, il ne résume pas.
-    """
+    """Hiérarchise les constats de TOUS les agents sur une échelle commune."""
     findings = state.get("findings") or []
     if not findings:
         return {"trace": [_log("⚖️ Arbitre", "vide", "aucun constat à arbitrer")]}
@@ -1122,17 +939,22 @@ def arbitre(state: Dict[str, Any]) -> Dict[str, Any]:
             str(f.get("categorie") or ""), _DEFAUT_NATURE)
         enjeu = montant * coef
 
-        # Un constat sans montant n'est pas sans importance : une rupture
-        # d'approvisionnement arrête la vente. On lui attribue le rang de sa
-        # sévérité déclarée plutôt que de le reléguer en fin de liste.
         if montant <= 0:
             enjeu = {"critique": 5e5, "haute": 2e5,
                      "moyenne": 5e4, "faible": 1e4}.get(f.get("severite"), 1e4)
 
         if f.get("categorie") == "Qualité des modèles":
-            enjeu = 0.0      # qualifie les autres constats, ne les concurrence pas
+            enjeu = 0.0
+        # Les lignes d'une carte sont pondérées comme la carte : leur somme ne
+        # dépasse jamais l'« en jeu » affiché (elle l'égale si toutes y figurent).
+        lignes = {}
+        for cle in ("clients_concernes", "produits_concernes"):
+            if f.get(cle):
+                lignes[cle] = [{**x, "enjeu_dt": round(float(x.get("montant_dt") or 0) * coef, 0)}
+                               if montant > 0 else x for x in f[cle]]
         classes.append({
             **f,
+            **lignes,
             "nature_economique": nature,
             "coefficient_recuperabilite": coef,
             "enjeu_court_terme_dt": round(enjeu, 0),
@@ -1143,16 +965,6 @@ def arbitre(state: Dict[str, Any]) -> Dict[str, Any]:
     for i, c in enumerate(classes, 1):
         c["rang"] = i
 
-    # ── Clients signalés par PLUSIEURS agents ───────────────────────────────
-    #
-    # Le croisement que seul l'arbitre peut faire. Un client qui doit de l'argent
-    # ET qui cesse de commander cumule deux risques dont la conjonction change la
-    # nature : la créance devient douteuse, puisque le levier commercial qui
-    # aurait permis de négocier un échéancier disparaît avec la relation.
-    #
-    # Aucun agent ne peut le voir : le recouvrement ignore le décrochage, le
-    # risque client ignore les impayés. Chacun signale son client dans sa liste,
-    # et personne ne rapproche les deux.
     par_client: Dict[str, List[Dict[str, Any]]] = {}
     for c in classes:
         for cl in (c.get("clients_concernes") or []):
@@ -1160,13 +972,8 @@ def arbitre(state: Dict[str, Any]) -> Dict[str, Any]:
             if len(nom) < 3:
                 continue
             par_client.setdefault(nom.upper(), []).append({
-                # Le domaine est une propriété du CONSTAT, pas de l'agent qui
-                # l'émet. Tant qu'il était déduit du nom de l'agent, réunir deux
-                # agents fusionnait leurs domaines et faisait taire l'alerte
-                # croisée pour un client présent dans les deux. Un constat qui
-                # ne déclare rien retombe sur le nom de son agent : le
-                # comportement des agents existants est inchangé.
                 "domaine": c.get("domaine") or c.get("agent"),
+                "categorie": c.get("categorie"),
                 "titre": c.get("titre"),
                 "montant_dt": float(cl.get("montant_dt") or 0),
                 "nom_affiche": nom,
@@ -1177,22 +984,21 @@ def arbitre(state: Dict[str, Any]) -> Dict[str, Any]:
         domaines = {o["domaine"] for o in occurrences}
         if len(domaines) < 2:
             continue
+        designe = domaine_designe(sorted(domaines))
+        categorie = next((o.get("categorie") for o in occurrences
+                          if o["domaine"] == designe), None)
         cumuls.append({
             "client": occurrences[0]["nom_affiche"],
             "domaines": sorted(domaines),
             "signaux": occurrences,
             "montant_cumule_dt": round(sum(o["montant_dt"] for o in occurrences), 0),
+            "categorie": categorie,
+            "execution": execution_multi_signaux(sorted(domaines)),
         })
     cumuls.sort(key=lambda x: -x["montant_cumule_dt"])
 
     total = sum(c["enjeu_court_terme_dt"] for c in classes)
     tete = classes[0]
-
-    # Concentration : les deux premières actions couvrent-elles l'essentiel ?
-    # Si oui, le message est « faites ces deux choses » ; sinon le risque est
-    # dispersé et aucune action isolée ne change la situation.
-    part_top2 = (sum(c["enjeu_court_terme_dt"] for c in classes[:2]) / total
-                 if total else 0.0)
 
     synthese = {
         "agent": "Arbitre",
@@ -1201,43 +1007,22 @@ def arbitre(state: Dict[str, Any]) -> Dict[str, Any]:
         "titre": "Hiérarchie des actions, tous domaines confondus",
         "montant_dt": round(total, 0),
         "constat": (
-            f"{len(classes)} constats arbitrés sur une échelle commune. "
-            f"Priorité : {tete.get('titre')} ({tete.get('agent')}), "
-            f"{_fmt(tete['enjeu_court_terme_dt'])} d'enjeu à court terme. "
-            + (f"Les deux premières actions concentrent {part_top2:.0%} de "
-               "l'enjeu total : les traiter suffit à changer la situation."
-               if part_top2 >= 0.6 else
-               f"L'enjeu est dispersé — les deux premières actions ne couvrent "
-               f"que {part_top2:.0%} du total, aucune ne suffit à elle seule.")
-            + (f" ALERTE CROISÉE : {len(cumuls)} client(s) signalé(s) par "
-               "plusieurs domaines à la fois, dont "
-               + ", ".join(f"{c['client']} ({' + '.join(c['domaines'])})"
-                           for c in cumuls[:3]) + "."
+            f"Priorité n°1 : {tete.get('titre')} ({_fmt(tete['enjeu_court_terme_dt'])} d'enjeu)."
+            + (" Alerte croisée : " + ", ".join(c['client'] for c in cumuls[:3]) + "."
                if cumuls else "")),
         "action": (
-            (f"Traiter EN PREMIER {cumuls[0]['client']} : ce compte cumule "
-             f"{' et '.join(cumuls[0]['domaines'])}. Une créance sur un client "
-             "qui s'éloigne devient douteuse — le levier commercial qui "
-             "permettrait de négocier disparaît avec la relation. Puis : "
-             if cumuls else "Traiter dans l'ordre : ")
-            + " puis ".join(f"{c['titre'].lower()}" for c in classes[:3])
-            + "."),
+            (f"Traiter en premier {cumuls[0]['client']} (signalé dans {' et '.join(cumuls[0]['domaines'])}). "
+             if cumuls else "")
+            + "Ordre : " + ", ".join(f"{c['titre'].lower()}" for c in classes[:3]) + "."),
         "classement": classes,
         "clients_multi_signaux": cumuls,
-        # Tous les modèles mobilisés par les spécialistes, dédoublonnés : le
-        # lecteur voit d'un coup d'œil sur quelle science repose le briefing.
         "modeles_mobilises": sorted({(u.get("libelle") or u.get("module") or "")
                                      for c in classes for u in (c.get("modeles_utilises") or [])
                                      if u.get("statut") == "servi"} - {""}),
         "pourquoi_les_cumuls_comptent": (
-            "Un client présent dans plusieurs constats cumule des risques dont "
-            "la conjonction change la nature. Aucun agent ne peut le détecter : "
-            "le recouvrement ignore le décrochage, le risque client ignore les "
-            "impayés. Ce croisement n'existe qu'après le fan-in."),
-        "methode": (
-            "Les montants bruts ne sont pas comparables : une créance en retard "
-            "est un décalage, une péremption une perte sèche. Chacun est pondéré "
-            "par la part réellement en jeu à court terme."),
+            "Un client signalé par plusieurs domaines cumule des risques "
+            "qu'aucun domaine seul ne voit."),
+        "methode": "Chaque montant est pondéré par sa part réellement en jeu à court terme.",
     }
 
     return {"findings": [synthese],
@@ -1246,18 +1031,12 @@ def arbitre(state: Dict[str, Any]) -> Dict[str, Any]:
                            f"{tete.get('titre')} »")]}
 
 
-# ── Rédacteur (synthèse) ────────────────────────────────────────────────────
 _SEV_ORDER = {"critique": 0, "haute": 1, "moyenne": 2, "faible": 3}
 _SEV_ICON = {"critique": "🔴", "haute": "🟠", "moyenne": "🟡", "faible": "🟢"}
 
 
 def _reserve_fiabilite(fiabilite: Optional[Dict[str, Any]]) -> str:
-    """Ce que le volet fiabilité doit faire savoir au lecteur — sans jargon.
-
-    Rien quand tout va bien : le détail technique (métriques, refus, dérive)
-    reste dans l'API et le rapport. Une phrase quand une dérive est détectée :
-    c'est le seul cas où la fiabilité change la façon de lire les constats.
-    """
+    """Ce que le volet fiabilité doit faire savoir au lecteur — sans jargon."""
     if not fiabilite or not fiabilite.get("reentrainement_conseille"):
         return ""
     return ("Réserve : une partie de ces analyses s'appuie sur des comportements "
@@ -1266,20 +1045,7 @@ def _reserve_fiabilite(fiabilite: Optional[Dict[str, Any]]) -> str:
 
 
 def _ordre_de_lecture(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Ordre dans lequel le briefing présente les constats.
-
-    L'ordre de l'ARBITRE quand il a statué : les constats classés par enjeu à
-    court terme, puis sa synthèse. Le briefing triait auparavant par sévérité
-    déclarée — l'échelle que l'arbitre a précisément été créé pour remplacer,
-    un « haute » de l'agent Stock et un « haute » du Recouvrement ne mesurant
-    pas la même chose. Sur l'entrepôt réel, le point 1 du briefing était ainsi
-    la dépendance fournisseur (7e enjeu), pendant que le paragraphe de
-    l'arbitre, dans le même texte, annonçait les créances comme priorité. Et
-    entre sévérités égales, l'ordre dépendait de l'ordre d'arrivée des agents.
-
-    Sans arbitrage (arbitre en panne, appel isolé), repli sur la sévérité.
-    Le constat de fiabilité s'adresse à l'équipe technique : jamais listé.
-    """
+    """Ordre dans lequel le briefing présente les constats."""
     metier = [f for f in findings if f.get("categorie") != "Qualité des modèles"]
     synthese = next((f for f in metier if f.get("classement")), None)
     if synthese:
@@ -1334,11 +1100,6 @@ def redacteur(state: Dict[str, Any]) -> Dict[str, Any]:
             )
             if reserve:
                 bloc += f"\n- [réserve] Fiabilité des analyses : {reserve}"
-            # Le mot « chiffrées » suffisait à faire fabriquer des nombres au
-            # modèle : taux de remise, volumes à transférer, objectifs de
-            # recouvrement — aucun ne figurait dans les constats. Un briefing
-            # contenant un seul chiffre inventé perd toute valeur, puisque le
-            # lecteur ne peut plus distinguer le mesuré de l'imaginé.
             prompt = (
                 "Tu es le rédacteur d'une cellule d'intelligence financière. À partir des "
                 "constats ci-dessous, rédige un briefing exécutif en français, concis et "

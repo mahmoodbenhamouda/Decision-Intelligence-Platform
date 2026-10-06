@@ -1,28 +1,4 @@
-"""
-ml_engine/analytics/kpi_engine.py
-=================================
-Moteur de KPIs financiers haute performance basé sur **DuckDB**.
-
-Pourquoi DuckDB ?
------------------
-Les datasets bruts pèsent ~2,5 Go (certains CSV de mouvements dépassent 500 Mo).
-Les charger entièrement en mémoire avec pandas est impossible. DuckDB lit les CSV
-directement sur disque, en colonnes, sans tout charger en RAM.
-
-Architecture
-------------
-1. L'entrepôt (`output/analytics_store.duckdb`) est construit par l'ETL, un
-   modèle en étoile (voir `etl/` et docs/DATA_WAREHOUSE.md). Ce module ne
-   l'écrit jamais : `_connect()` demande seulement à l'ETL de le reconstruire
-   s'il est périmé, puis l'ouvre en lecture.
-2. `compute_dashboard(filters)` : interroge l'entrepôt (quelques
-   millisecondes) en appliquant les filtres en SQL, et renvoie un dictionnaire
-   complet de KPIs + séries prêtes pour les graphes du dashboard.
-
-Toutes les datasets sont exploitées (ventes, achats, lignes produits, devis,
-fournisseurs, paiements), contrairement à l'ancienne liste blanche qui en
-excluait la majorité.
-"""
+"""Moteur de KPIs financiers haute performance basé sur **DuckDB**."""
 
 from __future__ import annotations
 
@@ -40,23 +16,15 @@ from ml_engine.typologie import condition_sql_hopital_public
 
 _log = logging.getLogger(__name__)
 
-#: Chemin de l'entrepôt lu par tout le projet (redirigé par les tests).
 STORE_PATH = ENTREPOT
 
 
 def _connect(data_dir: Path | None = None) -> duckdb.DuckDBPyConnection:
-    """Connexion en LECTURE à l'entrepôt, reconstruit d'abord s'il est périmé.
-
-    L'entrepôt est construit par l'ETL (`etl/`, `python -m etl.construire`) ;
-    ce module ne fait que le lire."""
+    """Connexion en LECTURE à l'entrepôt, reconstruit d'abord s'il est périmé."""
     from etl.construire import assurer_a_jour
     assurer_a_jour(STORE_PATH, data_dir or _DEFAULT_DATA_DIR)
     return duckdb.connect(str(STORE_PATH), read_only=True)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CONSTRUCTION DES FILTRES SQL
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _sales_where(f: Dict[str, Any]) -> str:
     f = f or {}
@@ -91,6 +59,16 @@ def _sales_where(f: Dict[str, Any]) -> str:
     return " AND ".join(clauses)
 
 
+def _clause_dates(f: Dict[str, Any], colonne: str) -> str:
+    """Restriction de dates commune aux tables autres que `sales`."""
+    c = ""
+    if f.get("date_start"):
+        c += f" AND {colonne} >= DATE '{f['date_start']}'"
+    if f.get("date_end"):
+        c += f" AND {colonne} <= DATE '{f['date_end']}'"
+    return c
+
+
 def _apply_fidelity(con, where: str, fidelity: str) -> str:
     """Renvoie une clause supplémentaire restreignant aux clients du segment de fidélité."""
     if not fidelity or fidelity == "Tous":
@@ -109,10 +87,6 @@ def _apply_fidelity(con, where: str, fidelity: str) -> str:
     vals = ",".join("'" + str(c).replace("'", "''") + "'" for c in keep)
     return f" AND client IN ({vals})"
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# OPTIONS DE FILTRES (pour l'UI)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def get_filter_options(data_dir: Path | None = None) -> Dict[str, Any]:
     con = _connect(data_dir)
@@ -137,23 +111,13 @@ def get_filter_options(data_dir: Path | None = None) -> Dict[str, Any]:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CALCUL COMPLET DES KPIs
-# ─────────────────────────────────────────────────────────────────────────────
-
 def _scalar(con, sql: str, default=0):
     r = con.execute(sql).fetchone()
     return r[0] if r and r[0] is not None else default
 
 
 def _raisons_credit(v: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Pourquoi ce client apparaît dans les priorités de recouvrement.
-
-    La règle servie repose sur trois observations : le délai moyen réellement
-    constaté, l'encours exposé, et le nombre de factures qui fonde l'habitude.
-    Les seuils sont ceux du module de crédit (60 et 90 jours), publiés dans
-    `reports/credit_risk_metrics.json`.
-    """
+    """Pourquoi ce client apparaît dans les priorités de recouvrement."""
     try:
         from ml_engine.explication import raisons_seuils
     except Exception:
@@ -161,20 +125,19 @@ def _raisons_credit(v: Dict[str, Any]) -> List[Dict[str, Any]]:
     valeurs = {"avg_delay": float(v.get("avg_delay") or 0),
                "exposure": float(v.get("exposure") or 0),
                "n": float(v.get("n") or 0)}
+    # Aucune phrase n'est écrite ici : `raisons_seuils` compose « libellé :
+    # valeur — au-dessus de seuil » depuis ces déclarations. Recopier le seuil
+    # dans une phrase laissait les deux se désynchroniser au premier changement.
     return raisons_seuils(valeurs, [
-        {"variable": "avg_delay", "seuil": 90, "sens": "sup", "poids": 3.0,
-         "phrase": f"règle en moyenne à {valeurs['avg_delay']:.0f} jours, au-delà de 90"},
-        {"variable": "avg_delay", "seuil": 60, "sens": "sup", "poids": 2.0,
-         "phrase": f"règle en moyenne à {valeurs['avg_delay']:.0f} jours, au-delà de 60"},
+        {"variable": "avg_delay", "seuil": 90, "sens": "sup", "poids": 3.0},
+        {"variable": "avg_delay", "seuil": 60, "sens": "sup", "poids": 2.0},
         {"variable": "exposure", "seuil": 50_000, "sens": "sup", "poids": 2.0},
-        {"variable": "n", "seuil": 20, "sens": "sup", "poids": 1.0,
-         "phrase": f"habitude établie sur {valeurs['n']:.0f} factures"},
+        {"variable": "n", "seuil": 20, "sens": "sup", "poids": 1.0},
     ], n=3)
 
 
 def _load_client_risk() -> Dict[str, Any]:
-    """Scores de risque crédit par client (produits par credit_risk_model.train()).
-    Vide si le modèle n'a pas encore été entraîné — l'intégration est optionnelle."""
+    """Scores de risque crédit par client (produits par credit_risk_model.train())."""
     path = Path(os.environ.get("CLIENT_RISK_PATH", STORE_PATH.parent / "client_risk.json"))
     if path.exists():
         try:
@@ -184,17 +147,8 @@ def _load_client_risk() -> Dict[str, Any]:
     return {}
 
 
-def _charger_churn_si_servi(limite: int = 10) -> Dict[str, Any]:
-    """Clients à risque de décrochage, classés par ENJEU FINANCIER.
-
-    Le classement se fait sur `enjeu = probabilité × CA 12 mois`, et non sur la
-    seule probabilité. La raison est opérationnelle : une probabilité de 0,9 sur
-    un client à 2 000 DT ne mérite pas l'attention qu'exige 0,6 sur un client à
-    2 M DT. Un score de risque sans montant ne permet pas de hiérarchiser l'action.
-
-    Renvoie un dictionnaire vide si le registre ne déclare pas le modèle servi —
-    ainsi un modèle refusé n'atteint jamais le tableau de bord.
-    """
+def _charger_churn_si_servi(limite: int = 10, clients: List[str] | None = None) -> Dict[str, Any]:
+    """Clients à risque de décrochage, classés par ENJEU FINANCIER."""
     try:
         from ml_engine.registre import est_deploye
         if not est_deploye("churn"):
@@ -211,10 +165,10 @@ def _charger_churn_si_servi(limite: int = 10) -> Dict[str, Any]:
 
     if not scores:
         return {"servi": False, "motif": "aucun score disponible"}
+    if clients is not None:
+        garde = {str(c) for c in clients}
+        scores = {c: v for c, v in scores.items() if str(c) in garde}
 
-    # Le modèle indexe ses scores par CODE client ; le briefing et le tableau de
-    # bord doivent afficher des NOMS. Sans cette jointure, le directeur lit
-    # « CE000229 » et doit ouvrir l'ERP pour savoir de quel hôpital il s'agit.
     noms: Dict[str, str] = {}
     try:
         con = _connect()
@@ -225,23 +179,17 @@ def _charger_churn_si_servi(limite: int = 10) -> Dict[str, Any]:
         finally:
             con.close()
     except Exception:
-        pass    # sans l'entrepôt, on affichera le code — jamais rien
+        pass
 
     classes = sorted(
         ({"code": code, "nom": noms.get(code, code), **v}
          for code, v in scores.items()),
         key=lambda c: -float(c.get("enjeu_dt") or 0))[:limite]
 
-    # Le modèle enregistre des contributions BRUTES (en unités de logit) : elles
-    # ne se lisent pas telles quelles, et un écran qui afficherait « 683 % »
-    # décrédibiliserait l'explication entière. On les convertit ici en PARTS de
-    # l'influence retenue, qui totalisent 100 %.
-    for c in classes:
-        raisons = c.get("raisons") or []
-        total = sum(abs(float(r.get("poids") or 0)) for r in raisons)
-        if total > 0:
-            c["raisons"] = [{**r, "poids": round(abs(float(r.get("poids") or 0)) / total, 3)}
-                            for r in raisons]
+    # Les poids ne sont PLUS renormalisés ici : `ml_engine.explication` publie
+    # déjà des parts qui totalisent 100 %, et le facteur en sens inverse porte
+    # volontairement `poids: None`. Le recalcul transformait ce None en 0,0 —
+    # soit une barre « 0 % » à l'écran pour le seul facteur qui n'en a pas.
 
     n_alerte = sum(1 for v in scores.values()
                    if float(v.get("probabilite_decrochage") or 0) >= 0.5)
@@ -261,15 +209,7 @@ def _charger_churn_si_servi(limite: int = 10) -> Dict[str, Any]:
 
 
 def _charger_flux_reels(con) -> Dict[str, Any]:
-    """Position de stock reconstruite des flux réels, si la table existe.
-
-    La table `stock_flux_reel` est matérialisée par
-    `python -m ml_engine.stock.flux_reels` : la lecture du CSV d'achats est trop
-    lourde pour être refaite à chaque appel du tableau de bord.
-
-    Renvoie `disponible: False` plutôt que de lever : le module est optionnel, et
-    son absence ne doit pas empêcher le reste du tableau de bord de s'afficher.
-    """
+    """Position de stock reconstruite des flux réels, si la table existe."""
     try:
         tables = [r[0] for r in con.execute("SHOW TABLES").fetchall()]
         if "stock_flux_reel" not in tables:
@@ -302,15 +242,10 @@ def _charger_flux_reels(con) -> Dict[str, Any]:
     except Exception as e:
         return {"disponible": False, "motif": f"lecture impossible ({type(e).__name__})"}
 
-    # Ruptures détectées sur les flux réels : produits encore vendus dont
-    # l'approvisionnement s'est interrompu. Aucun niveau de stock n'est requis.
     try:
         from ml_engine.stock.flux_reels import (detecter_obsolescence,
                                                 detecter_ruptures)
         ruptures = detecter_ruptures(con)
-        # Obsolescence détectée par ROTATION, sans date d'expiration : un
-        # consommable dont le stock dépasse deux ans de consommation périmera,
-        # quelle que soit sa date exacte.
         obsoletes = detecter_obsolescence(con)
     except Exception:
         ruptures, obsoletes = [], []
@@ -331,15 +266,10 @@ def _charger_flux_reels(con) -> Dict[str, Any]:
         "perte_quasi_certaine_dt": round(sum(
             o["perte_probable_dt"] for o in obsoletes
             if o["gravite"] == "perte_quasi_certaine"), 0),
-        # Compté séparément : `n_obsoletes` inclut la rotation lente, dont la
-        # perte n'est que probable. Associer le nombre total au montant quasi
-        # certain ferait dire au chiffre autre chose que ce qu'il mesure.
         "n_obsoletes_certains": sum(
             1 for o in obsoletes if o["gravite"] == "perte_quasi_certaine"),
         "n_references_accumulees": int(n_pos or 0),
         "valeur_immobilisee_dt": round(float(valeur or 0), 0),
-        # Au-delà de deux ans de consommation, une référence n'est plus du stock
-        # de roulement : c'est du capital gelé.
         "n_references_plus_de_2_ans": int(n_dormant or 0),
         "top": [{
             "produit": p,
@@ -357,12 +287,7 @@ def _charger_flux_reels(con) -> Dict[str, Any]:
 
 
 def _charger_conversion_devis_si_servie() -> Dict[str, Any]:
-    """Devis à relancer en priorité, si le registre l'autorise.
-
-    Le registre est interrogé par le module lui-même : ce chargeur ne décide de
-    rien. Toute erreur se résout en `servi: False` — une absence vaut mieux qu'un
-    chiffre dont on ne sait pas s'il est autorisé.
-    """
+    """Devis à relancer en priorité, si le registre l'autorise."""
     try:
         from ml_engine.analytics.conversion_devis import predire
         return predire()
@@ -380,13 +305,7 @@ def _charger_marge_client_si_servie() -> Dict[str, Any]:
 
 
 def _charger_reappro_si_servi() -> Dict[str, Any]:
-    """Besoin de réapprovisionnement à 3 mois, si le registre l'autorise.
-
-    Le module est interrogé par le registre et jamais directement : un modèle
-    refusé ne doit pas pouvoir alimenter le tableau de bord par une importation
-    oubliée. Toute erreur se résout en `servi: False` — une absence est toujours
-    préférable à un chiffre dont on ne sait pas s'il est autorisé.
-    """
+    """Besoin de réapprovisionnement à 3 mois, si le registre l'autorise."""
     try:
         from ml_engine.stock.reappro_model import predire
         return predire()
@@ -395,13 +314,7 @@ def _charger_reappro_si_servi() -> Dict[str, Any]:
 
 
 def _charger_segmentation_si_servie() -> Dict[str, Any]:
-    """Typologie de clientèle, avec son croisement au décrochage.
-
-    Le croisement est la partie qui justifie le module : la segmentation dit qui
-    sont les clients, le modèle de décrochage lesquels partent. Ensemble ils
-    répondent à « quel TYPE de clientèle perdons-nous ? », question qu'aucun des
-    deux ne traite seul et qui oriente une politique plutôt qu'une liste d'appels.
-    """
+    """Typologie de clientèle, avec son croisement au décrochage."""
     try:
         from ml_engine.registre import est_deploye
         if not est_deploye("segmentation"):
@@ -422,8 +335,6 @@ def _charger_segmentation_si_servie() -> Dict[str, Any]:
     if not segments:
         return {"servi": False, "motif": "aucun segment"}
 
-    # Le croisement est indexé par identifiant de segment ; on le rattache au
-    # nom pour que l'interface n'ait pas à refaire la jointure.
     risques = {c["segment"]: c for c in
                ((r.get("croisement_decrochage") or {}).get("par_segment") or [])}
 
@@ -442,25 +353,8 @@ def _charger_segmentation_si_servie() -> Dict[str, Any]:
     }
 
 
-# Les trois fonctions suivantes ont été retirées avec la veille externe :
-# - enrich_opportunities() : enrichissait les appels d'offres avec les clients ERP
-# - fx_margin_sensitivity() : chiffrait l'exposition au change EUR/TND
-# - macro_market_context() : recopiait l'exposition au budget santé public
-# Motif : elles dépendaient de sources hors ERP (TUNEPS, taux de change, macro),
-# dont la qualité ne pouvait être auditée (cf. reports/METRICS_REPORT.md, §2).
-
-
 def _part_publique_carnet(data_dir: Path | None, origine: int, cible: int) -> float | None:
-    """Part (en %) des établissements de santé publics dans les créances DÉJÀ
-    inscrites au carnet pour le mois `cible` : factures émises au plus tard le
-    mois `origine`, échéance au mois `cible`.
-
-    Même périmètre et mêmes exclusions que `carnet_echeances.charger_factures`
-    (portefeuille entier, avoirs exclus), et même index de mois (`année×12 +
-    mois−1`) : numérateur et dénominateur portent sur les mêmes factures, le
-    résultat est donc toujours compris entre 0 et 100. `None` si rien n'est
-    inscrit.
-    """
+    """Part (en %) des établissements de santé publics dans les créances DÉJÀ inscrites au carnet pour…"""
     public = condition_sql_hopital_public("client_name")
     try:
         con = _connect(data_dir)
@@ -477,7 +371,6 @@ def _part_publique_carnet(data_dir: Path | None, origine: int, cible: int) -> fl
         finally:
             con.close()
     except Exception as e:
-        # La phrase est un complément : son absence ne doit pas emporter la carte.
         _log.warning("radar : part publique du carnet indisponible (%s: %s)",
                      type(e).__name__, e)
         return None
@@ -486,26 +379,162 @@ def _part_publique_carnet(data_dir: Path | None, origine: int, cible: int) -> fl
     return float(pub or 0) / float(tot) * 100
 
 
+#: Part du chiffre d'affaires annuel au-delà de laquelle un enjeu passe en
+#: sévérité haute. Déclarée ici, en un seul endroit, plutôt que répétée dans
+#: chaque carte sous forme de montant absolu qui vieillit.
+PART_CA_SEVERITE_HAUTE = 0.05
+
+
+def _severite(enjeu_dt: float, ca_annuel_dt: float) -> str:
+    if not ca_annuel_dt or enjeu_dt <= 0:
+        return "faible"
+    return ("haute" if enjeu_dt / ca_annuel_dt >= PART_CA_SEVERITE_HAUTE
+            else "moyenne")
+
+
+def _cartes_des_modeles(ca_annuel_dt: float) -> List[Dict[str, Any]]:
+    """Une carte par modèle SERVI, avec son enjeu chiffré.
+
+    Le radar ne portait que deux cartes de trésorerie : les modèles déployés
+    calculaient un enjeu en dinars que rien ne remontait à l'écran de décision.
+    Chaque carte nomme son modèle, et n'existe pas si le registre le refuse — la
+    décision de servir reste au registre, jamais ici.
+    """
+    cartes: List[Dict[str, Any]] = []
+
+    def ajouter(carte: Dict[str, Any]) -> None:
+        cartes.append(carte)
+
+    # ── Décrochage client ────────────────────────────────────────────────────
+    try:
+        churn = _charger_churn_si_servi(limite=3)
+        if churn.get("servi") and (churn.get("n_au_dessus_de_0_5") or 0) > 0:
+            enjeu = float(churn.get("enjeu_total_dt") or 0)
+            tops = churn.get("top") or []
+            noms = ", ".join((c.get("nom") or c.get("code") or "")[:34]
+                             for c in tops[:3])
+            action = next((c["contrefactuel"]["phrase"] for c in tops
+                           if (c.get("contrefactuel") or {}).get("phrase")), None)
+            ajouter({
+                "id": "churn_clients", "categorie": "Rétention",
+                "severite": _severite(enjeu, ca_annuel_dt),
+                "titre": "Clients en risque de décrochage",
+                "montant_dt": round(enjeu, 0),
+                "montant_label": "chiffre d'affaires annuel des clients signalés",
+                "constat": (f"{churn['n_au_dessus_de_0_5']} client(s) au-dessus de "
+                            f"0,5 de probabilité de ne plus commander dans les "
+                            f"90 jours, sur {churn.get('n_clients_scores', 0)} "
+                            f"clients actifs scorés."),
+                "signal_externe": "Modèle de décrochage (AUC hors période)",
+                "action": (f"Appeler {noms}."
+                           + (f" {action.capitalize()} pour le premier."
+                              if action else "")),
+                "top": [{"client": (c.get("nom") or c.get("code")),
+                         "montant": float(c.get("enjeu_dt") or 0)}
+                        for c in tops[:3]],
+                "modele": "churn",
+            })
+    except Exception as e:
+        _log.warning("radar : carte « décrochage » indisponible (%s: %s)",
+                     type(e).__name__, e)
+
+    # ── Érosion de marge ─────────────────────────────────────────────────────
+    try:
+        marge = _charger_marge_client_si_servie()
+        tops = marge.get("top") or []
+        if marge.get("servi") and tops:
+            enjeu = sum(float(c.get("marge_en_jeu_dt") or 0) for c in tops)
+            ajouter({
+                "id": "erosion_marge", "categorie": "Rentabilité",
+                "severite": _severite(enjeu, ca_annuel_dt),
+                "titre": "Érosion de marge attendue à 3 mois",
+                "montant_dt": round(enjeu, 0),
+                "montant_label": "marge en jeu sur les clients signalés",
+                "constat": (f"{len(tops)} client(s) dont la marge du trimestre à "
+                            f"venir devrait tomber sous "
+                            f"{marge.get('seuil_marge_basse_pct', 0):.1f} %, "
+                            f"sur {marge.get('n_clients', 0)} clients suivis."),
+                "signal_externe": "Modèle d'érosion de marge (gradient boosting)",
+                "action": ("Revoir les conditions tarifaires de ces clients avant "
+                           "la prochaine commande, pas après."),
+                "top": [{"client": c.get("client"),
+                         "montant": float(c.get("marge_en_jeu_dt") or 0)}
+                        for c in tops[:3]],
+                "modele": "marge_client",
+            })
+    except Exception as e:
+        _log.warning("radar : carte « marge » indisponible (%s: %s)",
+                     type(e).__name__, e)
+
+    # ── Devis à relancer ─────────────────────────────────────────────────────
+    try:
+        devis = _charger_conversion_devis_si_servie()
+        tops = devis.get("top") or []
+        if devis.get("servi") and tops:
+            enjeu = float(devis.get("esperance_totale_dt") or 0)
+            ajouter({
+                "id": "devis_a_relancer", "categorie": "Commercial",
+                "severite": _severite(enjeu, ca_annuel_dt),
+                "titre": "Devis ouverts à relancer en priorité",
+                "montant_dt": round(enjeu, 0),
+                "montant_label": "espérance de signature sur les devis ouverts",
+                "constat": (f"{devis.get('n_devis', 0)} devis encore ouverts ; "
+                            f"les {len(tops)} premiers concentrent l'essentiel de "
+                            "l'espérance de signature."),
+                "signal_externe": "Modèle de conversion des devis",
+                "action": ("Relancer ces devis dans l'ordre affiché : le "
+                           "classement combine probabilité et montant."),
+                "top": [{"client": c.get("client"),
+                         "montant": float(c.get("montant_ht_dt") or 0)}
+                        for c in tops[:3]],
+                "modele": "conversion_devis",
+            })
+    except Exception as e:
+        _log.warning("radar : carte « devis » indisponible (%s: %s)",
+                     type(e).__name__, e)
+
+    # ── Mouvements attendus dans le top 10 ───────────────────────────────────
+    try:
+        from ml_engine.analytics.ca_client import predire_top
+        top = predire_top(n=10, horizon=12)
+        if top.get("servi") and (top.get("entrants") or top.get("sortants")):
+            sortants = top.get("sortants") or []
+            entrants = top.get("entrants") or []
+            perte = sum(float(c.get("ca_12m_constate_dt") or 0)
+                        for c in (top.get("top_predit") or [])
+                        if c.get("rang_constate") is None)
+            ajouter({
+                "id": "mouvements_top_10", "categorie": "Portefeuille",
+                "severite": "moyenne" if sortants else "faible",
+                "titre": "Mouvements attendus dans le top 10 clients",
+                "montant_dt": round(perte, 0),
+                "montant_label": "chiffre d'affaires des clients entrants",
+                "constat": (
+                    f"{len(sortants)} client(s) devraient sortir du top 10 et "
+                    f"{len(entrants)} y entrer sur les 12 prochains mois. Le top "
+                    "constaté est un décompte du passé ; celui-ci est une "
+                    "prévision."),
+                "signal_externe": "Modèle de chiffre d'affaires à 12 mois",
+                "action": (
+                    ("Sécuriser " + ", ".join(
+                        (c.get("nom") or c.get("client") or "")[:34]
+                        for c in sortants[:3]) + " avant la sortie du top 10.")
+                    if sortants else
+                    "Accompagner la montée des entrants."),
+                "top": [{"client": (c.get("nom") or c.get("client")),
+                         "montant": 0.0} for c in sortants[:3]],
+                "modele": "ca_client_12m",
+            })
+    except Exception as e:
+        _log.warning("radar : carte « top 10 » indisponible (%s: %s)",
+                     type(e).__name__, e)
+
+    return cartes
+
+
 def finance_radar(mi: Dict[str, Any] | None, filters: Dict[str, Any] | None = None,
                   data_dir: Path | None = None) -> List[Dict[str, Any]]:
-    """RADAR FINANCIER — cartes d'action chiffrées sur les données de l'ERP.
-
-    Deux cartes, triées par sévérité puis par montant :
-
-      1. Recouvrement des établissements de santé publics (`recouvrement_public`) :
-         leur part de l'EXPOSITION RÉCENTE — factures à délai accordé > 60 j,
-         échéances des 6 derniers mois —, calculée comme `exposition_recente_dt`
-         et sur le MÊME périmètre filtré. Un établissement est public selon la
-         règle unique de `ml_engine/typologie.py`.
-      2. Créances exigibles le mois prochain (`echeancier_1m`), si le registre
-         sert l'échéancier : lues dans le carnet des factures émises, sur tout
-         le portefeuille, avec la part des établissements publics dans ce qui
-         est déjà inscrit au carnet.
-
-    `mi` : contexte externe facultatif (`{"macro": {"sante_pct_pib": {...}}}`).
-    La veille externe ayant été retirée, les appelants passent `{}` et le
-    signal externe se réduit au constat sur les délais des payeurs publics.
-    """
+    """RADAR FINANCIER — cartes d'action chiffrées sur les données de l'ERP."""
     mi = mi or {}
     filters = filters or {}
     cards: List[Dict[str, Any]] = []
@@ -516,7 +545,6 @@ def finance_radar(mi: Dict[str, Any] | None, filters: Dict[str, Any] | None = No
 
     public = condition_sql_hopital_public("client_name")
     try:
-        # Périmètre dynamique : mêmes filtres que le tableau de bord
         base_where = _sales_where(filters)
         try:
             W = base_where + _apply_fidelity(con, base_where, filters.get("fidelity_filter", "Tous"))
@@ -525,10 +553,6 @@ def finance_radar(mi: Dict[str, Any] | None, filters: Dict[str, Any] | None = No
         filtre_actif = W.strip() not in ("1=1", "")
         suffixe_perim = " (périmètre filtré)" if filtre_actif else ""
 
-        # ── Carte 1 : recouvrement des établissements de santé publics ───────
-        # Même fenêtre que `exposition_recente_dt` : cumuler l'historique (neuf
-        # ans, sans aucune date de règlement dans l'ERP) donnerait un montant
-        # qui n'est dû par personne aujourd'hui.
         try:
             expo, expo_pub, crit_pub, nb_pub, ref_mois = con.execute(f"""
                 WITH ref AS (SELECT max(echeance) md FROM sales WHERE {W})
@@ -554,15 +578,11 @@ def finance_radar(mi: Dict[str, Any] | None, filters: Dict[str, Any] | None = No
             top_debiteurs = [{"client": (r[0] or "—")[:34], "montant": float(r[1] or 0)}
                              for r in top]
         except Exception as e:
-            # Visible dans le journal : une erreur avalée en silence a déjà
-            # masqué cette carte pendant des semaines.
             _log.warning("radar : carte « recouvrement public » indisponible (%s: %s)",
                          type(e).__name__, e)
             pub_risque = pub_crit = expo_totale = 0.0
             pub_nb, ref_mois, top_debiteurs = 0, None, []
 
-        # Contexte externe facultatif = budget santé public (Banque Mondiale),
-        # proxy de la capacité de paiement du secteur public.
         sante = ((mi.get("macro") or {}).get("sante_pct_pib") or {}).get("value")
         if pub_risque > 0:
             sev = "haute" if pub_crit > 0 else "moyenne"
@@ -588,32 +608,12 @@ def finance_radar(mi: Dict[str, Any] | None, filters: Dict[str, Any] | None = No
                 "top": top_debiteurs,
             })
     finally:
-        # Fermée avant la carte 2 : le carnet ouvre sa propre connexion.
         try:
             con.close()
         except Exception:
             pass
 
-    # Les leviers « exposition au change » et « pipeline d'appels d'offres » ont
-    # été retirés avec la veille externe : tous deux dépendaient de sources hors
-    # ERP — un taux EUR/TND et un scan de marchés publics — dont la qualité ne
-    # pouvait pas être auditée comme l'est celle des données de facturation.
-    # Le radar ne présente plus que des leviers mesurés sur l'entrepôt.
 
-    # ── Carte 2 : échéancier du mois à venir ─────────────────────────────────
-    #
-    # Ce levier affichait une projection LSTM à 6 mois. Deux raisons de l'avoir
-    # remplacée :
-    #
-    #   * le LSTM n'a jamais confirmé de gain sur une référence triviale, et rien
-    #     dans le code ne l'empêchait d'être servi malgré ce refus ;
-    #   * l'horizon de 6 mois est structurellement intenable. 99 % des factures
-    #     ont un délai de paiement de 0 à 2 mois : au-delà, les encaissements
-    #     proviennent de factures NON ENCORE ÉMISES, qu'aucune méthode ne peut
-    #     lire. Annoncer six mois donnait une précision imaginaire.
-    #
-    # On sert désormais l'échéancier à un mois, mesuré à 1,3 % d'erreur en
-    # walk-forward contre 11,9 % pour la meilleure référence triviale.
     try:
         from ml_engine.forecasting.carnet_echeances import charger_factures, prevoir
         from ml_engine.registre import est_deploye
@@ -622,7 +622,7 @@ def finance_radar(mi: Dict[str, Any] | None, filters: Dict[str, Any] | None = No
             factures = charger_factures()
             echeances = sorted({e for _, e, _ in factures})
             emissions = sorted({em for em, _, _ in factures})
-            origine = max(emissions) - 1        # dernier mois à cible complète
+            origine = max(emissions) - 1
             sortie = prevoir(factures, origine, 1, echeances[0])
             if sortie:
                 prevu, _regime, maturite = sortie
@@ -642,13 +642,24 @@ def finance_radar(mi: Dict[str, Any] | None, filters: Dict[str, Any] | None = No
                         + phrase_pub),
                     "signal_externe": "Échéances contractuelles des factures déjà émises",
                     "action": ("Caler les relances sur ce montant : ce sont des créances "
-                               "exigibles, pas des encaissements garantis — l'ERP "
+                               "exigibles, pas des encaissements garantis — les "
                                "n'enregistre aucune date de règlement."),
                     "top": [],
                 })
     except Exception as e:
         _log.warning("radar : carte « échéancier » indisponible (%s: %s)",
                      type(e).__name__, e)
+
+    # Les modèles servis ne dépendent pas du périmètre filtré : ils sont
+    # entraînés sur tout l'historique. Leurs cartes ne portent donc pas le
+    # suffixe de périmètre, et ne sont ajoutées qu'en l'absence de filtre, pour
+    # qu'un écran filtré ne mélange pas deux périmètres.
+    if not filtre_actif:
+        try:
+            cards += _cartes_des_modeles(_ca_annuel(data_dir))
+        except Exception as e:
+            _log.warning("radar : cartes des modèles indisponibles (%s: %s)",
+                         type(e).__name__, e)
 
     order = {"haute": 0, "moyenne": 1, "faible": 2}
     cards.sort(key=lambda c: (order.get(c.get("severite"), 3), -(c.get("montant_dt") or 0)))
@@ -657,16 +668,217 @@ def finance_radar(mi: Dict[str, Any] | None, filters: Dict[str, Any] | None = No
     return cards
 
 
+def _ca_annuel(data_dir: Path | None = None) -> float:
+    """Chiffre d'affaires des 12 derniers mois, pour calibrer la sévérité."""
+    try:
+        con = _connect(data_dir)
+        try:
+            return float(con.execute("""
+                WITH ref AS (SELECT max(date) md FROM sales)
+                SELECT coalesce(sum(ttc), 0) FROM sales
+                WHERE NOT est_avoir
+                  AND date >= (SELECT md FROM ref) - INTERVAL 12 MONTH
+            """).fetchone()[0] or 0.0)
+        finally:
+            con.close()
+    except Exception:
+        return 0.0
+
+
+PERIODES = {
+    "12m": "12 derniers mois",
+    "annee": "Année en cours",
+    "tout": "Tout l'historique",
+}
+
+
+def periode_reference(con, filters: Dict[str, Any]) -> Dict[str, Any]:
+    """Période sur laquelle portent les indicateurs, et sa période de comparaison.
+
+    Un directeur ouvre son tableau de bord pour savoir où il en est MAINTENANT :
+    un chiffre d'affaires cumulé depuis 2017 ne lui dit rien. Par défaut, les
+    indicateurs portent donc sur les 12 derniers mois (comptés depuis la dernière
+    facture de l'entrepôt), comparés aux 12 mois précédents. Une année ou des
+    dates choisies à la main priment toujours sur ce défaut.
+    """
+    from datetime import date as _date, timedelta
+    if filters.get("selected_years") or filters.get("date_start") or filters.get("date_end"):
+        return {"code": "personnalisee", "libelle": "Période choisie", "debut": None, "fin": None}
+    code = str(filters.get("periode") or "12m")
+    if code not in PERIODES:
+        code = "12m"
+    if code == "tout":
+        return {"code": code, "libelle": PERIODES[code], "debut": None, "fin": None}
+    fin = con.execute("SELECT max(date) FROM sales").fetchone()[0]
+    if fin is None:
+        return {"code": "tout", "libelle": PERIODES["tout"], "debut": None, "fin": None}
+
+    def _moins_un_an(d: _date) -> _date:
+        try:
+            return d.replace(year=d.year - 1)
+        except ValueError:            # 29 février
+            return d.replace(year=d.year - 1, day=28)
+
+    debut = (_moins_un_an(fin) + timedelta(days=1)) if code == "12m" else _date(fin.year, 1, 1)
+    return {"code": code, "libelle": PERIODES[code],
+            "debut": debut.isoformat(), "fin": fin.isoformat(),
+            "comparaison_debut": _moins_un_an(debut).isoformat(),
+            "comparaison_fin": _moins_un_an(fin).isoformat()}
+
+
+#: Tranches de délai accordé, et ce que chacune signifie pour la trésorerie.
+TRANCHES_DELAI = [
+    ("comptant", "Comptant", "payment_delay_days <= 0",
+     "Encaissé à l'émission : aucune trésorerie avancée."),
+    ("j30", "1 à 30 jours", "payment_delay_days > 0 AND payment_delay_days <= 30",
+     "Délai court, usage courant du secteur privé."),
+    ("j60", "31 à 60 jours", "payment_delay_days > 30 AND payment_delay_days <= 60",
+     "Délai standard des établissements publics."),
+    ("j90", "61 à 90 jours", "payment_delay_days > 60 AND payment_delay_days <= 90",
+     "Au-delà du seuil de 60 jours retenu dans ce tableau de bord comme limite "
+     "de surveillance."),
+    ("j90p", "plus de 90 jours", "payment_delay_days > 90",
+     "Trésorerie avancée plus d'un trimestre sur une vente déjà livrée."),
+]
+
+
+def _delais(con, where_ventes: str, where_achats: str,
+            periode: Dict[str, Any]) -> Dict[str, Any]:
+    """Délais accordés aux clients et obtenus des fournisseurs, sans ambiguïté.
+
+    TROIS PRÉCISIONS que le chiffre seul ne portait pas, et sans lesquelles il
+    ne se décide pas :
+
+      * LE SENS. « Délai moyen » ne disait pas qui attend qui. Le délai accordé
+        est celui qu'Overlyne consent à ses clients — de la trésorerie qu'elle
+        avance. Le délai obtenu est celui que ses fournisseurs lui consentent —
+        de la trésorerie qu'on lui avance.
+      * LA PONDÉRATION. Une moyenne par facture compte une facture de 500 DT
+        comme une de 500 000 DT. Financièrement, seule la moyenne pondérée par
+        le montant a un sens : c'est elle qui dit combien de jours de chiffre
+        d'affaires sont réellement immobilisés.
+      * LA NATURE. `payment_delay_days` est l'écart entre la date de facture et
+        la date d'échéance : le délai INSCRIT à l'émission. L'ERP n'enregistre
+        aucune date de règlement, donc aucun retard réel n'est mesurable ici.
+        Un client peut payer en avance ou ne jamais payer : ce chiffre ne le
+        dira pas.
+    """
+    v = con.execute(f"""
+        SELECT avg(payment_delay_days),
+               sum(ttc * payment_delay_days) / nullif(sum(ttc), 0),
+               count(*), sum(ttc)
+        FROM sales
+        WHERE {where_ventes} AND NOT est_avoir AND payment_delay_days IS NOT NULL
+    """).fetchone() or (None, None, 0, 0)
+    a = con.execute(f"""
+        SELECT avg(payment_delay_days),
+               sum(ttc * payment_delay_days) / nullif(sum(ttc), 0),
+               count(*), sum(ttc)
+        FROM purchases
+        WHERE {where_achats} AND NOT est_avoir AND payment_delay_days IS NOT NULL
+    """).fetchone() or (None, None, 0, 0)
+
+    cas = ", ".join(f"sum(ttc) FILTER (WHERE {c}) AS {code}, "
+                    f"count(*) FILTER (WHERE {c}) AS n_{code}"
+                    for code, _, c, _ in TRANCHES_DELAI)
+    rep = con.execute(f"""
+        SELECT {cas} FROM sales
+        WHERE {where_ventes} AND NOT est_avoir AND payment_delay_days IS NOT NULL
+    """).fetchone()
+    total_reparti = sum(float(rep[i * 2] or 0) for i in range(len(TRANCHES_DELAI)))
+
+    accorde_pondere = float(v[1] or 0)
+    obtenu_pondere = float(a[1] or 0)
+    ecart = accorde_pondere - obtenu_pondere
+
+    # Trésorerie que l'entreprise finance elle-même : les jours d'écart,
+    # appliqués au chiffre d'affaires quotidien de la période. C'est un ordre de
+    # grandeur, pas un solde de compte — l'ERP ne porte pas les encaissements.
+    ca_periode = float(v[3] or 0)
+    jours_periode = None
+    if periode.get("debut") and periode.get("fin"):
+        from datetime import date as _d
+        d1, d2 = _d.fromisoformat(periode["debut"]), _d.fromisoformat(periode["fin"])
+        jours_periode = max(1, (d2 - d1).days + 1)
+    ca_par_jour = (ca_periode / jours_periode) if jours_periode else None
+
+    return {
+        "accorde_aux_clients": {
+            "moyenne_par_facture_j": round(float(v[0] or 0), 1),
+            "moyenne_ponderee_j": round(accorde_pondere, 1),
+            "n_factures": int(v[2] or 0),
+            "montant_dt": round(ca_periode, 0),
+            "sens": ("ce qu'Overlyne accorde à ses clients : de la trésorerie "
+                     "avancée"),
+        },
+        "obtenu_des_fournisseurs": {
+            "moyenne_par_facture_j": round(float(a[0] or 0), 1),
+            "moyenne_ponderee_j": round(obtenu_pondere, 1),
+            "n_factures": int(a[2] or 0),
+            "montant_dt": round(float(a[3] or 0), 0),
+            "sens": ("ce que les fournisseurs accordent à Overlyne : de la "
+                     "trésorerie reçue"),
+        },
+        "ecart_j": round(ecart, 1),
+        "ecart_sens": ("positif" if ecart > 0 else "négatif" if ecart < 0 else "nul"),
+        "ecart_lecture": (
+            "Overlyne paie ses fournisseurs avant d'être payée par ses clients : "
+            f"l'écart de {abs(ecart):.0f} jours est financé sur sa propre "
+            "trésorerie." if ecart > 0 else
+            "Overlyne encaisse avant de payer ses fournisseurs : ce sont eux qui "
+            "financent le cycle." if ecart < 0 else
+            "Les deux délais s'équilibrent."),
+        # Signé : positif = trésorerie avancée par Overlyne, négatif =
+        # trésorerie que les fournisseurs lui avancent. Le libellé suit le
+        # signe, sinon un nombre négatif sous « trésorerie immobilisée » se lit
+        # à contresens.
+        "tresorerie_cycle_dt": (round(ca_par_jour * ecart, 0)
+                                if ca_par_jour is not None else None),
+        "tresorerie_cycle_libelle": ("Trésorerie avancée par Overlyne"
+                                     if ecart > 0 else
+                                     "Trésorerie avancée par les fournisseurs"),
+        "tresorerie_cycle_methode": (
+            "jours d'écart × chiffre d'affaires quotidien de la période. Ordre "
+            "de grandeur : les encaissements ne sont pas enregistrés, donc aucun "
+            "solde réel n'est calculable."),
+        "repartition": [{
+            "code": code, "tranche": libelle, "signification": sens,
+            "montant_dt": round(float(rep[i * 2] or 0), 0),
+            "n_factures": int(rep[i * 2 + 1] or 0),
+            "part_pct": (round(float(rep[i * 2] or 0) / total_reparti * 100, 1)
+                         if total_reparti else None),
+        } for i, (code, libelle, _, sens) in enumerate(TRANCHES_DELAI)],
+        "nature": "délai ACCORDÉ, inscrit sur la facture à l'émission",
+        "ce_n_est_pas": (
+            "un retard de paiement. Aucune date de règlement n'est enregistrée : "
+            "impossible de savoir ici si un client a payé, payé en "
+            "avance, ou jamais payé."),
+        "seuil_surveillance_j": 60,
+        "part_au_dela_du_seuil_pct": (
+            round(sum(float(rep[i * 2] or 0)
+                      for i, (c, _, _, _) in enumerate(TRANCHES_DELAI)
+                      if c in ("j90", "j90p")) / total_reparti * 100, 1)
+            if total_reparti else None),
+    }
+
+
 def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | None = None) -> Dict[str, Any]:
-    """Calcule l'ensemble des KPIs et séries graphiques sur le périmètre filtré."""
+    """Calcule l'ensemble des KPIs et séries graphiques sur le périmètre filtré.
+
+    Les INDICATEURS portent sur la période de référence (12 derniers mois par
+    défaut) ; les SÉRIES d'évolution gardent tout l'historique, pour la tendance."""
     filters = filters or {}
     con = _connect(data_dir)
+    periode = periode_reference(con, filters)
+    historique = filters
+    if periode.get("debut"):
+        filters = {**filters, "date_start": periode["debut"], "date_end": periode["fin"]}
     base_where = _sales_where(filters)
     fid_clause = _apply_fidelity(con, base_where, filters.get("fidelity_filter", "Tous"))
-    W = base_where + fid_clause  # clause ventes complète
+    W = base_where + fid_clause
+    hist_where = _sales_where(historique)
+    WH = hist_where + _apply_fidelity(con, hist_where, historique.get("fidelity_filter", "Tous"))
     is_client_scope = bool(filters.get("selected_clients"))
-    # La marge n'est fiable que globale ou filtrée par année (les achats suivent
-    # l'année mais pas les filtres client/risque/montant/paiement/fidélité).
     marge_non_attribuable = bool(
         filters.get("selected_clients") or filters.get("payment_modes")
         or (filters.get("risk_level") and filters.get("risk_level") != "Tous")
@@ -676,11 +888,6 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
 
     k: Dict[str, Any] = {"monthly_sales": [], "top_clients": [], "anomalies_details": []}
 
-    # ── 1. Chiffre d'affaires ────────────────────────────────────────────────
-    # `ttc` porte désormais le signe comptable : la somme est donc un CA NET,
-    # avoirs déduits. En revanche un avoir n'est pas une vente — le compter
-    # comme une facture gonflait le volume et faussait le panier moyen, qui
-    # divisait un CA net par un nombre de pièces brut.
     row = con.execute(f"""
         SELECT sum(ttc) ttc, sum(ht) ht,
                count(*) FILTER (WHERE NOT est_avoir)  nb,
@@ -696,17 +903,15 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     k["ca_total_ht"] = float(ca_ht or 0)
     k["nb_factures_vente"] = int(nb_fact or 0)
     k["nb_avoirs"] = int(nb_avoirs or 0)
-    k["montant_avoirs_ttc"] = float(mt_avoirs or 0)
-    k["taux_avoirs_pct"] = (k["montant_avoirs_ttc"] / k["ca_total_ttc"] * 100
+    k["taux_avoirs_pct"] = (float(mt_avoirs or 0) / k["ca_total_ttc"] * 100
                             if k["ca_total_ttc"] else 0.0)
     k["nb_clients"] = int(nb_clients or 0)
     k["panier_moyen"] = (k["ca_total_ttc"] / k["nb_factures_vente"]) if k["nb_factures_vente"] else 0
     k["dso_jours"] = float(dso or 0)
 
-    # ── 2. Tendance mensuelle CA + marge mensuelle ───────────────────────────
     monthly = con.execute(f"""
         SELECT strftime(date, '%Y-%m') period, sum(ttc) revenue, sum(ht) ht
-        FROM sales WHERE {W} GROUP BY 1 ORDER BY 1
+        FROM sales WHERE {WH} GROUP BY 1 ORDER BY 1
     """).fetchall()
     k["monthly_sales"] = [{"period": m[0], "revenue": float(m[1] or 0)} for m in monthly]
     if len(monthly) >= 2:
@@ -717,25 +922,39 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         k["mom_growth"] = 0
         k["tendance"] = "Stable"
 
-    # ── 3. CA annuel + croissance YoY ────────────────────────────────────────
-    yearly = con.execute(f"SELECT year, sum(ttc) FROM sales WHERE {W} GROUP BY year ORDER BY year").fetchall()
+    yearly = con.execute(f"SELECT year, sum(ttc) FROM sales WHERE {WH} GROUP BY year ORDER BY year").fetchall()
     k["yearly_sales"] = [{"year": int(y[0]), "revenue": float(y[1] or 0)} for y in yearly if y[0] is not None]
-    # Croissance sur 12 mois glissants (robuste aux années partielles)
     ttm = con.execute(f"""
-        WITH m AS (SELECT max(date) mx FROM sales WHERE {W})
+        WITH m AS (SELECT max(date) mx FROM sales WHERE {WH})
         SELECT
           sum(ttc) FILTER (WHERE date >  (SELECT mx FROM m) - INTERVAL '12 months')                                  AS ttm_v,
           sum(ttc) FILTER (WHERE date <= (SELECT mx FROM m) - INTERVAL '12 months'
                              AND date >  (SELECT mx FROM m) - INTERVAL '24 months')                                 AS prev_v
-        FROM sales WHERE {W}
+        FROM sales WHERE {WH}
     """).fetchone()
     ttm_v, prior_v = float(ttm[0] or 0), float(ttm[1] or 0)
     k["ttm_revenue"] = ttm_v
     k["yoy_growth"] = ((ttm_v - prior_v) / prior_v * 100) if prior_v else 0
 
-    # ── 2bis. Comparaison année courante vs année précédente (par mois) ───────
+    if periode.get("comparaison_debut"):
+        comp = {**historique, "date_start": periode["comparaison_debut"],
+                "date_end": periode["comparaison_fin"]}
+        cw = _sales_where(comp)
+        cw += _apply_fidelity(con, cw, comp.get("fidelity_filter", "Tous"))
+        crow = con.execute(f"SELECT sum(ttc), count(DISTINCT client) FROM sales WHERE {cw}").fetchone()
+        ca_prec = float(crow[0] or 0)
+        periode["ca_precedent_dt"] = round(ca_prec, 0)
+        periode["clients_precedent"] = int(crow[1] or 0)
+        periode["evolution_pct"] = ((k["ca_total_ttc"] - ca_prec) / ca_prec * 100) if ca_prec else None
+        periode["libelle_comparaison"] = ("vs les 12 mois précédents" if periode["code"] == "12m"
+                                          else "vs la même période l'an dernier")
+    else:
+        periode["evolution_pct"] = k["yoy_growth"]
+        periode["libelle_comparaison"] = "sur 12 mois glissants"
+    k["periode_reference"] = periode
+
     yrs = [int(r[0]) for r in con.execute(
-        f"SELECT DISTINCT year FROM sales WHERE {W} AND year IS NOT NULL ORDER BY year DESC").fetchall()]
+        f"SELECT DISTINCT year FROM sales WHERE {WH} AND year IS NOT NULL ORDER BY year DESC").fetchall()]
     mois_lbl = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Août", "Sep", "Oct", "Nov", "Déc"]
     if yrs:
         cy = yrs[0]
@@ -743,7 +962,7 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         prev_expr = f"sum(ttc) FILTER (WHERE year = {py})" if py is not None else "NULL"
         rows = con.execute(f"""
             SELECT month(date) m, sum(ttc) FILTER (WHERE year = {cy}) cur, {prev_expr} prev
-            FROM sales WHERE {W} GROUP BY 1 ORDER BY 1
+            FROM sales WHERE {WH} GROUP BY 1 ORDER BY 1
         """).fetchall()
         k["yoy_comparison"] = {
             "current_year": cy, "previous_year": py,
@@ -759,22 +978,13 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     else:
         k["yoy_comparison"] = {"current_year": None, "previous_year": None, "data": [], "delta_pct": None}
 
-    # ── 4. Saisonnalité (CA moyen par mois calendaire) ───────────────────────
     seas = con.execute(f"""
         SELECT month(date) m, sum(ttc) total, count(DISTINCT year) ny
-        FROM sales WHERE {W} GROUP BY 1 ORDER BY 1
+        FROM sales WHERE {WH} GROUP BY 1 ORDER BY 1
     """).fetchall()
     mois = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Août", "Sep", "Oct", "Nov", "Déc"]
     k["seasonality"] = [{"month": mois[int(s[0]) - 1], "revenue": float((s[1] or 0) / (s[2] or 1))} for s in seas if s[0]]
 
-    # ── 5. Délais de paiement / DSO / risque ─────────────────────────────────
-    # NB : les données contiennent la date de pièce et la date d'échéance mais PAS
-    # la date de paiement effective. `payment_delay_days` = délai de crédit ACCORDÉ.
-    # On qualifie de "à risque" les termes longs (> 60 j) et de "critiques" (> 90 j),
-    # car un délai accordé long accroît le DSO et l'exposition au risque de crédit.
-    # `NOT est_avoir` partout : un avoir n'est pas une créance à recouvrer, et
-    # son montant négatif viendrait en déduction d'une exposition qu'il ne
-    # concerne pas.
     drow = con.execute(f"""
         SELECT
           count(*) FILTER (WHERE payment_delay_days > 90 AND NOT est_avoir)  c90,
@@ -786,24 +996,19 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
           sum(ttc) FILTER (WHERE payment_delay_days > 90 AND NOT est_avoir)  montant_critique
         FROM sales WHERE {W}
     """).fetchone()
+    # `payment_delay_days` vaut `datediff(date_facture, echeance)` : c'est le délai
+    # ACCORDÉ, inscrit sur la facture à l'émission. Ce n'est PAS un retard de
+    # paiement — l'ERP n'enregistre aucune date de règlement. Les noms disaient
+    # « retards » et le copilote en déduisait « réglé avec retard », ce qui est faux.
     c90, c60, c30, tot_delay, mt_risque, mt_crit = drow
-    k["retards_critiques"] = int(c90 or 0)
-    k["retards_30j"] = int(c30 or 0)
-    k["retards_60j"] = int(c60 or 0)
-    k["paiements_total_analyses"] = int(tot_delay or 0)
-    k["paiements_a_risque_count"] = int(c60 or 0)
-    k["paiements_a_risque_pct"] = float((c60 or 0) / tot_delay * 100) if tot_delay else 0
-    k["montant_risque_ttc"] = float(mt_risque or 0)
-    k["montant_critique_ttc"] = float(mt_crit or 0)
-    # Libellé honnête : montant_risque_ttc additionne le TTC de TOUTES les factures
-    # de l'historique réglées avec >60j de retard → c'est un comportement de paiement,
-    # PAS un encours dû aujourd'hui (le schéma n'a ni statut payé/impayé ni solde).
-    k["ca_retard_historique_ttc"] = float(mt_risque or 0)
-    k["ca_retard_historique_critique_ttc"] = float(mt_crit or 0)
+    k["factures_delai_sup_90j"] = int(c90 or 0)
+    k["factures_delai_sup_60j"] = int(c60 or 0)
+    k["factures_delai_sup_30j"] = int(c30 or 0)
+    k["part_factures_delai_sup_60j_pct"] = (
+        float((c60 or 0) / tot_delay * 100) if tot_delay else 0)
+    k["montant_delai_sup_60j_ttc"] = float(mt_risque or 0)
+    k["montant_delai_sup_90j_ttc"] = float(mt_crit or 0)
 
-    # ── Exposition RÉCENTE (proxy actionnable pour le recouvrement) ───────────
-    # On borne aux échéances des 6 derniers mois (relatif à la dernière échéance
-    # des données) → chiffre réaliste au lieu de 5 ans d'historique cumulé.
     rec = con.execute(f"""
         WITH ref AS (SELECT max(echeance) md FROM sales WHERE {W})
         SELECT sum(ttc) FILTER (WHERE payment_delay_days > 60) expo,
@@ -818,7 +1023,6 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     k["exposition_recente_count"] = int(rec[2] or 0)
     k["exposition_recente_periode"] = f"échéances des 6 mois jusqu'à {rec[3]}" if rec[3] else "6 derniers mois"
 
-    # Clients à relancer, bornés à l'exposition récente
     k["clients_relance"] = [{
         "client": r[0], "nom": r[1] or r[0], "montant_risque": float(r[2] or 0), "factures": int(r[3] or 0),
     } for r in con.execute(f"""
@@ -829,13 +1033,9 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         FROM sales
         WHERE {W} AND client_name IS NOT NULL
           AND echeance >= (SELECT md FROM ref) - INTERVAL 6 MONTH
-        GROUP BY client HAVING m > 0 ORDER BY m DESC NULLS LAST LIMIT 8
+        GROUP BY client HAVING m > 0 ORDER BY m DESC NULLS LAST LIMIT 10
     """).fetchall()]
 
-    # Structure des délais accordés (tranches) -> graphe empilé / barres
-    # Ventes seulement : une tranche d'âge décrit des créances à encaisser, or
-    # un avoir est une dette envers le client. L'y inclure retrancherait un
-    # montant d'une tranche à laquelle il n'appartient pas.
     aging = con.execute(f"""
         SELECT
           sum(ttc) FILTER (WHERE payment_delay_days <= 0)                         AS comptant,
@@ -846,12 +1046,8 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         FROM sales WHERE {W} AND NOT est_avoir
     """).fetchone()
     labels = ["Comptant", "0-30 j", "31-60 j", "61-90 j", "90 j +"]
-    k["aging_creances"] = [{"bucket": labels[i], "montant": float(aging[i] or 0)} for i in range(5)]
+    k["echelonnement_delais_accordes"] = [{"bucket": labels[i], "montant": float(aging[i] or 0)} for i in range(5)]
 
-    # ── 6. Top clients + concentration (HHI, Pareto) ─────────────────────────
-    # `revenue` est un CA NET (avoirs déduits) ; `invoices` ne compte donc que
-    # les ventes, sans quoi un client très remboursé afficherait beaucoup de
-    # factures pour un chiffre faible.
     top = con.execute(f"""
         SELECT client, any_value(client_name) nom, sum(ttc) revenue,
                count(*) FILTER (WHERE NOT est_avoir)                  invoices,
@@ -869,10 +1065,6 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     } for i, t in enumerate(top)]
     k["top_clients_revenue_share"] = float(sum(c["revenue"] for c in k["top_clients"][:5]) / g * 100)
 
-    # ── Clients fidèles : la fidélité = RÉCURRENCE dans le temps, pas seulement
-    # le CA. On classe par nb de mois d'achat distincts, puis nb de factures, puis CA.
-    # La récurrence se mesure sur les VENTES : un avoir n'est pas un achat, et
-    # un mois où le client n'a reçu qu'un avoir n'est pas un mois actif.
     fideles = con.execute(f"""
         SELECT client, any_value(client_name) nom, sum(ttc) revenue,
                count(*) FILTER (WHERE NOT est_avoir) invoices,
@@ -893,8 +1085,6 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         "premier": r[5], "dernier": r[6], "share": float((r[2] or 0) / g * 100),
     } for r in fideles]
 
-    # ── Clients qui décrochent : clients établis (>=6 mois d'activité) dont le CA
-    # des 90 derniers jours a chuté de >60% vs les 90 jours précédents.
     decroche = con.execute(f"""
         WITH ref AS (SELECT max(date) md FROM sales WHERE {W}),
         pc AS (
@@ -926,50 +1116,38 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         "chute_pct": float((1 - (d[3] or 0) / d[4]) * 100) if d[4] else 0.0,
     } for d in decroche]
 
-    # ── Décrochage ANTICIPÉ par le modèle ────────────────────────────────────
-    # Les deux blocs répondent à deux questions différentes, et c'est pour cela
-    # qu'ils coexistent :
-    #
-    #   * `clients_decrochent` CONSTATE — le chiffre d'affaires a déjà chuté de
-    #     plus de 60 %. L'information arrive quand le client est déjà parti ;
-    #   * `churn_anticipe` ANTICIPE — probabilité qu'un client encore actif cesse
-    #     de commander dans les 90 jours. C'est là qu'une relance a un effet.
-    #
-    # Le modèle n'est lu QUE si le registre le déclare servi. Un modèle refusé
-    # reste ainsi inaccessible au tableau de bord, même si son fichier existe.
-    k["churn_anticipe"] = _charger_churn_si_servi()
+    # Les modèles suivent la règle de portée des filtres (ml_engine.portee) :
+    # restreints aux clients filtrés, ou masqués quand le filtre n'a pas de
+    # sens pour une prévision (période passée, critère de facture).
+    from ml_engine import portee as _po
+    # Les dates de la période de référence ne sont pas un choix de l'utilisateur :
+    # la portée se juge sur les filtres reçus, pas sur ceux complétés ici.
+    p = _po.portee(historique)
+    cl = p["clients"]
+    k["portee_modeles"] = {"mode": p["mode"], "motif": p["motif"]}
+    if p["mode"] == _po.MASQUE:
+        k["churn_anticipe"] = _po.masque(p)
+        k["conversion_devis"] = _po.masque(p)
+        k["marge_client"] = _po.masque(p)
+    else:
+        k["churn_anticipe"] = _po.annoter(_charger_churn_si_servi(clients=cl), p)
+        try:
+            from ml_engine.analytics.conversion_devis import predire as _pd
+            k["conversion_devis"] = _po.annoter(_pd(clients=cl), p)
+        except Exception as e:
+            k["conversion_devis"] = {"servi": False, "motif": f"indisponible ({type(e).__name__})"}
+        try:
+            from ml_engine.analytics.marge_client import predire as _pm
+            k["marge_client"] = _po.annoter(_pm(clients=cl), p)
+        except Exception as e:
+            k["marge_client"] = {"servi": False, "motif": f"indisponible ({type(e).__name__})"}
 
-    # ── Typologie de clientèle ───────────────────────────────────────────────
-    # Le tableau de bord répond déjà à « quels clients ? ». La segmentation
-    # répond à « quels TYPES de clients ? » — une liste de 938 comptes ne se
-    # pilote pas, une poignée de segments oui.
-    k["segmentation"] = _charger_segmentation_si_servie()
+    k["segmentation"] = _po.pour_analyse_globale(p) or _charger_segmentation_si_servie()
 
-    # ── Cycle commercial et rentabilité ─────────────────────────────────────
-    #
-    # Deux modules servis par des modèles appris sur données réelles. Ils sont
-    # chargés ici, dans le calcul que le frontend consomme, et non appelés
-    # directement par une page : l'échéancier et la demande hybride sont restés
-    # débranchés des semaines pour avoir manqué exactement cette ligne.
-    k["conversion_devis"] = _charger_conversion_devis_si_servie()
-    k["marge_client"] = _charger_marge_client_si_servie()
-
-    # ── Immobilisations RÉELLES ──────────────────────────────────────────────
-    # Reconstruites des factures d'achat et de vente, sans aucune simulation.
-    # Elles remplacent le surstock simulé partout où un montant est annoncé à
-    # l'utilisateur : un directeur ne déstocke pas sur une estimation.
     k["stock_flux_reel"] = _charger_flux_reels(con)
 
-    # ── Réapprovisionnement appris ───────────────────────────────────────────
-    # Complément et non substitut de la détection de rupture : celle-ci constate
-    # ce qui manque déjà, le modèle anticipe ce qui sera commandé. Les deux se
-    # servent en parallèle, et le second disparaît si le registre le refuse.
-    k["reappro"] = _charger_reappro_si_servi()
+    k["reappro"] = _po.pour_analyse_globale(p) or _charger_reappro_si_servi()
 
-    # ── Concentration du CA : nb de clients réalisant 80% du CA (règle de Pareto)
-    # `r > 0` : un client au solde net négatif n'apporte pas de CA à concentrer.
-    # Sans ce filtre, il abaisserait le total cumulé et ferait croire que moins
-    # de clients suffisent à atteindre 80 % du chiffre.
     conc = con.execute(f"""
         WITH s AS (SELECT client, sum(ttc) r FROM sales WHERE {W} GROUP BY client),
         ranked AS (
@@ -982,12 +1160,6 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     k["clients_pour_80pct"] = int(conc[0] or 0)
     k["nb_clients_ca"] = int(conc[1] or 0)
 
-    # HHI clients (indice de Herfindahl-Hirschman, sur 10000)
-    # `r > 0` est indispensable depuis que le CA porte le signe des avoirs : un
-    # client dont les avoirs dépassent les ventes a un CA net négatif, et le
-    # carré d'une part négative redevient positif — il gonflerait donc l'indice
-    # de concentration au lieu de le réduire. Un tel client ne pèse pas dans la
-    # concentration : il est exclu du calcul, et compté à part.
     hhi = con.execute(f"""
         WITH s AS (SELECT client, sum(ttc) r FROM sales WHERE {W} GROUP BY client),
              pos AS (SELECT r FROM s WHERE r > 0),
@@ -996,12 +1168,7 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         WHERE (SELECT t FROM tot) > 0
     """).fetchone()[0]
     k["hhi_clients"] = float(hhi or 0)
-    k["clients_solde_negatif"] = int(con.execute(f"""
-        WITH s AS (SELECT client, sum(ttc) r FROM sales WHERE {W} GROUP BY client)
-        SELECT count(*) FROM s WHERE r < 0
-    """).fetchone()[0] or 0)
 
-    # Courbe de Pareto (concentration) : part cumulée du CA par décile de clients
     pareto = con.execute(f"""
         WITH s AS (
           SELECT client, sum(ttc) r FROM sales WHERE {W} GROUP BY client
@@ -1014,10 +1181,8 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         SELECT round(rn*100.0/n) pct_clients, max(cum/tot*100) pct_ca
         FROM ranked GROUP BY 1 ORDER BY 1
     """).fetchall()
-    # réduit à ~20 points pour le graphe
     k["client_pareto"] = [{"pct_clients": float(p[0]), "pct_ca": float(p[1] or 0)} for p in pareto if p[0] % 5 == 0]
 
-    # ── 7. Mix des modes de paiement (camembert) ─────────────────────────────
     mix = con.execute(f"""
         SELECT coalesce(NULLIF(mode_regl, ''), 'Non renseigné') AS mode_label,
                sum(ttc) montant, count(*) nb
@@ -1025,7 +1190,6 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     """).fetchall()
     k["payment_mix"] = [{"mode": m[0], "montant": float(m[1] or 0), "count": int(m[2] or 0)} for m in mix]
 
-    # ── 8. Prévision d'encaissement (échéances par mois) ─────────────────────
     cash = con.execute(f"""
         SELECT strftime(echeance, '%Y-%m') m, sum(ttc) montant
         FROM sales WHERE {W} AND echeance IS NOT NULL
@@ -1033,7 +1197,6 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     """).fetchall()
     k["cash_forecast"] = [{"period": c[0], "montant": float(c[1] or 0)} for c in cash][-18:]
 
-    # ── 9. Distribution des montants de facture (histogramme) ────────────────
     dist = con.execute(f"""
         SELECT CASE
                  WHEN ttc < 500   THEN '< 500'
@@ -1051,13 +1214,12 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         [{"tranche": d[0], "count": int(d[1] or 0)} for d in dist],
         key=lambda x: order.get(x["tranche"], 9))
 
-    # ── 10. Achats / fournisseurs (toutes ventes hors périmètre client) ──────
-    # Les achats ne dépendent pas du filtre client ; on applique l'année si choisie.
     purch_where = "1=1"
     if filters.get("selected_years"):
         purch_where = "year IN (" + ",".join(str(int(y)) for y in filters["selected_years"]) + ")"
-    # Mêmes règles que pour les ventes : le montant est NET (avoirs fournisseur
-    # déduits), le comptage et le DPO portent sur les seules factures d'achat.
+    # Série mensuelle (graphique d'évolution) : tout l'historique, comme les ventes.
+    purch_hist = purch_where + _clause_dates(historique, "date")
+    purch_where += _clause_dates(filters, "date")
     prow = con.execute(f"""
         SELECT sum(ttc) ttc,
                count(*) FILTER (WHERE NOT est_avoir)                nb,
@@ -1072,6 +1234,8 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     k["nb_fournisseurs"] = int(prow[3] or 0)
     k["dpo_jours"] = float(prow[4] or 0)
 
+    k["delais"] = _delais(con, W, purch_where, periode)
+
     k["top_fournisseurs"] = [{
         "fournisseur": (r[0] or r[1] or "—")[:32], "montant": float(r[2] or 0),
         "share": float((r[2] or 0) / (k["achats_total_ttc"] or 1) * 100), "rank": i + 1,
@@ -1079,8 +1243,6 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         SELECT fournisseur, fournisseur_code, sum(ttc) m
         FROM purchases WHERE {purch_where} GROUP BY 1,2 ORDER BY m DESC NULLS LAST LIMIT 8
     """).fetchall())]
-    # `r > 0` : voir le HHI clients — le carré d'une part négative redevient
-    # positif et gonflerait l'indice au lieu de le réduire.
     hhi_f = con.execute(f"""
         WITH s AS (SELECT fournisseur, sum(ttc) r FROM purchases WHERE {purch_where} GROUP BY 1),
              pos AS (SELECT r FROM s WHERE r > 0),
@@ -1089,35 +1251,34 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     """).fetchone()[0]
     k["hhi_fournisseurs"] = float(hhi_f or 0)
 
-    # Tendance achats mensuelle (pour comparer à la vente)
     pm = con.execute(f"""
         SELECT strftime(date, '%Y-%m') period, sum(ttc) achats
-        FROM purchases WHERE {purch_where} GROUP BY 1 ORDER BY 1
+        FROM purchases WHERE {purch_hist} GROUP BY 1 ORDER BY 1
     """).fetchall()
     pm_map = {p[0]: float(p[1] or 0) for p in pm}
-    # série combinée ventes vs achats alignée sur les mois de vente
     k["sales_vs_purchases"] = [
         {"period": m["period"], "ventes": m["revenue"], "achats": pm_map.get(m["period"], 0)}
         for m in k["monthly_sales"]
     ]
 
-    # ── 11. Marge RÉELLE (coût de revient ERP, attribuable au client) ────────
-    # Source : lignes de vente (MTCRSIGNE = coût de revient signé), agrégées dans
-    # `client_margin`. Cette marge est ATTRIBUABLE : elle suit le filtre client,
-    # contrairement à l'ancienne approximation « CA HT − achats TTC ».
-    marge_row = None
-    try:
-        mw = ["1=1"]
-        if filters.get("selected_years"):
-            mw.append("year IN (" + ",".join(str(int(y)) for y in filters["selected_years"]) + ")")
-        if filters.get("selected_clients"):
+    def _where_marge(f: Dict[str, Any]) -> List[str]:
+        w = ["1=1"]
+        if f.get("selected_years"):
+            w.append("year IN (" + ",".join(str(int(y)) for y in f["selected_years"]) + ")")
+        if f.get("selected_clients"):
             vals = ",".join("'" + str(c).replace("'", "''") + "'"
-                            for c in filters["selected_clients"])
-            mw.append(f"client IN ({vals})")
-        if filters.get("date_start"):
-            mw.append(f"period >= '{str(filters['date_start'])[:7]}'")
-        if filters.get("date_end"):
-            mw.append(f"period <= '{str(filters['date_end'])[:7]}'")
+                            for c in f["selected_clients"])
+            w.append(f"client IN ({vals})")
+        if f.get("date_start"):
+            w.append(f"period >= '{str(f['date_start'])[:7]}'")
+        if f.get("date_end"):
+            w.append(f"period <= '{str(f['date_end'])[:7]}'")
+        return w
+
+    marge_row = None
+    mw_hist = _where_marge(historique)
+    try:
+        mw = _where_marge(filters)
         marge_row = con.execute(
             f"SELECT sum(ca_ligne), sum(cout_revient), sum(marge), sum(n_lignes) "
             f"FROM client_margin WHERE {' AND '.join(mw)}").fetchone()
@@ -1135,20 +1296,18 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         k["marge_source"] = "cout_revient_erp"
         k["marge_note"] = (
             "Marge réelle : chiffre d'affaires des lignes de vente moins le coût de "
-            "revient ERP (MTCRSIGNE), attribuable par client. Les lignes dont le coût "
+            "revient porté sur chaque ligne de facture, attribuable par client. "
+            "Les lignes dont le coût "
             "dépasse 5× le prix de vente (erreurs de saisie) sont écartées.")
-        # Signalement qualité (transparence sur le nettoyage appliqué)
         try:
-            q = con.execute("SELECT lignes_exclues, lignes_facturees, lignes_offertes, "
-                            "cout_offert FROM margin_quality").fetchone()
+            q = con.execute("SELECT lignes_exclues, lignes_facturees "
+                            "FROM margin_quality").fetchone()
             if q and q[1]:
                 k["marge_lignes_exclues"] = int(q[0] or 0)
                 k["marge_lignes_exclues_pct"] = round(float(q[0] or 0) / float(q[1]) * 100, 2)
-                k["marge_cout_articles_offerts_dt"] = round(float(q[3] or 0), 0)
         except Exception:
             pass
     else:
-        # Aucune ligne exploitable sur ce périmètre (client sans lignes détaillées)
         k["marge_brute"] = None
         k["taux_marge"] = None
         k["marge_quality_score"] = None
@@ -1156,19 +1315,16 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         k["marge_note"] = ("Marge non calculable sur ce périmètre : aucune ligne de vente "
                            "avec coût de revient exploitable.")
 
-    # Marge mensuelle RÉELLE (issue des lignes, donc attribuable au client)
     try:
         mm = con.execute(
             f"SELECT period, sum(marge) FROM client_margin "
-            f"WHERE {' AND '.join(mw)} GROUP BY period ORDER BY period").fetchall()
+            f"WHERE {' AND '.join(mw_hist)} GROUP BY period ORDER BY period").fetchall()
         mm_map = {r[0]: float(r[1] or 0) for r in mm}
         k["monthly_margin"] = [{"period": m["period"], "marge": mm_map.get(m["period"], 0.0)}
                                for m in k["monthly_sales"]]
     except Exception:
         k["monthly_margin"] = []
 
-    # ── 11bis. Cascade « du CA à la marge » (waterfall P&L) ──────────────────
-    # Construite sur la marge RÉELLE : CA des lignes − coût de revient.
     if k.get("marge_brute") is not None and k.get("marge_ca_reference_dt"):
         k["waterfall"] = [
             {"step": "CA (lignes)", "value": float(k["marge_ca_reference_dt"]), "kind": "start"},
@@ -1178,65 +1334,65 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     else:
         k["waterfall"] = []
 
-    # ── 12. Devis (pipeline) + taux de conversion ────────────────────────────
     dwhere = "1=1"
     if filters.get("selected_years"):
         dwhere = "year(date) IN (" + ",".join(str(int(y)) for y in filters["selected_years"]) + ")"
+    dwhere += _clause_dates(filters, "date")
     drow = con.execute(f"SELECT count(*), sum(ttc), count(DISTINCT client) FROM devis WHERE {dwhere}").fetchone()
     k["nb_devis"] = int(drow[0] or 0)
     k["montant_devis_total"] = float(drow[1] or 0)
     nb_clients_devis = int(drow[2] or 0)
-    # ── Taux de conversion RÉEL : basé sur le statut ERP du devis ────────────
-    # `transforme` = (ETATPIECE = '8'). Interprétation VALIDÉE empiriquement :
-    # 89,4 % des devis en état 8 ont une facture du même client au même montant
-    # (± 1 %), contre 37,4 % pour l'état 1 — l'écart ne laisse pas de doute.
-    # L'ancienne heuristique (« le client a-t-il facturé quelque chose ? »)
-    # surestimait massivement le taux (94,8 % au lieu de ~9 %).
     conv = con.execute(f"""
         SELECT count(*) FILTER (WHERE transforme) AS transformes,
-               count(*)                            AS total,
-               sum(ttc) FILTER (WHERE transforme)  AS montant_transforme
+               count(*)                            AS total
         FROM devis WHERE {dwhere}
     """).fetchone()
     n_transf, n_devis_tot = int(conv[0] or 0), int(conv[1] or 0)
     converted = n_transf
     k["devis_transformes"] = n_transf
-    k["montant_devis_transforme"] = round(float(conv[2] or 0), 0)
     k["taux_conversion_devis"] = float(n_transf / n_devis_tot * 100) if n_devis_tot else 0.0
     k["taux_conversion_source"] = "etat_piece_erp"
     k["taux_conversion_note"] = (
-        "Part des devis effectivement TRANSFORMÉS en facture (statut ERP "
-        "ETATPIECE=8, validé empiriquement à 89 % d'appariement montant/client).")
-    nb_bl = int(_scalar(con, "SELECT count(*) FROM bl"))
-    k["nb_bl"] = nb_bl
-    k["montant_bl_total"] = None
+        "Part des devis effectivement TRANSFORMÉS en facture, d'après le "
+        "statut du devis — concordance vérifiée à 89 % sur le couple "
+        "montant/client.")
+    k["nb_bl"] = int(_scalar(con, "SELECT count(*) FROM bl"))
     k["funnel"] = [
         {"etape": "Devis", "valeur": k["nb_devis"]},
         {"etape": "Clients convertis", "valeur": converted},
         {"etape": "Clients facturés", "valeur": k["nb_clients"]},
     ]
 
-    # ── 13. Top produits (respecte le filtre année) ──────────────────────────
     prod_where = "1=1"
     if filters.get("selected_years"):
         prod_where = "year IN (" + ",".join(str(int(y)) for y in filters["selected_years"]) + ")"
+    # Les marts produit/famille sont annuels : une période au jour près se lit
+    # sur les lignes de vente, avec les mêmes règles que les marts.
+    source_prod, source_fam = "product_sales", "product_family"
+    if filters.get("date_start") or filters.get("date_end"):
+        from etl.regles import FAMILLES_HORS_ACTIVITE
+        lw = "1=1" + _clause_dates(filters, "date")
+        source_prod = (f"(SELECT designation AS produit, year(date) AS year, montant AS ca, qte "
+                       f"FROM sales_lines WHERE designation IS NOT NULL AND designation <> '' "
+                       f"AND {lw})")
+        source_fam = (f"(SELECT famille, year(date) AS year, montant AS ca, qte FROM sales_lines "
+                      f"WHERE famille IS NOT NULL AND famille <> '' "
+                      f"AND NOT regexp_matches(upper(famille), '{FAMILLES_HORS_ACTIVITE}') AND {lw})")
     prods = con.execute(f"""
-        SELECT produit, sum(ca) ca, sum(qte) qte FROM product_sales
+        SELECT produit, sum(ca) ca, sum(qte) qte FROM {source_prod}
         WHERE {prod_where} GROUP BY produit ORDER BY ca DESC NULLS LAST LIMIT 10
     """).fetchall()
     k["top_produits"] = [{
         "produit": (p[0] or "—").strip()[:38], "ca": float(p[1] or 0), "qte": float(p[2] or 0),
     } for p in prods]
-    k["nb_produits"] = int(_scalar(con, f"SELECT count(DISTINCT produit) FROM product_sales WHERE {prod_where}"))
+    k["nb_produits"] = int(_scalar(con, f"SELECT count(DISTINCT produit) FROM {source_prod} WHERE {prod_where}"))
 
-    # Top familles de produits (REACTIF, EQUIPEMENT, SERVICE…)
     fam = con.execute(f"""
-        SELECT famille, sum(ca) ca FROM product_family
+        SELECT famille, sum(ca) ca FROM {source_fam}
         WHERE {prod_where} GROUP BY famille ORDER BY ca DESC NULLS LAST LIMIT 6
     """).fetchall()
     k["top_familles"] = [{"famille": (f[0] or "—").strip()[:28], "ca": float(f[1] or 0)} for f in fam]
 
-    # ── 14. Clients à risque (exposition échue) ──────────────────────────────
     k["clients_a_risque"] = [{
         "client": r[0], "nom": r[1] or r[0], "montant_risque": float(r[2] or 0), "factures": int(r[3] or 0),
     } for r in con.execute(f"""
@@ -1246,8 +1402,6 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         FROM sales WHERE {W} GROUP BY client HAVING m > 0 ORDER BY m DESC LIMIT 8
     """).fetchall()]
 
-    # ── 15bis. Score de risque crédit PRÉDIT (modèle ML, si entraîné) ─────────
-    # Table de noms clients (code -> nom) pour enrichir les classements
     name_map = {r[0]: (r[1] or r[0]) for r in con.execute("SELECT client_code, client_name FROM dim_client").fetchall()}
 
     risk_map = _load_client_risk()
@@ -1266,7 +1420,6 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
                 continue
             score = float(v.get("score", 0))
             expo = float(v.get("exposure", 0))
-            # Exposition pondérée par le risque = probabilité × encours (argent à risque)
             priority = score / 100.0 * expo
             expo_ponderee += priority
             if score > 70:
@@ -1274,15 +1427,10 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
             enriched.append({
                 "client": cl, "nom": name_map.get(cl, cl), "score": score, "exposure": expo,
                 "avg_delay": float(v.get("avg_delay", 0)), "priority": priority,
-                # Pourquoi ce client est en tête du classement. Ici aucun modèle
-                # appris : une RÈGLE mesurée sur l'historique. L'explication est
-                # donc la règle elle-même — la valeur observée et le seuil
-                # franchi —, ce qui est plus vérifiable qu'une attribution.
                 "raisons": _raisons_credit(v),
             })
         k["nb_clients_risque_predit"] = nb_high
         k["exposition_risque_ponderee"] = expo_ponderee
-        # Classement par priorité de recouvrement (argent à risque), pas juste la proba
         k["risk_ranking"] = sorted(enriched, key=lambda x: -x["priority"])[:10]
         k["risk_model_active"] = True
     else:
@@ -1291,12 +1439,11 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         k["risk_ranking"] = []
         k["risk_model_active"] = False
 
-    # ── 15. Anomalies ────────────────────────────────────────────────────────
     neg = int(_scalar(con, f"SELECT count(*) FROM sales WHERE {W} AND ttc < 0"))
     zero = int(_scalar(con, f"SELECT count(*) FROM sales WHERE {W} AND ttc = 0"))
-    if k["retards_critiques"]:
-        k["anomalies_details"].append(f"{k['retards_critiques']} facture(s) avec délai accordé > 90 jours.")
-    warn = k["retards_30j"] - k["retards_critiques"]
+    if k["factures_delai_sup_90j"]:
+        k["anomalies_details"].append(f"{k['factures_delai_sup_90j']} facture(s) avec délai accordé > 90 jours.")
+    warn = k["factures_delai_sup_30j"] - k["factures_delai_sup_90j"]
     if warn > 0:
         k["anomalies_details"].append(f"{warn} facture(s) avec délai accordé de 30 à 90 jours.")
     if neg:
@@ -1305,24 +1452,15 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
         k["anomalies_details"].append(f"{zero} facture(s) avec montant nul.")
     if k["hhi_clients"] > 2500:
         k["anomalies_details"].append(f"Forte concentration client (HHI={k['hhi_clients']:.0f} > 2500).")
-    k["anomalies_detectees"] = int(k["retards_critiques"] + neg + zero)
+    k["anomalies_detectees"] = int(k["factures_delai_sup_90j"] + neg + zero)
     if not k["anomalies_details"]:
         k["anomalies_details"] = ["Aucune anomalie majeure détectée."]
 
-    # ── 16. BFR / cycle de trésorerie ────────────────────────────────────────
     k["cash_conversion_cycle"] = float(k["dso_jours"] - k["dpo_jours"])
 
-    # ── 17. Factures importées par OCR ───────────────────────────────────────
-    # Bloc SÉPARÉ, jamais fondu dans les totaux ci-dessus. Les indicateurs ERP
-    # doivent rester rapprochables de l'export d'origine : une facture lue à
-    # 70 % de confiance n'a pas le même statut probatoire qu'une ligne d'ERP.
-    # L'interface et l'agent les présentent donc comme un apport distinct.
     k["import_ocr"] = {"n_factures": 0, "total_ttc_dt": 0.0, "factures": []}
     try:
         clients_filtre = (filters or {}).get("selected_clients") or []
-        # Ce bloc parle de CLIENTS : seules les ventes y ont leur place. Un achat
-        # importé (sens = 'achat') n'est pas du chiffre d'affaires. Les lignes
-        # antérieures à la colonne `sens` sont des ventes.
         colonnes = {r[0] for r in con.execute(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_name = 'factures_importees'").fetchall()}
@@ -1346,17 +1484,12 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
                 "ht": r[4], "tva": r[5], "ttc": r[6], "net_a_payer": r[7],
                 "confiance_ocr": r[8], "fichier": r[9],
             } for r in rows],
-            "note": ("Factures lues par OCR et validées à l'import. Comptabilisées "
-                     "à part des indicateurs ERP, dont elles ne modifient aucun total."),
+            "note": ("Factures scannées et validées à l'import. Comptabilisées "
+                     "à part des indicateurs de facturation, dont elles ne modifient aucun total."),
         }
     except Exception:
-        # Table absente tant qu'aucune facture n'a été importée : cas normal.
         pass
 
-    # ── 17 bis. Échéancier des factures OCR hors ERP ────────────────────────
-    # Décaissements et encaissements à venir des factures lues et non encore
-    # présentes dans l'ERP. Bloc séparé, comme ci-dessus : il ne modifie ni
-    # `cash_forecast` (échéances ERP) ni aucun total.
     try:
         from ml_engine.ocr.echeancier import echeancier as _echeancier
         e = _echeancier()
@@ -1366,18 +1499,6 @@ def compute_dashboard(filters: Dict[str, Any] | None = None, data_dir: Path | No
     except Exception:
         k["echeancier_ocr"] = {"n_factures": 0, "mois": []}
 
-    # ── 17 ter. Exactitude de l'OCR en production ───────────────────────────
-    try:
-        from ml_engine.ocr.apprentissage import mesure_production
-        k["qualite_ocr_production"] = mesure_production()
-    except Exception:
-        k["qualite_ocr_production"] = {"n_factures_relues": 0, "par_moteur": {}}
-
-    # ── 18. Contrôle d'intégrité ─────────────────────────────────────────────
-    # Le CA a été faux de 5,44 % pendant toute la durée du projet sans que rien
-    # ne le signale : un montant erroné reste plausible. Les invariants sont
-    # donc vérifiés à chaque calcul, et le résultat accompagne les indicateurs
-    # plutôt que d'attendre un audit manuel.
     try:
         from ml_engine.analytics.data_quality import controler_integrite
         k["integrite"] = controler_integrite(k)
@@ -1394,9 +1515,6 @@ def con_row_ht(con, where: str, period: str) -> float:
     return float(r[0] or 0) if r else 0.0
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CLI de test
-# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("Calcul des KPIs (sans filtre)…")
     kpis = compute_dashboard({})
