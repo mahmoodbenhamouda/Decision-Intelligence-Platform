@@ -226,5 +226,42 @@ def test_le_seed_desactive_les_comptes_d_un_role_retire():
         db.close()
 
 
+def test_purge_des_roles_retires_malgre_la_table_client_requests_heritee():
+    """Une base créée avant le retrait du portail garde `client_requests`
+    (user_id NOT NULL → users.id) : la purge doit l'effacer, pas planter en 500."""
+    from sqlalchemy import text
+    h = hdr(*DIRECTEUR)
+    db = next(get_db())
+    try:
+        db.execute(text(
+            "CREATE TABLE IF NOT EXISTS client_requests ("
+            " id SERIAL PRIMARY KEY,"
+            " user_id INTEGER NOT NULL REFERENCES users(id),"
+            " sujet VARCHAR(200))"))
+        ex = User(email="ex-client-demande@overlyne.tn",
+                  password_hash=hash_password("ExClient#2026x"), role="client")
+        db.add(ex)
+        db.commit()
+        db.execute(text("INSERT INTO client_requests (user_id, sujet) VALUES (:u, 'x')"),
+                   {"u": ex.id})
+        db.commit()
+    finally:
+        db.close()
+
+    assert client.get("/api/admin/roles-retires", headers=h).json()["n"] >= 1
+    r = client.post("/api/admin/purger-roles-retires", headers=h)
+    assert r.status_code == 200, r.text
+    assert "ex-client-demande@overlyne.tn" in r.json()["emails"]
+    assert client.get("/api/admin/roles-retires", headers=h).json()["n"] == 0
+
+    db = next(get_db())
+    try:
+        assert db.execute(text("SELECT count(*) FROM client_requests")).scalar() == 0
+        db.execute(text("DROP TABLE client_requests"))
+        db.commit()
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

@@ -6,7 +6,7 @@ import logging
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from api.services.erreurs import (AccesRefuse, Conflit, DonneesInvalides,
                                   ErreurInterne, ErreurMetier,
@@ -55,7 +55,21 @@ def _base_indisponible(request: Request, exc: OperationalError) -> JSONResponse:
     )
 
 
+def _contrainte_violee(request: Request, exc: IntegrityError) -> JSONResponse:
+    # Sans ce gestionnaire, l'erreur remonte en 500 HORS du middleware CORS :
+    # la réponse n'a pas d'en-tête Access-Control-Allow-Origin et le navigateur
+    # ne montre qu'un « Failed to fetch », sans statut ni message.
+    logger.error("Contrainte d'intégrité violée sur %s : %s",
+                 request.url.path, str(exc.orig)[:300])
+    return JSONResponse(
+        status_code=409,
+        content={"detail": ("Opération refusée par la base : des données y font "
+                            "encore référence.")},
+    )
+
+
 def installer_gestion_erreurs(app: FastAPI) -> None:
     """À appeler sur toute application qui monte des routeurs de l'API — y compris une application de…"""
     app.add_exception_handler(ErreurMetier, _erreur_metier)
     app.add_exception_handler(OperationalError, _base_indisponible)
+    app.add_exception_handler(IntegrityError, _contrainte_violee)

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { API_INJOIGNABLE } from "@/core/config";
 import { useRequete } from "@/core/hooks/useRequete";
 import { emailFromName } from "./admin.regles";
 import { chargerAdmin, creerCompte, modifierCompte, purgerRolesRetires, supprimerCompte } from "./admin.service";
@@ -105,12 +106,16 @@ export function useAdmin() {
       `• Leurs tâches ouvertes repasseront « à affecter »\n` +
       `• Le journal d'audit sera conservé (anonymisé)\n\n` +
       `Aucun compte directeur ou employé n'est concerné.\n\nContinuer ?`)) return;
-    const res = await purgerRolesRetires();
-    const d = res.data as { n_supprimes?: number; emails?: string[]; detail?: string };
-    flash(res.ok
-      ? `${d.n_supprimes ?? 0} compte(s) de rôle retiré supprimé(s)${
-          d.emails?.length ? ` : ${d.emails.join(", ")}` : ""}.`
-      : `Erreur : ${d.detail || res.status}`);
+    try {
+      const res = await purgerRolesRetires();
+      const d = res.data as { n_supprimes?: number; emails?: string[]; detail?: string };
+      flash(res.ok
+        ? `${d.n_supprimes ?? 0} compte(s) de rôle retiré supprimé(s)${
+            d.emails?.length ? ` : ${d.emails.join(", ")}` : ""}.`
+        : `Erreur : ${d.detail || res.status}`);
+    } catch {
+      flash(API_INJOIGNABLE);
+    }
     load();
   };
 

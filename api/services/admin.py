@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, inspect, select, text
 from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
 from api.auth.journal import audit
 from api.auth.models import (ROLE_DIRECTEUR, ROLE_EMPLOYE, ROLES, AuditLog,
-                             EvenementTache, RevokedToken, Tache, User)
+                             CommandeFournisseur, DelegationPassage,
+                             EvenementCommande, EvenementTache, Reglage,
+                             RevokedToken, Tache, User)
 from api.auth.security import hash_password, password_policy_errors
 from api.schemas.admin import UserCreate, UserOut, UserUpdate
 from api.services.erreurs import Conflit, DonneesInvalides, Introuvable
@@ -114,12 +116,34 @@ def _detacher_et_effacer(db: Session, u: User) -> tuple[int, int]:
     db.execute(sa_update(Tache).where(Tache.cree_par_id == u.id).values(cree_par_id=None))
     db.execute(sa_update(EvenementTache).where(
         EvenementTache.user_id == u.id).values(user_id=None))
+    db.execute(sa_update(CommandeFournisseur).where(
+        CommandeFournisseur.decide_par_id == u.id).values(decide_par_id=None))
+    db.execute(sa_update(EvenementCommande).where(
+        EvenementCommande.user_id == u.id).values(user_id=None))
+    db.execute(sa_update(DelegationPassage).where(
+        DelegationPassage.lance_par_id == u.id).values(lance_par_id=None))
+    db.execute(sa_update(Reglage).where(
+        Reglage.modifie_par_id == u.id).values(modifie_par_id=None))
     db.execute(delete(RevokedToken).where(RevokedToken.user_id == u.id))
+    _effacer_demandes_portail(db, u.id)
     n_audit = db.execute(
         sa_update(AuditLog).where(AuditLog.user_id == u.id).values(user_id=None)
     ).rowcount or 0
     db.delete(u)
     return n_taches, n_audit
+
+
+def _effacer_demandes_portail(db: Session, user_id: int) -> None:
+    """Efface les demandes de l'ancien portail client, si la table subsiste.
+
+    Le modèle `client_requests` a été retiré avec le portail, mais `create_all`
+    ne supprime jamais une table : une base créée avant ce retrait la garde,
+    avec `user_id NOT NULL` vers `users.id`. Sans ce nettoyage, PostgreSQL
+    refuse d'effacer tout compte client qui avait déposé une demande.
+    """
+    if inspect(db.get_bind()).has_table("client_requests"):
+        db.execute(text("DELETE FROM client_requests WHERE user_id = :u"),
+                   {"u": user_id})
 
 
 def purger_roles_retires(db: Session, admin: User) -> Dict[str, Any]:
